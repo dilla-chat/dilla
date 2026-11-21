@@ -74,6 +74,8 @@ pub struct PollCard {
     width: f32,
     on_vote: Option<OnVote>,
     on_close: Option<OnClose>,
+    /// The log the card is drawn in ([`crate::motion::scope`]): its entrances are remembered under it.
+    scope: &'static str,
 }
 
 impl PollCard {
@@ -102,7 +104,14 @@ impl PollCard {
             width,
             on_vote: None,
             on_close: None,
+            scope: "",
         }
+    }
+
+    /// The log the card is drawn in.
+    pub fn scope(mut self, scope: &'static str) -> Self {
+        self.scope = scope;
+        self
     }
 
     pub fn can_vote(mut self, can: bool) -> Self {
@@ -243,7 +252,7 @@ impl RenderOnce for PollCard {
         // PollCard.css:36-37: the card rises in (`d-poll-card-entry`) and each voter pops in (`d-poll-voter-pop`), both over
         // `--duration-step` on `ease`, once from the first draw: the card is drawn inside a message row, which the log
         // stops drawing off screen, so the entrances are remembered by key, not by element state.
-        let card_key = format!("poll-card-{:?}", self.id);
+        let card_key = crate::motion::scoped(self.scope, &format!("poll-card-{:?}", self.id));
         let card_age = crate::motion::entered_age(cx, card_key.clone(), motion::STEP);
         // A vote taken back is a voter gone: when it is cast again the voter pops again, as the web's new span does.
         let voter_prefix = format!("{card_key}|");

@@ -888,9 +888,16 @@ impl Remembered {
         self.keys.retain(|k, _| !k.starts_with(prefix) || keep(k));
     }
 
-    /// Forgets everything: a log mounted anew (what lives in its rows enters again).
+    /// Forgets everything.
     pub fn clear(&mut self) {
         self.keys.clear();
+    }
+
+    /// Forgets the keys of one log ([`scoped`]): that log mounted anew, and what lives in its rows enters again. Another
+    /// log's keys stay.
+    pub fn clear_scope(&mut self, scope: &str) {
+        let prefix = scoped(scope, "");
+        self.keys.retain(|k, _| !k.starts_with(&prefix));
     }
 
     /// How many keys are remembered.
@@ -927,10 +934,32 @@ pub fn forget_entered(cx: &mut App, prefix: &str, keep: impl Fn(&str) -> bool) {
     cx.default_global::<Remembered>().forget(prefix, keep);
 }
 
-/// A message log mounted anew: what [`entered_age`] knows is forgotten, so the cards, chips and voters in its rows enter
-/// again with it, as the web's new DOM does.
-pub fn remount_log(cx: &mut App) {
-    cx.default_global::<Remembered>().clear();
+/// A key of [`entered_age`] in the log `scope` names (the channel's log, a thread's): the logs are mounted and unmounted
+/// apart, so each has its own keys.
+pub fn scoped(scope: &str, key: &str) -> String {
+    format!("{scope}\u{1}{key}")
+}
+
+/// The log being drawn (see [`set_scope`]).
+#[derive(Default)]
+struct LogScope(&'static str);
+impl gpui::Global for LogScope {}
+
+/// A log starts drawing its rows: what they key their entrances by (file cards, reaction chips, poll cards) is `scope`'s, so
+/// that the log's mount or unmount forgets its own and no other log's.
+pub fn set_scope(cx: &mut App, scope: &'static str) {
+    cx.set_global(LogScope(scope));
+}
+
+/// The scope of the log whose rows are being built ([`set_scope`]); empty outside one.
+pub fn scope(cx: &App) -> &'static str {
+    cx.try_global::<LogScope>().map_or("", |s| s.0)
+}
+
+/// The log of `scope` mounted anew: what [`entered_age`] knows of its rows is forgotten, so the cards, chips and voters in
+/// them enter again with it, as the web's new DOM does. Another log's stay.
+pub fn remount_log(cx: &mut App, scope: &str) {
+    cx.default_global::<Remembered>().clear_scope(scope);
 }
 
 /// A badge `scale` times its size about its centre, over a hidden full-size copy that keeps its place in the layout (the
@@ -1905,6 +1934,21 @@ mod tests {
     }
 
     /// A thing that is gone is forgotten and enters again when it returns; a remounted log forgets them all.
+    #[test]
+    fn a_log_mounting_anew_forgets_its_own_keys_only() {
+        let t0 = std::time::Instant::now();
+        let later = t0 + Duration::from_secs(1);
+        let mut r = Remembered::default();
+        r.touch(scoped("log", "chip"), t0);
+        r.touch(scoped("thread", "chip"), t0);
+        r.clear_scope("thread");
+        assert_eq!(
+            r.touch(scoped("log", "chip"), later),
+            Duration::from_secs(1)
+        );
+        assert_eq!(r.touch(scoped("thread", "chip"), later), Duration::ZERO);
+    }
+
     #[test]
     fn a_thing_that_is_gone_enters_again_when_it_returns() {
         let t0 = std::time::Instant::now();

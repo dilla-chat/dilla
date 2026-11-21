@@ -77,6 +77,9 @@ const HEAD_GAP: f32 = 8.0;
 /// border and the title's 10px margin; the day divider's 4px 20px padding and 10px gap.
 const LOG_TOP: f32 = 12.0;
 const LOG_BOTTOM: f32 = 6.0;
+/// The channel log's scope for what its rows remember of their entrances ([`motion::scope`]).
+pub const LOG_SCOPE: &str = "channel-log";
+
 /// What the arrows keep between the row they move to and the log's edge when they scroll it into view.
 const REVEAL_MARGIN: f32 = 8.0;
 const WELCOME_TOP: f32 = 16.0;
@@ -1592,8 +1595,9 @@ pub fn render(
     // Task 36c: the log mounts for a channel and its read state (Conversation.tsx `logKey`). A new mount makes what lives in
     // the rows (file cards, reaction chips, poll cards and voters) enter again with them, so it is known before they draw.
     let ready = state.timelines.contains_key(&channel.id);
+    motion::set_scope(cx, LOG_SCOPE);
     if ui.read(cx).log.remounts((channel.id, ready)) {
-        motion::remount_log(cx);
+        motion::remount_log(cx, LOG_SCOPE);
     }
     let privates = crate::screens::commands::private_results(ctx, width, window, cx);
     let mut shown = Vec::with_capacity(items.len());

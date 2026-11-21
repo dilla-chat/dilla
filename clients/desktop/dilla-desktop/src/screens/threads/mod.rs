@@ -1085,4 +1085,174 @@ mod tests {
                 .is_some_and(|d| d.channel == channel && Some(d.msg) == own.msg_id)
         }));
     }
+
+    /// Task 36c fix round 2: the entrances' wiring, driven through the drawn shell. The channel's log mounts and enters its
+    /// rows (the private result among them, as a `.d-message-row`); a voice stage that takes its place unmounts it, so it
+    /// enters again when the stage goes; an open thread's pane enters its replies with the log's fade and rise on top (the
+    /// first reply is 8px down for its own entrance and 6px for the log's), and its closing unmounts the pane's log.
+    #[gpui::test]
+    fn the_logs_enter_and_unmount_through_the_drawn_shell(cx: &mut TestAppContext) {
+        use crate::screens::shell::{Clock, ShellView};
+        use dilla_client::state::bot::{Conversation, PrivateResult, ResultProvider, ResultStatus};
+        cx.update(crate::install);
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let me = UserId([5; 16]);
+        let (text, voice) = (ChannelId([2; 16]), ChannelId([3; 16]));
+        let root = MessageId([7; 16]);
+        let community = CommunityId([1; 16]);
+        let mut s = dilla_client::state::AppState::default();
+        s.communities.push(dilla_client::state::Community {
+            id: community,
+            name: "Midgard".into(),
+            owner: me,
+            policy_version: 0,
+        });
+        let channel = |id: ChannelId, kind: u8, name: &str| Channel {
+            id,
+            community_id: community,
+            kind,
+            mode: 0,
+            name: name.into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        };
+        s.channels = vec![channel(text, 0, "general"), channel(voice, 1, "lounge")];
+        s.account.user_id = Some(me);
+        let post = |key: &str, msg: u8, seq: u64| {
+            let mut i = item(TimelineItemState::Ok, "hello");
+            i.key = key.into();
+            i.msg_id = Some(MessageId([msg; 16]));
+            i.seq = Some(seq);
+            i
+        };
+        s.timelines.insert(
+            text,
+            dilla_client::state::Timeline {
+                channel_id: text,
+                group: ChannelGroupState::Active,
+                items: vec![post("s1", 1, 1), post("s2", 2, 2)],
+                has_earlier: false,
+            },
+        );
+        s.threads.threads.insert(
+            root,
+            dilla_client::state::threads::ThreadData {
+                channel: text,
+                root: None,
+                replies: vec![post("t1", 11, 3), post("t2", 12, 4)],
+                has_earlier: false,
+                count: 2,
+            },
+        );
+        let result = |id: u64| PrivateResult {
+            id,
+            at: id,
+            status: ResultStatus::Success,
+            text: "rolled".into(),
+            provider: ResultProvider::Builtin,
+            hold: false,
+            settled_at: None,
+        };
+        s.bot.private_results.insert(
+            Conversation {
+                channel: text,
+                thread: None,
+            },
+            vec![result(1)],
+        );
+        s.bot.private_results.insert(
+            Conversation {
+                channel: text,
+                thread: Some(root),
+            },
+            vec![result(2)],
+        );
+        let state = Arc::new(s);
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                Some(text),
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        let frame = |vcx: &mut gpui::VisualTestContext| {
+            vcx.run_until_parked();
+            vcx.update(|window, _| window.refresh());
+            vcx.run_until_parked();
+        };
+        let wait = |vcx: &mut gpui::VisualTestContext, ms: u64| {
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(ms));
+            frame(vcx);
+        };
+        frame(vcx);
+        let ui = vcx
+            .update(|window, cx| crate::screens::messages::ui::handle(window, cx))
+            .expect("the messages area's ui");
+        let now =
+            |vcx: &mut gpui::VisualTestContext| vcx.update(|_, cx| cx.background_executor().now());
+        // The channel's log entered its rows, and the private result is one of them (it counts in the stagger).
+        let t = now(vcx);
+        assert!(ui.read_with(vcx, |u, _| u.log.of("s1", t).is_some()));
+        assert!(
+            ui.read_with(vcx, |u, _| u.log.of("private-0", t).is_some()),
+            "a private result is a row of the log's entrances"
+        );
+        // A stage takes the log's place: the log is unmounted, and enters afresh when the channel is shown again.
+        wait(vcx, 5000);
+        shell.update(vcx, |s, cx| s.select(voice, cx));
+        frame(vcx);
+        assert!(
+            ui.read_with(vcx, |u, _| u.log.remounts((text, true))),
+            "the takeover unmounts the log"
+        );
+        shell.update(vcx, |s, cx| s.select(text, cx));
+        frame(vcx);
+        let t = now(vcx);
+        let age = ui.read_with(vcx, |u, _| u.log.of("s1", t)).unwrap().0;
+        assert!(
+            age < std::time::Duration::from_secs(1),
+            "{age:?}: the rows enter again"
+        );
+        // A thread opens: its replies and its private result enter, the first reply 8px (its own rise) plus 6px (the log's)
+        // down on the first frame, and in place once they are over.
+        let here = vcx.update(|window, _| wid(window));
+        let ctx = vcx
+            .update(|_, cx| current(here, cx))
+            .expect("the shell gave the threads area its context");
+        vcx.update(|_, cx| open_thread(text, root, &ctx, cx));
+        frame(vcx);
+        let first = vcx
+            .debug_bounds("thread-row-t1")
+            .expect("the reply is drawn");
+        wait(vcx, 3000);
+        let settled = vcx
+            .debug_bounds("thread-row-t1")
+            .expect("the reply is drawn");
+        let lag = f32::from(first.origin.y - settled.origin.y);
+        assert!(
+            (lag - 14.0).abs() < 1.5,
+            "the first reply starts 14px down (rise 8, log 6) and rests in place: {lag}"
+        );
+        let pane = vcx
+            .update(|_, cx| per_window(here, cx).pane.clone())
+            .expect("the pane");
+        let t = now(vcx);
+        assert!(pane.read_with(vcx, |p, _| p.log_of("private-0", t).is_some()));
+        // Closing the pane unmounts its log.
+        assert!(!pane.read_with(vcx, |p, _| p.log_remounts(root)));
+        vcx.update(close_thread);
+        frame(vcx);
+        assert!(
+            pane.read_with(vcx, |p, _| p.log_remounts(root)),
+            "closing the pane unmounts its log"
+        );
+    }
 }

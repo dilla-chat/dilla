@@ -119,6 +119,9 @@ fn conversation(open: OpenThread) -> Conversation {
 /// Emitted when the thread composer sends: the thread's root and the text.
 pub struct Sent(pub MessageId, pub String);
 
+/// The thread pane's scope for what its rows remember of their entrances (`motion::scope`).
+pub const THREAD_SCOPE: &str = "thread-log";
+
 pub struct PaneView {
     /// The window this pane is drawn in: it reads and sends through that window's shell view only.
     window: gpui::WindowId,
@@ -157,6 +160,22 @@ impl PaneView {
             log: Default::default(),
             _subscriptions: vec![sub],
         }
+    }
+
+    /// Whether drawing the pane's log for thread `root` mounts it anew (tests).
+    #[cfg(test)]
+    pub(super) fn log_remounts(&self, root: MessageId) -> bool {
+        self.log.remounts(root)
+    }
+
+    /// How long the log's row `key` has been entering at `now`, and its delay (tests).
+    #[cfg(test)]
+    pub(super) fn log_of(
+        &self,
+        key: &str,
+        now: std::time::Instant,
+    ) -> Option<(std::time::Duration, std::time::Duration)> {
+        self.log.of(key, now)
     }
 
     /// The composer's field (tests drive it).
@@ -567,8 +586,9 @@ impl Render for PaneView {
         // Task 36c: the pane's log mounts per thread (Shell.tsx:2257 `key={rootMsgId}`) and fades in with a 6px rise
         // (MessageLog.css:3-4); its replies rise in (`d-up`), the first paint's last 20 staggered. What lives in the rows
         // (cards, chips, voters) enters again with a new mount.
+        dilla_desktop_ui::motion::set_scope(cx, THREAD_SCOPE);
         if self.log.remounts(open.root) {
-            dilla_desktop_ui::motion::remount_log(cx);
+            dilla_desktop_ui::motion::remount_log(cx, THREAD_SCOPE);
         }
         let mut replies: Vec<_> = data
             .map(|d| {

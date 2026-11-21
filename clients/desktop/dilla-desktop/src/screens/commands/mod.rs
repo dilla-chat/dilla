@@ -400,7 +400,7 @@ fn poll_card_drawn(
     width: f32,
     lead: f32,
     _window: &mut Window,
-    _cx: &mut App,
+    cx: &mut App,
 ) -> Option<Extra> {
     // PollCard.tsx: only a Bot's unedited post whose verified record this device holds.
     // A post deleted while its read was under way draws nothing either (`poll_claim`'s gate).
@@ -489,6 +489,7 @@ fn poll_card_drawn(
         },
         width,
     )
+    .scope(dilla_desktop_ui::motion::scope(cx))
     .can_vote(!poll.closed && ctx.client.is_some())
     .can_close(mine);
     Some(Extra {

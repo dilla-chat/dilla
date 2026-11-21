@@ -464,8 +464,9 @@ impl Session {
     fn frame(&mut self) {
         // Every window the driver draws is still, not only at a shot: a click made while an entrance runs would hit a row that
         // is still moving (the account's own motion setting, applied when its state moves, would turn motion back on).
-        self.cx.update(|cx| cx.set_reduce_motion(true));
         self.cx.run_until_parked();
+        // After the parked work: the account's motion setting is applied when its state moves, which that work may do.
+        self.cx.update(|cx| cx.set_reduce_motion(true));
         with_bounds(HashMap::clear);
         TEXT.lock().expect("text registry").clear();
         FOCUS.with(|f| f.borrow_mut().clear());

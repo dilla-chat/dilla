@@ -402,7 +402,10 @@ pub fn attachment_cards(
                 // (Remembered by `motion::entered_age`, which bounds what it keeps and forgets it when the log mounts anew.)
                 let entered = dilla_desktop_ui::motion::entered_age(
                     cx,
-                    format!("file-card-{id}"),
+                    dilla_desktop_ui::motion::scoped(
+                        dilla_desktop_ui::motion::scope(cx),
+                        &format!("file-card-{id}"),
+                    ),
                     dilla_desktop_ui::tokens::motion::SLOW,
                 );
                 if entered.is_some() {
