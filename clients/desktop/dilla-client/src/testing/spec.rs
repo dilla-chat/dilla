@@ -109,6 +109,15 @@ pub enum Step {
     },
     /// Waits until the screen is idle (no pending work, no animation, fonts loaded).
     Settle,
+    /// A file of `bytes` zero bytes named `name` is attached to the open conversation's composer: the web shooter's
+    /// `setInputFiles` on the hidden file input `web`; the app's counterpart is the automation command `attach <name> <bytes>`
+    /// (the tray's card and the toast a file over the cap gets, `Shell::simulate_attach`). `name` has no whitespace or path
+    /// separator.
+    Attach {
+        web: String,
+        name: String,
+        bytes: u64,
+    },
     /// The device loses its network (the web shooter's `context.setOffline(true)`, then settle); the GPUI side's counterpart
     /// is the automation command `connection reconnecting`. The screen then shows the link banner ("Offline. Reconnecting…").
     Offline,
@@ -772,6 +781,20 @@ impl ScreenFixture {
                 }
                 Step::Key { chord } => validate_chord(chord)
                     .map_err(|e| SpecError::Invalid(format!("step {n}: {e}")))?,
+                Step::Attach { web, name, bytes } => {
+                    if empty(web) || *bytes == 0 {
+                        return invalid(format!(
+                            "step {n}: `web` and a non-zero `bytes` are both required"
+                        ));
+                    }
+                    if empty(name)
+                        || name.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\')
+                    {
+                        return invalid(format!(
+                            "step {n}: `name` is one word with no path separator"
+                        ));
+                    }
+                }
                 Step::Settle | Step::Offline => {}
             }
         }
@@ -1407,6 +1430,36 @@ mod tests {
     }
 
     /// Task 34: the `offline` step parses with no fields.
+    #[test]
+    fn the_attach_step_parses_and_is_validated() {
+        let with = |step: &str| {
+            MINIMAL.replace(
+                r#""steps": [{"do": "key", "chord": "ctrl-k"}, {"do": "settle"}]"#,
+                &format!(r#""steps": [{step}]"#),
+            )
+        };
+        let ok = ScreenFixture::parse(&with(
+            r#"{"do": "attach", "web": "css=input[type=file]", "name": "big.bin", "bytes": 26214401}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            ok.steps,
+            [Step::Attach {
+                web: "css=input[type=file]".into(),
+                name: "big.bin".into(),
+                bytes: 26_214_401
+            }]
+        );
+        for bad in [
+            r#"{"do": "attach", "web": "css=input", "name": "a b", "bytes": 5}"#,
+            r#"{"do": "attach", "web": "css=input", "name": "../x", "bytes": 5}"#,
+            r#"{"do": "attach", "web": "css=input", "name": "x", "bytes": 0}"#,
+            r#"{"do": "attach", "web": " ", "name": "x", "bytes": 5}"#,
+        ] {
+            assert!(ScreenFixture::parse(&with(bad)).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn the_offline_step_parses() {
         let with = MINIMAL.replace(

@@ -121,3 +121,17 @@ fn the_every_window_guard_reads_the_argument() {
     assert!(every_window_calls("x/src/lib.rs", allowed).is_empty());
     assert_eq!(every_window_calls("x/src/other.rs", allowed).len(), 1);
 }
+
+/// Task 42: a file over 25 MB picked for the composer: the toast ("Files over 25 MB can't be sent") over the composer's foot
+/// and the tray's refused card ("Over 25 MB") over the box, as the web shows them (Attachments.tsx `attachFiles`). The web's
+/// clock is frozen, so its toast stays on screen; the app's stays for the frame's wait.
+#[cfg(feature = "automation")]
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_app_toast() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures/app/toast.json");
+    dilla_parity::screen::assert_screen(&fixture).unwrap();
+}

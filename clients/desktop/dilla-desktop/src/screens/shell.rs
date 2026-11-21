@@ -305,6 +305,53 @@ impl ShellView {
         Ok(())
     }
 
+    /// Tests (the automation command `attach <name> <bytes>`): a file of `bytes` bytes joins the open channel's tray as the
+    /// pick of a person would in a window with no client: a file over the cap (attachments `ATTACHMENT_CAP`) is refused in the
+    /// tray (its card says "Over 25 MB") and raises the toast, as `attachments::ui::attach` does with a client.
+    #[cfg(feature = "test-hooks")]
+    pub fn simulate_attach(
+        &mut self,
+        window: gpui::WindowId,
+        name: &str,
+        bytes: u64,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        use dilla_client::state::attachments::{TrayItem, TrayPhase};
+        let channel = self
+            .channel
+            .ok_or_else(|| "no channel is open".to_owned())?;
+        let over = crate::screens::attachments::over_the_cap(bytes);
+        let mut state = (*self.state).clone();
+        let tray = state.attachments.trays.entry(channel).or_default();
+        let id = format!("fixture-{}", tray.len() + 1);
+        tray.push(TrayItem {
+            id,
+            name: name.to_owned(),
+            size: bytes,
+            mime: "application/octet-stream".to_owned(),
+            image: false,
+            phase: if over {
+                TrayPhase::Failed
+            } else {
+                TrayPhase::Ready
+            },
+            reason: if over {
+                "E_ATTACHMENT_TOO_LARGE".to_owned()
+            } else {
+                String::new()
+            },
+        });
+        self.set_state(Arc::new(state), cx);
+        if over {
+            dilla_desktop_ui::components::toast::show_toast_in(
+                Some(window),
+                crate::strings::t("shell.tray.overLimitToast"),
+                cx,
+            );
+        }
+        Ok(())
+    }
+
     pub fn new(
         state: Arc<AppState>,
         client: Option<Rc<Client>>,

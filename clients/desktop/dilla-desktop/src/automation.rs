@@ -916,6 +916,31 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
                 Err(e) => format!("err {e}"),
             }
         }
+        (Some("attach"), Some(name), Some(bytes)) => {
+            let window = session.window();
+            let done = session
+                .cx
+                .update_window(window, |root, w: &mut Window, cx: &mut App| {
+                    let app = root
+                        .downcast::<crate::app::AppView>()
+                        .map_err(|_| "the window is not the app's".to_owned())?;
+                    let shell = app
+                        .read(cx)
+                        .shell()
+                        .ok_or_else(|| "the window shows no shell".to_owned())?;
+                    let bytes: u64 = bytes.parse().map_err(|_| "bytes is a number".to_owned())?;
+                    let window_id = w.window_handle().window_id();
+                    shell.update(cx, |shell, cx| {
+                        shell.simulate_attach(window_id, name, bytes, cx)
+                    })
+                });
+            session.frame();
+            match done {
+                Ok(Ok(())) => "ok".to_owned(),
+                Ok(Err(why)) => format!("err {why}"),
+                Err(e) => format!("err {e}"),
+            }
+        }
         (Some("connection"), Some(status), None) => {
             let window = session.window();
             let done = session

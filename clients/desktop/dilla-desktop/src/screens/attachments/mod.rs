@@ -431,6 +431,12 @@ pub fn attachment_cards(
     Some(Extra { element, height })
 }
 
+/// Whether a file of `size` bytes is over the cap (Attachments.tsx: `file.size > BROWSER_ATTACHMENT_CAP`, 25 MB): the tray
+/// refuses its card ("Over 25 MB") and a toast says so.
+pub fn over_the_cap(size: u64) -> bool {
+    size > ATTACHMENT_CAP
+}
+
 /// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar).
 pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let channel = ctx.channel?;
@@ -1119,6 +1125,12 @@ pub fn tray_busy(ctx: &SlotCx) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_file_is_over_the_cap_only_past_25_mb() {
+        assert!(!over_the_cap(25 * 1024 * 1024));
+        assert!(over_the_cap(25 * 1024 * 1024 + 1));
+    }
+
     use super::*;
 
     fn fixed(width: f32, height: f32) -> Card {

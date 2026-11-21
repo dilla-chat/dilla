@@ -266,6 +266,12 @@ export async function replayStep(page, step, state, context) {
       await page.evaluate(() => document.fonts.ready);
       await page.waitForTimeout(500);
       return;
+    case 'attach': {
+      // The composer's hidden file input takes the file as a pick does (Attachments.tsx `attachFiles`: a file over the cap
+      // raises the toast and its tray card is refused).
+      await page.locator(step.web).first().setInputFiles({ name: step.name, mimeType: 'application/octet-stream', buffer: Buffer.alloc(step.bytes) });
+      return;
+    }
     case 'offline':
       // The browser loses its network: the page's `offline` event makes the shell's link offline at once (Shell.tsx "Walk
       // 7"), and its banner reads "Offline. Reconnecting…". Then settle, as a `settle` step does.

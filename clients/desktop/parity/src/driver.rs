@@ -228,6 +228,12 @@ impl Driver {
         self.expect_ok(&format!("click {id}"));
     }
 
+    /// Attaches a file of `bytes` bytes named `name` to the open conversation's composer (the tray's card and the toast a
+    /// file over the cap gets): the `attach` step's GPUI side.
+    pub fn attach(&mut self, name: &str, bytes: u64) {
+        self.expect_ok(&format!("attach {name} {bytes}"));
+    }
+
     /// Moves the pointer to the centre of the element with GPUI element id `id`.
     pub fn hover(&mut self, id: &str) {
         self.expect_ok(&format!("hover {id}"));
