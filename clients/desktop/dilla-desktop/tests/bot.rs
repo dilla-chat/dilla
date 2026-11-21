@@ -153,6 +153,23 @@ fn parity_commands_private_result() {
     dilla_parity::screen::assert_screen(&fixture("commands/private-result.json")).unwrap();
 }
 
+/// Task 42: `/role add ` picked with Tab: the command's bar over the box, its chips in place of the field. Ignored: a measured
+/// gap that is the web's state, not the app's. The web's frame never gets its members: typing in a Bot world leaves its members
+/// list on "Loading members..." for good in the shooter's browser (45 s waited), so its user field has no suggestion list, which
+/// the app draws from the members it holds (chrome 0.86 % against the shared 0.2 %; the bar's place and the dim send are fixed).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+#[cfg_attr(
+    any(target_os = "linux", target_os = "macos"),
+    ignore = "the web frame never loads its members, so it has no suggestion list (Task 42 report)"
+)]
+fn parity_commands_picker_chip() {
+    dilla_parity::screen::assert_screen(&fixture("commands/picker-chip.json")).unwrap();
+}
+
 /// `/modlog` (CommandHost.tsx:411, Decision D1): the moderation history opens in a dialog over the channel, the row under
 /// the log saying so.
 #[test]
