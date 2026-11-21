@@ -169,9 +169,11 @@ in the references (the same `reduce_motion` as above): full meter bars, a still 
 that stays on, the plain 2px `--ok` ring, and MessageRow.css's own reduced form of the flash (the tint plus an inset 2px
 `--accent` edge). Accepted differences from the web's animation, none visible in a reference:
 
-- The caret changes at the first frame after its 49% / 50% stops, up to 100 ms late (it asks for frames at 10 per second,
-  not at every display frame); the other indicators repaint at 30 frames a second.
-- The sweep's `opacity` fade-in on `.d-composer__sweep` (a transition, `--duration-turn`) is not drawn: the strip is there
-  or it is not.
-- `d-row-flash` replaces the row's background while it runs, as CSS does; a hover on the row during the flash does not show
-  until the flash is over.
+- The caret is on until its 49% stop and off from there, on a timer at each stop; the keyframe's 10 ms `ease` fall between 49%
+  and 50% (shorter than a frame) is a step.
+- The speaking meter and the typing sweep fade as the web's `opacity` transitions do (`--duration-fast`, `--duration-turn`,
+  `ease`); one difference: the fade-out of the sweep is drawn at rest, centred, as the web's (its animation is removed when
+  typing stops), and the meter's keeps bouncing while it fades.
+- `d-row-flash`'s tint is a layer in the row, under its content, standing in for the row's background (the row has no fill of
+  its own and no hover style while it flashes, as a CSS animation beats both). A focused flashing row under reduced motion
+  loses its focus ring to the flash's edge, as the CSS's `box-shadow` replaces the other shadows.

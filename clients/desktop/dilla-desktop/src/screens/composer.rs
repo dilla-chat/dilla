@@ -118,6 +118,9 @@ pub struct Composer {
     used: usize,
     save: Option<Task<()>>,
     tick: Option<Task<()>>,
+    /// Whether the typing sweep was drawn when the field last drew, and the timer that ends its fade-out.
+    sweep_on: bool,
+    sweep_out: Option<Task<()>>,
     /// The window the field is drawn in ([`Composer::let_go`] empties it there).
     window: gpui::AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
@@ -218,6 +221,8 @@ impl Composer {
             used: 0,
             save: None,
             tick: None,
+            sweep_on: false,
+            sweep_out: None,
             window: window.window_handle(),
             _subscriptions: vec![sub],
         }
@@ -659,6 +664,43 @@ impl Composer {
         false
     }
 
+    /// The box's top strip (Composer.css `__sweep`, `opacity: 0` with `transition: opacity var(--duration-turn)`): while
+    /// someone types it fades in and slides; when they stop it fades out at rest for the length of the transition, then
+    /// goes. An idle strip is empty and schedules nothing.
+    fn sweep_strip(&mut self, typing: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use dilla_desktop_ui::motion;
+        let turn = dilla_desktop_ui::tokens::motion::TURN;
+        if typing {
+            self.sweep_on = true;
+            self.sweep_out = None;
+            return motion::transition_in(
+                div().w_full().child(motion::sweep("composer-sweep", cx)),
+                "composer-sweep-in",
+                turn,
+                cx,
+            );
+        }
+        if std::mem::take(&mut self.sweep_on) && !cx.reduce_motion() {
+            self.sweep_out = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+                cx.background_executor().timer(turn).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.sweep_out = None;
+                    cx.notify();
+                });
+            }));
+        }
+        if self.sweep_out.is_some() {
+            motion::transition_out(
+                div().w_full().child(motion::sweep_still()),
+                "composer-sweep-out",
+                turn,
+                cx,
+            )
+        } else {
+            div().h(len(2.)).into_any_element()
+        }
+    }
+
     /// Re-draws once a second while slow mode counts down.
     fn arm_tick(&mut self, waiting: bool, cx: &mut Context<Self>) {
         if !waiting {
@@ -875,6 +917,7 @@ impl Render for Composer {
         let placeholder = format!("Message {}", self.target);
         let sendable = (!empty || chips.is_some()) && blocked.is_none();
         let field = div()
+        let sweep = self.sweep_strip(typing_text.is_some(), cx);
             .relative()
             .flex_1()
             .min_w_0()
@@ -1094,12 +1137,8 @@ impl Render for Composer {
             .flex_col()
             // The 2px sweep (Composer.css `__sweep`): it slides only while someone else types, and an idle strip is
             // empty and schedules no frames.
-            .child(if typing_text.is_some() {
-                dilla_desktop_ui::motion::sweep("composer-sweep", cx)
-            } else {
-                div().h(len(2.)).into_any_element()
-            })
-            // The reply bar and the attachment tray (11, 12): no gap, so an empty slot takes no height.
+            .child(sweep)
+            // What an area puts over the field (9): no gap, so an empty slot takes no height.
             .child(leading)
             .child(row)
             .child(foot);

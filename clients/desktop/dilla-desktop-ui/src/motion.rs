@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, ElementId, Hsla, IntoElement,
-    ParentElement, Pixels, Styled, div, linear_color_stop, linear_gradient, point, px, relative,
+    ParentElement, Pixels, Styled, Window, div, linear_color_stop, linear_gradient, point, px,
+    relative,
 };
 
 use crate::icon::Icon;
@@ -154,10 +155,6 @@ pub fn flash_at(elapsed: Duration, run: Duration) -> f32 {
 /// smooth at 30 frames a second, like the equaliser.
 pub const INDICATOR_FPS: f32 = 30.0;
 
-/// How often the brand caret asks for a frame. It changes twice a period, so a coarse cap is exact enough: the blink
-/// lands within a tenth of a second of the CSS one, at a third of the equaliser's repaints.
-pub const CARET_FPS: f32 = 10.0;
-
 /// How often the equaliser repaints while it bounces: the 520ms beat reads as smooth at 30 frames a second, half the
 /// cost of a repaint on every display frame.
 pub const EQUALISER_FPS: f32 = 30.0;
@@ -222,62 +219,191 @@ where
 /// it only while someone types: a drawn sweep keeps asking for frames, at [`INDICATOR_FPS`]; with reduced motion the
 /// gradient stands still, as a zero-duration CSS animation leaves it.
 pub fn sweep(id: impl Into<ElementId>, cx: &App) -> AnyElement {
-    let clear: Hsla = color::ACCENT.opacity(0.0);
-    let band = move |offset: f32| {
-        div()
-            .absolute()
-            .top(px(0.0))
-            .left(relative(offset))
-            .w_full()
-            .h_full()
-            .flex()
-            .child(div().w(relative(0.5)).h_full().bg(linear_gradient(
-                90.0,
-                linear_color_stop(clear, 0.0),
-                linear_color_stop(color::ACCENT, 1.0),
-            )))
-            .child(div().w(relative(0.5)).h_full().bg(linear_gradient(
-                90.0,
-                linear_color_stop(color::ACCENT, 0.0),
-                linear_color_stop(clear, 1.0),
-            )))
-    };
-    let strip = move |offset: f32| {
-        div()
-            .relative()
-            .w_full()
-            .h(px(2.0))
-            .overflow_hidden()
-            .child(band(offset))
-    };
     if cx.reduce_motion() {
-        return strip(0.0).into_any_element();
+        return sweep_still();
     }
     let run = motion::FLASH;
-    strip(-1.0)
+    sweep_strip(-1.0)
         .with_animation(
             id,
             Animation::new(run).repeat().with_max_fps(INDICATOR_FPS),
-            move |_, delta| strip(sweep_at(run.mul_f32(delta), run)),
+            move |_, delta| sweep_strip(sweep_at(run.mul_f32(delta), run)),
         )
         .into_any_element()
 }
 
-/// `el` blinking as the brand caret does (`d-caret` on `--duration-caret`, infinite). Always drawn where the caller draws
-/// it, so it asks for frames, at [`CARET_FPS`], for as long as its window is visible. With reduced motion it stays on.
-pub fn blink<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
+/// The sweep's strip with its gradient `offset` of its own width along (-1 to 1).
+fn sweep_strip(offset: f32) -> gpui::Div {
+    let clear: Hsla = color::ACCENT.opacity(0.0);
+    let band = div()
+        .absolute()
+        .top(px(0.0))
+        .left(relative(offset))
+        .w_full()
+        .h_full()
+        .flex()
+        .child(div().w(relative(0.5)).h_full().bg(linear_gradient(
+            90.0,
+            linear_color_stop(clear, 0.0),
+            linear_color_stop(color::ACCENT, 1.0),
+        )))
+        .child(div().w(relative(0.5)).h_full().bg(linear_gradient(
+            90.0,
+            linear_color_stop(color::ACCENT, 0.0),
+            linear_color_stop(clear, 1.0),
+        )));
+    div()
+        .relative()
+        .w_full()
+        .h(px(2.0))
+        .overflow_hidden()
+        .child(band)
+}
+
+/// The sweep's strip at rest, its gradient centred: what the web's strip shows once its animation is removed (the reduced
+/// form, and the strip as it fades out when typing stops).
+pub fn sweep_still() -> AnyElement {
+    sweep_strip(0.0).into_any_element()
+}
+
+/// A CSS `transition` of opacity on the default curve (`ease`), `elapsed` into its run of `run`: 0 to 1. A run of zero is
+/// over at once.
+pub fn transition_at(elapsed: Duration, run: Duration) -> f32 {
+    if run.is_zero() {
+        return 1.0;
+    }
+    cubic_bezier(EASE, elapsed.as_secs_f32() / run.as_secs_f32())
+}
+
+/// `el` fading in as an `opacity: 0` to `1` transition over `run` does (`.d-composer__sweep` on `--duration-turn`,
+/// `.d-call-tile__meter` on `--duration-fast`), once for as long as it stays drawn at `id`'s place. Reduced motion zeroes
+/// the durations: drawn as it is.
+pub fn transition_in<E>(el: E, id: impl Into<ElementId>, run: Duration, cx: &App) -> AnyElement
 where
     E: Styled + IntoElement + 'static,
 {
     if cx.reduce_motion() {
         return el.into_any_element();
     }
-    let period = motion::CARET;
     el.with_animation(
         id,
-        Animation::new(period).repeat().with_max_fps(CARET_FPS),
-        move |el, delta| el.opacity(caret_at(period.mul_f32(delta), period)),
+        Animation::new(run).with_max_fps(INDICATOR_FPS),
+        move |el, delta| {
+            if delta >= 1.0 {
+                el
+            } else {
+                el.opacity(transition_at(run.mul_f32(delta), run))
+            }
+        },
     )
+    .into_any_element()
+}
+
+/// `el` fading out as an `opacity: 1` to `0` transition over `run` does, once, and then held clear: the caller draws it for
+/// `run` after the thing it shows has gone, then stops drawing it. With reduced motion it is not drawn at all.
+pub fn transition_out<E>(el: E, id: impl Into<ElementId>, run: Duration, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return div().into_any_element();
+    }
+    el.with_animation(
+        id,
+        Animation::new(run).with_max_fps(INDICATOR_FPS),
+        move |el, delta| el.opacity(1.0 - transition_at(run.mul_f32(delta), run)),
+    )
+    .into_any_element()
+}
+
+/// Whether the caret is on `elapsed` into a period of `period`: `d-caret` is on until its 49% stop and off from there (its
+/// fall to 0 over the next 1%, 10ms of a 1s period, is shorter than a frame). A period of zero is on.
+pub fn caret_on(elapsed: Duration, period: Duration) -> bool {
+    period.is_zero() || (elapsed.as_nanos() % period.as_nanos()) < period.as_nanos() * 49 / 100
+}
+
+/// How long after `elapsed` the caret next changes: at its 49% stop, or at the end of the period, when it snaps back on.
+pub fn caret_next_stop(elapsed: Duration, period: Duration) -> Duration {
+    if period.is_zero() {
+        return Duration::MAX;
+    }
+    let at = Duration::from_nanos((elapsed.as_nanos() % period.as_nanos()) as u64);
+    let stop = period * 49 / 100;
+    if at < stop { stop - at } else { period - at }
+}
+
+/// The start of the caret's clock, shared by every caret in every window so that they blink in phase (GPUI's own shared
+/// animation clock, `synced_animation_epoch`, is private to it, so this is the app's own, set when the first caret draws).
+struct CaretEpoch(std::time::Instant);
+impl gpui::Global for CaretEpoch {}
+
+fn caret_elapsed(cx: &App) -> Duration {
+    let now = cx.background_executor().now();
+    cx.try_global::<CaretEpoch>()
+        .map_or(Duration::ZERO, |e| now.saturating_duration_since(e.0))
+}
+
+/// What keeps a caret blinking: whether it was drawn since the timer last fired, and whether a timer runs.
+struct Blink {
+    drawn: bool,
+    running: bool,
+}
+
+/// `el` blinking as the brand caret does (`d-caret` on `--duration-caret`, infinite), exactly: it is drawn on or off by the
+/// shared clock, and one timer wakes the view at each of the keyframe's stops (49% and 100% of the period): two renders a
+/// second, not a frame loop. The timer runs only while the caret is drawn: each wake needs a draw since the last, so a
+/// window that is hidden or a top bar that is gone stops it, and the next draw starts it again. With reduced motion the
+/// caret stays on and nothing is scheduled. `id` keys the caret's state at its place; `window` is the one it is drawn in.
+pub fn blink<E>(el: E, id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    if !cx.has_global::<CaretEpoch>() {
+        let now = cx.background_executor().now();
+        cx.set_global(CaretEpoch(now));
+    }
+    let period = motion::CARET;
+    let state = window.use_keyed_state(id, cx, |_, _| Blink {
+        drawn: false,
+        running: false,
+    });
+    let start = state.update(cx, |b, _| {
+        b.drawn = true;
+        !std::mem::replace(&mut b.running, true)
+    });
+    if start {
+        let weak = state.downgrade();
+        cx.spawn(async move |cx| {
+            loop {
+                let wait = cx.update(|cx| caret_next_stop(caret_elapsed(cx), period));
+                cx.background_executor()
+                    .timer(wait.max(Duration::from_millis(1)))
+                    .await;
+                let go = weak.update(cx, |b, cx| {
+                    let go = std::mem::replace(&mut b.drawn, false);
+                    if go {
+                        // The entity is observed by the view that drew the caret: this redraws it.
+                        cx.notify();
+                    } else {
+                        b.running = false;
+                    }
+                    go
+                });
+                if !go.unwrap_or(false) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+    el.opacity(if caret_on(caret_elapsed(cx), period) {
+        1.0
+    } else {
+        0.0
+    })
     .into_any_element()
 }
 
@@ -336,41 +462,42 @@ pub fn ring_wave(id: impl Into<ElementId>, size: f32, radius: Pixels, cx: &App) 
         .into_any_element()
 }
 
-/// `el` flashing the accent tint as a jump-to row does (`d-row-flash` on `--duration-flash`, once): the row's background is
-/// `--accent-flash` for 30% of the run, then fades to clear, and the row is as it was after. It runs once for as long as
-/// the element stays drawn at `id`'s place, so give a new jump a new id. With reduced motion (MessageRow.css's own
-/// `prefers-reduced-motion` form) the row keeps the tint and gains an inset 2px `--accent` edge on its left, added to the
-/// shadows it has; the caller stops calling this when the flash is over, which is when [`motion::FLASH`] has passed.
-pub fn flash<E>(mut el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
+/// `el` flashing the accent tint as a jump-to row does (`d-row-flash` on `--duration-flash`, once): the tint is
+/// `--accent-flash` for 30% of the run, then fades to clear, and the row is as it was after. The tint is a layer of its
+/// own, the element's first child (call this before adding the others, so the content draws over it, as it does over a
+/// background), so the element's own id path and its children's state do not change when the flash starts and ends. It
+/// stands in for the row's background while it runs: the caller gives a flashing row no fill of its own and no hover style,
+/// as a CSS animation beats `:hover` and the row's own background. It runs once for as long as the layer stays drawn at
+/// `id`'s place, so give a new jump a new id. With reduced motion (MessageRow.css's own `prefers-reduced-motion` form) the
+/// element takes the tint and an inset 2px `--accent` edge on its left, which replace its shadows as the CSS's
+/// `box-shadow` does; the caller stops flashing when [`motion::FLASH`] has passed.
+pub fn flash<E>(el: E, id: impl Into<ElementId>, cx: &App) -> E
 where
-    E: Styled + IntoElement + 'static,
+    E: Styled + ParentElement,
 {
     if cx.reduce_motion() {
-        let mut shadows = el.style().box_shadow.clone().unwrap_or_default();
-        shadows.push(BoxShadow {
+        return el.bg(color::ACCENT_FLASH).shadow(vec![BoxShadow {
             color: color::ACCENT,
             offset: point(px(2.0), px(0.0)),
             blur_radius: px(0.0),
             spread_radius: px(0.0),
             inset: true,
-        });
-        return el
-            .bg(color::ACCENT_FLASH)
-            .shadow(shadows)
-            .into_any_element();
+        }]);
     }
     let run = motion::FLASH;
-    el.with_animation(
+    let layer = |alpha: f32| {
+        div()
+            .absolute()
+            .top(px(0.0))
+            .left(px(0.0))
+            .size_full()
+            .bg(color::ACCENT_FLASH.opacity(alpha))
+    };
+    el.child(layer(1.0).with_animation(
         id,
         Animation::new(run).with_max_fps(INDICATOR_FPS),
-        move |el, delta| {
-            if delta >= 1.0 {
-                return el;
-            }
-            el.bg(color::ACCENT_FLASH.opacity(flash_at(run.mul_f32(delta), run)))
-        },
-    )
-    .into_any_element()
+        move |_, delta| layer(flash_at(run.mul_f32(delta), run)),
+    ))
 }
 
 #[cfg(test)]
@@ -561,6 +688,32 @@ mod tests {
         assert_eq!(caret_at(p / 2, Duration::ZERO), 1.0, "reduced: on");
     }
 
+    /// The caret's timer wakes at the 49% stop and at the end of the period, on the shared clock, and is on until the first.
+    #[test]
+    fn the_caret_changes_at_forty_nine_percent_and_at_the_period() {
+        let p = motion::CARET;
+        let ms = Duration::from_millis;
+        assert!(caret_on(Duration::ZERO, p) && caret_on(ms(489), p));
+        assert!(!caret_on(ms(490), p) && !caret_on(ms(999), p));
+        assert!(caret_on(ms(1000), p), "on again at the period");
+        assert_eq!(caret_next_stop(Duration::ZERO, p), ms(490));
+        assert_eq!(caret_next_stop(ms(300), p), ms(190));
+        assert_eq!(caret_next_stop(ms(490), p), ms(510));
+        assert_eq!(caret_next_stop(ms(999), p), ms(1));
+        assert_eq!(caret_next_stop(ms(1300), p), ms(190), "the next period");
+        assert!(caret_on(ms(5), Duration::ZERO), "reduced: on");
+    }
+
+    /// An opacity transition runs 0 to 1 on `ease`, and is over at once with a zero duration.
+    #[test]
+    fn a_transition_runs_from_clear_to_opaque_on_ease() {
+        let run = motion::TURN;
+        assert!(near(transition_at(Duration::ZERO, run), 0.0));
+        assert!(near(transition_at(run / 2, run), 0.8024));
+        assert!(near(transition_at(run, run), 1.0));
+        assert_eq!(transition_at(run / 2, Duration::ZERO), 1.0);
+    }
+
     /// `d-ring`: 0.6 and unscaled at the start, on `--ease-out` to nothing at 1.5 times, and again.
     #[test]
     fn the_ring_wave_grows_to_one_and_a_half_while_it_fades_from_six_tenths() {
@@ -621,18 +774,6 @@ mod tests {
         );
     }
 
-    /// The caret asks for frames at its coarse cap, and none under reduced motion.
-    #[gpui::test]
-    fn the_caret_repaints_at_its_cap(cx: &mut gpui::TestAppContext) {
-        let drawn = |cx: &App| blink(div().w(px(6.0)).h(px(12.0)), "caret", cx);
-        let blinking = renders_over(cx, false, 1000, drawn);
-        assert!(
-            (5..=15).contains(&blinking),
-            "{blinking} repaints in a second"
-        );
-        assert_eq!(renders_over(cx, true, 1000, drawn), 0, "reduced motion");
-    }
-
     /// A pending result's spinner repaints at its cap; a settled result draws a plain icon and schedules nothing.
     #[gpui::test]
     fn the_spinner_repaints_only_while_pending(cx: &mut gpui::TestAppContext) {
@@ -679,7 +820,7 @@ mod tests {
     /// repaints nothing.
     #[gpui::test]
     fn a_flash_runs_once_per_jump(cx: &mut gpui::TestAppContext) {
-        let flashing = |cx: &App| flash(div(), "flash", cx);
+        let flashing = |cx: &App| flash(div().relative(), "flash", cx).into_any_element();
         let during = renders_over(cx, false, 1600, flashing);
         assert!(during > 0, "the flash repaints while it fades");
         let (host, vcx) = cx.add_window_view(|_, _| Host {
@@ -706,5 +847,122 @@ mod tests {
             "a re-render after the flash asks for no more frames"
         );
         assert_eq!(renders_over(cx, true, 1600, flashing), 0, "reduced motion");
+    }
+
+    /// A view that draws a caret while `show`, and counts its renders.
+    struct CaretHost {
+        renders: usize,
+        show: bool,
+    }
+    impl gpui::Render for CaretHost {
+        fn render(
+            &mut self,
+            window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            self.renders += 1;
+            if self.show {
+                blink(div().w(px(6.0)).h(px(12.0)), "caret", window, cx)
+            } else {
+                div().into_any_element()
+            }
+        }
+    }
+
+    fn run_frames(vcx: &mut gpui::VisualTestContext, ms: u64) {
+        for _ in 0..ms / 10 {
+            vcx.executor().advance_clock(Duration::from_millis(10));
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+    }
+
+    /// The caret's timer notifies once at each stop, so a drawn caret costs two renders a second; the timer stops when
+    /// the caret is no longer drawn; reduced motion keeps the caret on and schedules nothing.
+    #[gpui::test]
+    fn the_caret_notifies_twice_a_second_and_only_while_drawn(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, vcx) = cx.add_window_view(|_, _| CaretHost {
+            renders: 0,
+            show: true,
+        });
+        vcx.run_until_parked();
+        let before = host.read_with(vcx, |h, _| h.renders);
+        run_frames(vcx, 4000);
+        let ticks = host.read_with(vcx, |h, _| h.renders) - before;
+        assert!(
+            (7..=9).contains(&ticks),
+            "{ticks} renders in four seconds (two a second)"
+        );
+        // No longer drawn: at most one more wake, then nothing.
+        host.update(vcx, |h, cx| {
+            h.show = false;
+            cx.notify();
+        });
+        run_frames(vcx, 1500);
+        let quiet = host.read_with(vcx, |h, _| h.renders);
+        run_frames(vcx, 3000);
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.renders),
+            quiet,
+            "an undrawn caret schedules nothing"
+        );
+
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (host, vcx) = cx.add_window_view(|_, _| CaretHost {
+            renders: 0,
+            show: true,
+        });
+        vcx.run_until_parked();
+        let before = host.read_with(vcx, |h, _| h.renders);
+        run_frames(vcx, 3000);
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.renders),
+            before,
+            "reduced motion"
+        );
+    }
+
+    /// The opacity transitions repaint while they run (150ms is 15 steps), never after, and reduced motion draws none.
+    #[gpui::test]
+    fn a_transition_repaints_only_while_it_runs(cx: &mut gpui::TestAppContext) {
+        let fading_in = |cx: &App| transition_in(div(), "in", motion::FAST, cx);
+        let during = renders_over(cx, false, 150, fading_in);
+        assert!(during > 0 && during <= 6, "{during} repaints while it runs");
+        assert!(
+            renders_over(cx, false, 1000, fading_in) <= 8,
+            "no frames once the transition is over"
+        );
+        let fading_out = |cx: &App| transition_out(div(), "out", motion::FAST, cx);
+        let during = renders_over(cx, false, 150, fading_out);
+        assert!(during > 0, "{during}");
+        assert_eq!(renders_over(cx, true, 500, fading_in), 0, "reduced motion");
+        assert_eq!(renders_over(cx, true, 500, fading_out), 0, "reduced motion");
+    }
+
+    /// With reduced motion the flash is MessageRow.css's own form: the tint and an inset 2px edge that replaces the
+    /// element's shadows; with motion it is a layer in the element and the element's own style stays as it was.
+    #[gpui::test]
+    fn the_flash_form_follows_reduced_motion(cx: &mut gpui::TestAppContext) {
+        let shadow = || {
+            vec![BoxShadow {
+                color: color::FG,
+                offset: point(px(0.0), px(0.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(2.0),
+                inset: true,
+            }]
+        };
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let mut reduced = cx.update(|cx| flash(div().shadow(shadow()), "f", cx));
+        let shadows = reduced.style().box_shadow.clone().unwrap();
+        assert_eq!(shadows.len(), 1, "the edge replaces the shadows");
+        assert!(shadows[0].inset && shadows[0].offset.x == px(2.0));
+        assert!(reduced.style().background.is_some());
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let mut moving = cx.update(|cx| flash(div().shadow(shadow()), "f", cx));
+        assert_eq!(moving.style().box_shadow.clone().unwrap(), shadow());
+        assert!(moving.style().background.is_none(), "the layer is the tint");
     }
 }

@@ -178,8 +178,9 @@ pub struct MessageUi {
     pub menu: Option<String>,
     /// The channel whose pins dialog is open.
     pub pins: Option<ChannelId>,
-    /// The row a jump flashes, and since when.
-    pub flash: Option<(String, Instant)>,
+    /// The row a jump flashes, and since when: the flash starts at the row's first draw (the log may need frames to bring
+    /// the row in), not at the jump.
+    pub flash: Option<(String, Option<Instant>)>,
     /// Which jump the flash is: a new jump to the same row starts its animation again.
     pub flash_seq: u64,
     /// A row the log still has to scroll into view (a jump from the pins or a reply).
@@ -262,11 +263,28 @@ pub fn handle(window: &Window, cx: &App) -> Option<Entity<MessageUi>> {
 }
 
 impl MessageUi {
-    /// Whether the row `key` is the flashing one.
+    /// Whether the row `key` is the flashing one (a jump to it that has not run its course).
     pub fn flashing(&self, key: &str) -> bool {
         self.flash
             .as_ref()
-            .is_some_and(|(k, at)| k == key && at.elapsed() < FLASH)
+            .is_some_and(|(k, at)| k == key && at.is_none_or(|at| at.elapsed() < FLASH))
+    }
+
+    /// The row `key` being drawn: which jump's flash it shows (`flash_seq`), if it is the flashing row and the flash is not
+    /// over. The flash starts at the row's first draw; one redraw at its end takes the tint off (reduced motion has no
+    /// frames of its own).
+    pub fn flash_of(&mut self, key: &str, cx: &mut Context<Self>) -> Option<u64> {
+        let (_, at) = self.flash.as_mut().filter(|(k, _)| k == key)?;
+        if at.is_none() {
+            *at = Some(Instant::now());
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(FLASH).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+        at.is_some_and(|at| at.elapsed() < FLASH)
+            .then_some(self.flash_seq)
     }
 
     /// Starts editing `item`: the field holds the text as `@names`, focused with the caret at its end.
@@ -609,15 +627,9 @@ impl MessageUi {
 
     /// A jump to `key`: the log scrolls it into view and the row flashes the accent tint for 1.4 s.
     pub fn jump_to(&mut self, key: String, cx: &mut Context<Self>) {
-        self.flash = Some((key.clone(), Instant::now()));
+        self.flash = Some((key.clone(), None));
         self.flash_seq += 1;
         self.jump = Some(key);
-        // The flash ends by itself: the log is drawn once more as it ends (reduced motion has no frames of its own).
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(FLASH).await;
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
-        .detach();
         cx.notify();
     }
 

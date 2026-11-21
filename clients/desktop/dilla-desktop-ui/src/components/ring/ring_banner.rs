@@ -42,8 +42,6 @@ const ACTIONS_GAP: f32 = 0.375 * REM;
 const BUTTON_H: f32 = 2.0 * REM;
 const BUTTON_MIN_W: f32 = 2.75 * REM;
 const BUTTON_PAD_X: f32 = 0.875 * REM;
-/// The caller's avatar (`AvatarSize::Row`) the wave rings.
-const GLYPH: f32 = 32.0;
 
 /// What a ring's action does: called with the ring's key.
 pub type OnRing = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
@@ -195,7 +193,7 @@ impl RenderOnce for RingBanner {
             if !ring.busy {
                 glyph = glyph.child(crate::motion::ring_wave(
                     SharedString::from(format!("ring-wave-{key}")),
-                    GLYPH,
+                    f32::from(AvatarSize::Row.metrics().0),
                     radius::AVATAR,
                     cx,
                 ));

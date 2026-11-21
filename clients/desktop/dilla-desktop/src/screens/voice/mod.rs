@@ -285,6 +285,10 @@ pub struct VoiceUi {
     told_roster: Option<(ChannelId, Vec<UserId>)>,
     /// A repaint loop runs for this window's live call ([`repaint_on_video`]).
     repainting: bool,
+    /// The tiles whose meter was drawn at the last draw, and when each meter that has gone quiet since began to fade out
+    /// (CallTile.css `__meter`'s `transition: opacity var(--duration-fast)`).
+    meter_on: std::collections::HashSet<DeviceId>,
+    meter_fade: HashMap<DeviceId, std::time::Instant>,
     /// The AFK page's Come back: this window's shell's way to a text channel the person can send in ([`set_come_back`]).
     come_back: Option<crate::screens::ring::OnComeBack>,
     /// The push-to-talk key (Task 19's `PttHold`): held, or let go less than the release delay ago.
@@ -2411,6 +2415,41 @@ pub fn shows_speaking(state: &AppState, channel: ChannelId, device: DeviceId) ->
     !media_hidden(state, channel) && state.voice.speaking.contains(&device)
 }
 
+/// The tiles whose meter is fading out at this draw: `speaking` is who is drawn speaking now; a tile that was and is not has
+/// its meter drawn for `--duration-fast` longer, falling to clear (the web's `opacity` transition), and one redraw takes it
+/// off. Nothing is drawn, and nothing scheduled, with reduced motion.
+fn settle_meters(
+    w: WindowId,
+    speaking: std::collections::HashSet<DeviceId>,
+    window: &Window,
+    cx: &mut App,
+) -> std::collections::HashSet<DeviceId> {
+    let fast = dilla_desktop_ui::tokens::motion::FAST;
+    let reduced = cx.reduce_motion();
+    let ui = ui_mut(w, cx);
+    let ended: Vec<DeviceId> = ui.meter_on.difference(&speaking).copied().collect();
+    for d in &speaking {
+        ui.meter_fade.remove(d);
+    }
+    ui.meter_on = speaking;
+    if !reduced {
+        for d in &ended {
+            ui.meter_fade.insert(*d, std::time::Instant::now());
+        }
+    }
+    ui.meter_fade.retain(|_, at| at.elapsed() < fast);
+    let fading = ui.meter_fade.keys().copied().collect();
+    if !reduced && !ended.is_empty() {
+        let view = window.current_view();
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(fast).await;
+            cx.update(|cx| cx.notify(view));
+        })
+        .detach();
+    }
+    fading
+}
+
 /// The grid's band (CallStage.css): up to two tiles 46% (at most 560px) wide, up to four 46% (420px), more 31.5%
 /// (340px).
 pub fn band(n: usize) -> (f32, f32) {
@@ -2461,6 +2500,15 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             exit_tile_fullscreen(w, cx);
         }
     }
+    let fading_meters = {
+        let state = ui_of(w, cx)?.state.clone();
+        let speaking = tiles(&state, channel.id)
+            .iter()
+            .filter(|k| !k.screen && shows_speaking(&state, channel.id, k.device))
+            .map(|k| k.device)
+            .collect();
+        settle_meters(w, speaking, window, cx)
+    };
     let ui = ui_of(w, cx)?;
     let bounds = ui.menu.bounds.clone();
     let state = ui.state.clone();
@@ -2492,7 +2540,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 (&images, &stats),
                 (values.as_ref(), &bounds),
                 silent(&state, k, &sound),
-                cx,
+                (&fading_meters, cx),
             )
         })
         .collect();
@@ -2508,7 +2556,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             (&images, &stats),
             (values.as_ref(), &bounds),
             silent(&state, &k, &sound),
-            cx,
+            (&fading_meters, cx),
         );
         let size = window.viewport_size();
         deferred(
@@ -2818,6 +2866,15 @@ fn state_word(
     )
 }
 
+/// A tile's live meter: the three `--ok` bars, bouncing (the equaliser's helper).
+fn meter(device: &DeviceId, cx: &App) -> gpui::Div {
+    div().flex_none().child(dilla_desktop_ui::motion::equaliser(
+        format!("voice-tile-meter-{}", device.hex()),
+        m::METER_H,
+        cx,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn tile(
     state: &AppState,
@@ -2830,7 +2887,7 @@ fn tile(
         &TileBounds,
     ),
     silent: bool,
-    cx: &App,
+    (meters_fading, cx): (&std::collections::HashSet<DeviceId>, &App),
 ) -> AnyElement {
     let p = state
         .voice
@@ -3000,9 +3057,19 @@ fn tile(
         // The bars bounce only while speaking (`d-bar`, the equaliser's helper); a silent tile holds the meter's room
         // and schedules no frames.
         .child(if speaking {
-            dilla_desktop_ui::motion::equaliser(
-                format!("voice-tile-meter-{}", k.device.hex()),
-                m::METER_H,
+            // It fades in as the web's meter does (`opacity: 0` to 1 over `--duration-fast`) while it bounces.
+            dilla_desktop_ui::motion::transition_in(
+                meter(&k.device, cx),
+                format!("voice-tile-meter-in-{}", k.device.hex()),
+                dilla_desktop_ui::tokens::motion::FAST,
+                cx,
+            )
+        } else if meters_fading.contains(&k.device) {
+            // Quiet: it fades out while it still bounces, then the next draw leaves its room empty.
+            dilla_desktop_ui::motion::transition_out(
+                meter(&k.device, cx),
+                format!("voice-tile-meter-out-{}", k.device.hex()),
+                dilla_desktop_ui::tokens::motion::FAST,
                 cx,
             )
         } else {

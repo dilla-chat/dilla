@@ -1291,10 +1291,7 @@ fn draw_row(
     }
     // The row's box: the hover fill and bar, the mention tint, the flash; the toolbar over its top edge.
     let group = shown.group.clone();
-    let flash = ui
-        .read(cx)
-        .flashing(&item.key)
-        .then(|| ui.read(cx).flash_seq);
+    let flash = ui.update(cx, |u, cx| u.flash_of(&item.key, cx));
     // MessageRow.tsx's `<article>`: one node per message, named by its author, time and text. Its id is the message's
     // key, so a row keeps its node while earlier messages load above it.
     let spoken = spoken_item(
@@ -1383,15 +1380,20 @@ fn draw_row(
             .filter(|r| Some(r.channel) == ctx.channel)
             .map(|r| r.msg_id),
     );
-    // The jump's flash (`d-row-flash`) is laid over the row's own fill below.
-    row = if replying {
-        row.bg(color::ACCENT_FAINT)
-    } else if item.mention {
-        row.bg(color::WARN_SOFT)
-    } else if focused_in {
-        row.bg(color::BG_3)
-    } else {
-        row.hover(|s| s.bg(color::BG_3))
+    // The row's fill: the jump's flash first, which beats the row's own fill and `:hover` as a CSS animation does.
+    row = match row_fill(flash.is_some(), replying, item.mention, focused_in) {
+        RowFill::Flash => dilla_desktop_ui::motion::flash(
+            row,
+            ElementId::NamedInteger(
+                format!("row-flash-{}", item.key).into(),
+                flash.unwrap_or_default(),
+            ),
+            cx,
+        ),
+        RowFill::Replying => row.bg(color::ACCENT_FAINT),
+        RowFill::Mention => row.bg(color::WARN_SOFT),
+        RowFill::Focused => row.bg(color::BG_3),
+        RowFill::Hover => row.hover(|s| s.bg(color::BG_3)),
     };
     let bar = if replying {
         Some(color::ACCENT)
@@ -1431,14 +1433,33 @@ fn draw_row(
     {
         row = row.child(bar);
     }
-    let row = row.children(placer.out);
-    match flash {
-        Some(seq) => dilla_desktop_ui::motion::flash(
-            row,
-            ElementId::NamedInteger(format!("row-flash-{}", item.key).into(), seq),
-            cx,
-        ),
-        None => row.into_any_element(),
+    row.children(placer.out).into_any_element()
+}
+
+/// What fills a message row's box (MessageRow.css, in the cascade's order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowFill {
+    /// The jump's flash: its own layer is the background, and the row has no hover style, because a CSS animation beats
+    /// `:hover` and the row's own background.
+    Flash,
+    Replying,
+    Mention,
+    Focused,
+    /// Nothing until the pointer is over the row.
+    Hover,
+}
+
+fn row_fill(flash: bool, replying: bool, mention: bool, focused: bool) -> RowFill {
+    if flash {
+        RowFill::Flash
+    } else if replying {
+        RowFill::Replying
+    } else if mention {
+        RowFill::Mention
+    } else if focused {
+        RowFill::Focused
+    } else {
+        RowFill::Hover
     }
 }
 
@@ -1968,6 +1989,23 @@ fn page(scroll: &ScrollHandle, direction: f32) {
 mod tests {
     use super::*;
     use dilla_client::state::{DeviceId, TimelineItemState, UserId};
+
+    /// A jump's flash beats everything else on the row, a pointer over the row included (a CSS animation beats `:hover`):
+    /// only a row with nothing else to show gets a hover style, and a flashing row never does.
+    #[test]
+    fn the_flash_beats_the_hover_and_every_other_fill() {
+        for replying in [false, true] {
+            for mention in [false, true] {
+                for focused in [false, true] {
+                    assert_eq!(row_fill(true, replying, mention, focused), RowFill::Flash);
+                }
+            }
+        }
+        assert_eq!(row_fill(false, false, false, false), RowFill::Hover);
+        assert_eq!(row_fill(false, true, true, true), RowFill::Replying);
+        assert_eq!(row_fill(false, false, true, true), RowFill::Mention);
+        assert_eq!(row_fill(false, false, false, true), RowFill::Focused);
+    }
 
     fn item(sender: u8, ts: u64) -> TimelineItem {
         TimelineItem {

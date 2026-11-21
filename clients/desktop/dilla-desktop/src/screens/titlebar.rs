@@ -456,7 +456,8 @@ pub fn render(
     handlers: &TitlebarHandlers,
     reminders: Option<gpui::AnyElement>,
     menu: Option<gpui::AnyElement>,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement + use<> {
     let brand_name_line = dilla_desktop_ui::text::root_line_height(text::XS);
     let mark = centred(
@@ -512,6 +513,7 @@ pub fn render(
                 .h(Pixels::from(css::SEARCH_H))
                 .bg(color::SURFACE_2)
                 .border_1()
+            window,
                 .border_color(color::HAIRLINE_2)
                 .rounded(radius::MD)
                 .flex()
