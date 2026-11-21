@@ -571,24 +571,39 @@ fn giphy_gate(gifs_on: bool) -> Result<(), Outcome> {
     }
 }
 
-/// A command typed in a fixture window, which has no client: only `/modlog` has anything to show without one (its dialog
-/// draws from the fixture's state), and its row ends as a client's would. The others stay pending, as before.
+/// A command typed in a fixture window, which has no client: `/modlog` (its dialog draws from the fixture's state) and
+/// `/selfrole list` (its answer is the approved roles the fixture's state holds) have something to show without one, and
+/// their rows end as a client's would. The others stay pending, as before.
 pub fn run_in_fixture(
     run: Builtin,
     row: u64,
     conversation: Conversation,
+    state: &AppState,
     window: gpui::WindowId,
     cx: &mut App,
 ) {
-    if let Builtin::Modlog { community } = run {
-        super::modlog_dialog::open(window, community, conversation, cx);
-        super::finish_fixture_row(
-            window,
-            row,
-            ResultStatus::Success,
-            "Moderation history opened.".to_owned(),
-            cx,
-        );
+    match run {
+        Builtin::Modlog { community } => {
+            super::modlog_dialog::open(window, community, conversation, cx);
+            super::finish_fixture_row(
+                window,
+                row,
+                ResultStatus::Success,
+                "Moderation history opened.".to_owned(),
+                cx,
+            );
+        }
+        Builtin::SelfRoleList { community } => {
+            let rows = state.roles.self_roles.get(&community);
+            super::finish_fixture_row(
+                window,
+                row,
+                ResultStatus::Success,
+                self_role_rows(rows.map_or(&[], Vec::as_slice)),
+                cx,
+            );
+        }
+        _ => {}
     }
 }
 
@@ -1199,6 +1214,60 @@ pub(super) mod tests {
         row.end(failed("second"));
         assert!(!row.open());
         assert_eq!(*seen.borrow(), [failed("first")]);
+    }
+
+    /// A fixture window has no client to ask the Bot: `/selfrole list` ends its pending row with the approved roles its state
+    /// holds, or says there are none (what the Bot answers for a community that approves no role).
+    #[gpui::test]
+    fn a_fixture_ends_selfrole_list_from_its_state(cx: &mut gpui::TestAppContext) {
+        use super::super::{FixtureRows, add_fixture_row};
+        let community = CommunityId([7; 16]);
+        let at = Conversation {
+            channel: ChannelId([1; 16]),
+            thread: None,
+        };
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let window = vcx.update(|window, _| window.window_handle().window_id());
+        let mut approved = AppState::default();
+        approved.roles.self_roles.insert(
+            community,
+            vec![SelfRole {
+                id: [2; 16],
+                name: "Crew".into(),
+                position: 1,
+                self_selected: false,
+            }],
+        );
+        for (state, want) in [
+            (
+                AppState::default(),
+                "No self-assignable roles are available.",
+            ),
+            (approved, "[ ] Crew"),
+        ] {
+            vcx.update(|_, cx| {
+                let row = add_fixture_row(
+                    window,
+                    at,
+                    crate::screens::shell::Clock::Local,
+                    "Working".into(),
+                    cx,
+                );
+                run_in_fixture(
+                    Builtin::SelfRoleList { community },
+                    row,
+                    at,
+                    &state,
+                    window,
+                    cx,
+                );
+                let rows = &crate::per_window::get_mut::<FixtureRows>(window, cx).0;
+                let ended = rows.iter().find(|(_, r)| r.id == row).map(|(_, r)| r);
+                let ended = ended.expect("the row");
+                assert_eq!(ended.text, want);
+                assert_eq!(ended.status, ResultStatus::Success);
+            });
+        }
     }
 
     /// builtin.ts:267-271: the self roles are listed held or not, in the order read, or the row says there are none.

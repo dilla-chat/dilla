@@ -942,7 +942,7 @@ pub fn on_send_in(
                 None if client.is_some() => {
                     builtins::run(run, row, attempt, conversation, ctx, window, cx);
                 }
-                None => builtins::run_in_fixture(run, row, conversation, window, cx),
+                None => builtins::run_in_fixture(run, row, conversation, &ctx.state, window, cx),
             }
             SendDecision::Handled
         }
