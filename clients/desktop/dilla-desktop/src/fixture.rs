@@ -118,6 +118,10 @@ impl Ids<'_> {
         ChannelId(self.of("channel", path))
     }
 
+    fn dm(&self, id: &str) -> ChannelId {
+        ChannelId(self.of("dm", id))
+    }
+
     fn community(&self, id: &str) -> CommunityId {
         CommunityId(self.of("server", id))
     }
