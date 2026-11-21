@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use dilla_client::Client;
 use dilla_client::features::attachments::{
-    ATTACHMENT_CAP, AttachmentKind, MAX_ATTACHMENTS, NewFile, Tray, attachment_kind, safe_name,
+    ATTACHMENT_CAP, AttachmentKind, NewFile, Tray, attachment_kind, safe_name,
 };
 use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
