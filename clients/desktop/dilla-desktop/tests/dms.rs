@@ -291,10 +291,11 @@ fn dm_picker_type_ahead_arrows_and_enter(cx: &mut TestAppContext) {
     assert_eq!(selected(cx), Some(1));
     cx.simulate_keystrokes("up up");
     assert_eq!(selected(cx), Some(3), "Up wraps to the last member");
+    // The list is by shown name, as dmCandidates sorts it: Ada, Bea, Bo, Cy.
     cx.simulate_keystrokes("b");
-    assert_eq!(selected(cx), Some(1), "`b` goes to the next B: Bo");
-    cx.simulate_keystrokes("e");
-    assert_eq!(selected(cx), Some(2), "`be` is Bea");
+    assert_eq!(selected(cx), Some(1), "`b` goes to the next B: Bea");
+    cx.simulate_keystrokes("o");
+    assert_eq!(selected(cx), Some(2), "`bo` is Bo");
     // Enter without a client opens nothing and keeps the dialog open.
     cx.simulate_keystrokes("enter");
     assert!(cx.update(|_, cx| picker::model_in(w, cx).open));
