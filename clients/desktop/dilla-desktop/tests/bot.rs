@@ -113,6 +113,34 @@ fn parity_commands_reminders_b() {
     dilla_parity::screen::assert_screen(&fixture("commands/reminders-b.json")).unwrap();
 }
 
+/// Task 42: the command picker over the composer: `/` lists the commands, `/rem` narrows them, `/zzz` has none.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_commands_picker_open() {
+    dilla_parity::screen::assert_screen(&fixture("commands/picker-open.json")).unwrap();
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_commands_picker_filtered() {
+    dilla_parity::screen::assert_screen(&fixture("commands/picker-filtered.json")).unwrap();
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_commands_picker_empty() {
+    dilla_parity::screen::assert_screen(&fixture("commands/picker-empty.json")).unwrap();
+}
+
 /// `/modlog` (CommandHost.tsx:411, Decision D1): the moderation history opens in a dialog over the channel, the row under
 /// the log saying so.
 #[test]
