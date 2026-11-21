@@ -849,6 +849,59 @@ where
     .into_any_element()
 }
 
+/// The entrances of things that are drawn inside a list that is not drawn whole (a poll card in a message row), by a key the
+/// caller makes of the thing's identity: remembered for the process, so that a row leaving the drawn range and coming back
+/// plays nothing again. Past [`REMEMBERED_MAX`] keys the oldest knowledge is dropped wholesale (a card then enters once more).
+#[derive(Default)]
+struct Remembered(Entrances<String>);
+impl gpui::Global for Remembered {}
+
+/// How many keys [`entered_age`] remembers before it forgets them all.
+pub const REMEMBERED_MAX: usize = 4096;
+
+/// `key` is drawn now: how long its entrance (of `run`) has been running, `None` when it is over or motion is reduced. The
+/// first draw starts it. The caller asks for another frame while this answers `Some`.
+pub fn entered_age(cx: &mut App, key: String, run: Duration) -> Option<Duration> {
+    let now = cx.background_executor().now();
+    let reduced = cx.reduce_motion();
+    let remembered = &mut cx.default_global::<Remembered>().0;
+    if remembered.len() >= REMEMBERED_MAX {
+        remembered.clear();
+    }
+    let age = if reduced {
+        // Taken in as already over, so that turning motion on plays nothing back.
+        remembered.touch(
+            key,
+            now.checked_sub(Duration::from_secs(3600)).unwrap_or(now),
+        )
+    } else {
+        remembered.touch(key, now)
+    };
+    (!reduced && age < run).then_some(age)
+}
+
+/// A badge `scale` times its size about its centre, over a hidden full-size copy that keeps its place in the layout (the
+/// CSS transform leaves the layout alone): [`pop_in`]'s frame for a pop whose clock the caller keeps. `build(None)` draws the
+/// badge at its size and `build(Some(scale))` a copy with every length and its text multiplied by the scale (it must not
+/// share the badge's element id). `None` is the badge at rest, and nothing else.
+pub fn pop_frame(scale: Option<f32>, build: &dyn Fn(Option<f32>) -> AnyElement) -> gpui::Div {
+    let slot = div().relative().flex().flex_none();
+    match scale {
+        None => slot.child(build(None)),
+        Some(scale) => slot
+            .child(div().flex().flex_none().invisible().child(build(None)))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(build(Some(scale))),
+            ),
+    }
+}
+
 /// `d-up` drawn on `el` by hand, `elapsed` into an entrance whose delay is `delay` (the entrances a list remembers per key,
 /// [`Entrances`], where an element's own state would be lost): `el` is in the flow of its parent, and is returned as it is
 /// once the entrance is over.
@@ -960,6 +1013,16 @@ impl<K: std::hash::Hash + Eq + Clone> Entrances<K> {
         self.entered
             .get(key)
             .map(|(at, delay)| (now.saturating_duration_since(*at), *delay))
+    }
+
+    /// How many keys are remembered.
+    pub fn len(&self) -> usize {
+        self.entered.len()
+    }
+
+    /// Whether no key is remembered.
+    pub fn is_empty(&self) -> bool {
+        self.entered.is_empty()
     }
 
     /// `key` is drawn at `now`: it enters now when it is new, and answers how long it has been entering.

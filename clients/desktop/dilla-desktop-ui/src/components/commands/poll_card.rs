@@ -15,7 +15,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING;
 use crate::text::{MONO_ADVANCE, line, paragraph};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// One answer (`PollCardOption`). Its Debug gives the answer's length and the voters' count only: the answer is a
 /// decrypted post.
@@ -238,8 +238,34 @@ impl PollCard {
 }
 
 impl RenderOnce for PollCard {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let ui_lh = crate::text::root_line_height(text::UI);
+        // PollCard.css:36-37: the card rises in (`d-poll-card-entry`) and each voter pops in (`d-poll-voter-pop`), both over
+        // `--duration-step` on `ease`, once from the first draw: the card is drawn inside a message row, which the log
+        // stops drawing off screen, so the entrances are remembered by key, not by element state.
+        let card_key = format!("poll-card-{:?}", self.id);
+        let card_age = crate::motion::entered_age(cx, card_key.clone(), motion::STEP);
+        let voter_ages: Vec<Vec<Option<std::time::Duration>>> = self
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                o.voters
+                    .iter()
+                    .take(5)
+                    .map(|name| {
+                        crate::motion::entered_age(
+                            cx,
+                            format!("{card_key}|{i}|{name}"),
+                            motion::STEP,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+        if card_age.is_some() || voter_ages.iter().flatten().any(Option::is_some) {
+            window.request_animation_frame();
+        }
         let inner = Self::inner(self.width);
         let tag = self.closed.then(|| self.labels.closed.to_string());
         let question = paragraph(
@@ -316,12 +342,12 @@ impl RenderOnce for PollCard {
             let voters = div()
                 .flex()
                 .children(o.voters.iter().take(5).enumerate().map(|(v, name)| {
-                    div()
-                        .ml(px(-5.0))
-                        .rounded(radius::PILL)
-                        .border_2()
-                        .border_color(color::SURFACE)
-                        .child(voter(("poll-voter", i * 8 + v), name))
+                    let age = voter_ages[i][v];
+                    crate::motion::pop_frame(
+                        age.map(|a| crate::motion::poll_voter_pop_at(a, motion::STEP)),
+                        &|scale| voter_disc(i * 8 + v, name, scale),
+                    )
+                    .ml(px(-5.0))
                 }));
             let vote = self.on_vote.clone();
             let can = !self.closed && self.can_vote;
@@ -426,28 +452,47 @@ impl RenderOnce for PollCard {
                         color::FG,
                     ))
             }));
-        div().pt(px(TOP_MARGIN)).child(
-            div()
-                .id(self.id)
-                .w(px(inner + 2.0 * PAD + 2.0))
-                .p(px(PAD))
-                .border_1()
-                .border_color(color::CONTROL_EDGE_FIELD)
-                .rounded(radius::XL)
-                .bg(color::SURFACE)
-                .flex()
-                .flex_col()
-                .gap(px(GAP))
-                .child(head)
-                .children(options)
-                .child(meta),
-        )
+        let card = div()
+            .id(self.id)
+            .w(px(inner + 2.0 * PAD + 2.0))
+            .p(px(PAD))
+            .border_1()
+            .border_color(color::CONTROL_EDGE_FIELD)
+            .rounded(radius::XL)
+            .bg(color::SURFACE)
+            .flex()
+            .flex_col()
+            .gap(px(GAP))
+            .child(head)
+            .children(options)
+            .child(meta);
+        let card = match card_age {
+            Some(age) => {
+                let (opacity, offset) = crate::motion::poll_entry_at(age, motion::STEP);
+                card.relative().top(px(offset)).opacity(opacity)
+            }
+            None => card,
+        };
+        div().pt(px(TOP_MARGIN)).child(card)
     }
+}
+
+/// A voter's disc in its 2px `--surface` ring, `scale` times its size (a pop's frame, [`crate::motion::pop_frame`]); at
+/// full size it keeps its element id.
+fn voter_disc(n: usize, name: &str, scale: Option<f32>) -> gpui::AnyElement {
+    let s = scale.unwrap_or(1.0);
+    let disc = voter(("poll-voter", n), name, s);
+    div()
+        .rounded(radius::PILL)
+        .border(px(2.0 * s))
+        .border_color(color::SURFACE)
+        .child(disc)
+        .into_any_element()
 }
 
 /// PollCard.css `.d-poll-card__voters .d-avatar`: an 18px disc with `--text-poll-voter` initials (no shared Avatar size
 /// has these, so the card draws its own).
-fn voter(id: impl Into<ElementId>, name: &str) -> impl IntoElement {
+fn voter(id: impl Into<ElementId>, name: &str, scale: f32) -> gpui::AnyElement {
     let (h, s, l) = colour_of(name);
     let fill = gpui::hsla(
         f32::from(h) / 360.0,
@@ -455,9 +500,8 @@ fn voter(id: impl Into<ElementId>, name: &str) -> impl IntoElement {
         f32::from(l) / 100.0,
         1.0,
     );
-    div()
-        .id(id.into())
-        .size(px(18.0))
+    let disc = div()
+        .size(px(18.0 * scale))
         .rounded(radius::PILL)
         .bg(fill)
         .flex()
@@ -466,12 +510,18 @@ fn voter(id: impl Into<ElementId>, name: &str) -> impl IntoElement {
         .child(
             line(
                 grapheme_initials(name),
-                text::POLL_VOTER,
-                crate::text::root_line_height(text::POLL_VOTER),
+                text::POLL_VOTER * scale,
+                crate::text::root_line_height(text::POLL_VOTER) * scale,
                 color::BRAND_INK,
             )
             .weight(font::WEIGHT_DISPLAY),
-        )
+        );
+    // A copy drawn at another scale (a pop's frame) must not share the voter's element id.
+    if scale == 1.0 {
+        disc.id(id.into()).into_any_element()
+    } else {
+        disc.into_any_element()
+    }
 }
 
 trait When: Sized {

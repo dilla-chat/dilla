@@ -194,7 +194,8 @@ fn click(id: impl Into<ElementId>, f: Option<OnClick>) -> gpui::Stateful<gpui::D
 }
 
 impl RenderOnce for PollDialog {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let app: &App = cx;
         let xs = root_line_height(text::XS);
         let ui = root_line_height(text::UI);
         let answer_count = self.answers.len();
@@ -247,37 +248,46 @@ impl RenderOnce for PollDialog {
                     .enumerate()
                     .map(|(i, (input, _over))| {
                         let remove = remove.clone();
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .child(div().w(px(18.0)).flex().justify_end().child(line(
-                                (i + 1).to_string(),
-                                text::META,
-                                root_line_height(text::META),
-                                color::FG_FAINT,
-                            )))
-                            .child(div().flex_1().min_w_0().child(input))
-                            .child(
-                                div()
-                                    .id(("poll-remove-answer", i))
-                                    .size(px(30.0))
-                                    .rounded(radius::MD)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .opacity(if answer_count <= 2 { 0.25 } else { 1.0 })
-                                    .on_click(move |_, window, cx| {
-                                        if answer_count > 2
-                                            && let Some(f) = &remove
-                                        {
-                                            f(i, window, cx);
-                                        }
-                                    })
-                                    .child(
-                                        Icon::new(IconName::X).size(px(14.0)).color(color::FG_3),
-                                    ),
-                            )
+                        // PollDialog.css:59: an answer rises in (`d-poll-answer-entry` over `--duration-normal`, `ease`)
+                        // when its row is added.
+                        crate::motion::poll_entry_in(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(div().w(px(18.0)).flex().justify_end().child(line(
+                                    (i + 1).to_string(),
+                                    text::META,
+                                    root_line_height(text::META),
+                                    color::FG_FAINT,
+                                )))
+                                .child(div().flex_1().min_w_0().child(input))
+                                .child(
+                                    div()
+                                        .id(("poll-remove-answer", i))
+                                        .size(px(30.0))
+                                        .rounded(radius::MD)
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .opacity(if answer_count <= 2 { 0.25 } else { 1.0 })
+                                        .on_click(move |_, window, cx| {
+                                            if answer_count > 2
+                                                && let Some(f) = &remove
+                                            {
+                                                f(i, window, cx);
+                                            }
+                                        })
+                                        .child(
+                                            Icon::new(IconName::X)
+                                                .size(px(14.0))
+                                                .color(color::FG_3),
+                                        ),
+                                ),
+                            gpui::ElementId::NamedInteger("poll-answer-enter".into(), i as u64),
+                            crate::tokens::motion::NORMAL,
+                            app,
+                        )
                     }),
             )
             .children((answer_count < 10).then(|| {
