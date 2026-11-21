@@ -167,22 +167,29 @@ mod tests {
         assert_eq!(TOAST_MS, 2400);
     }
 
+    /// The toast names its window, as every caller in the app does (`tests/toasts.rs` flags a toast for every window).
     #[gpui::test]
     fn a_toast_ends_on_its_timer_unless_the_clock_is_frozen(cx: &mut gpui::TestAppContext) {
         let later = Duration::from_millis(TOAST_MS + 100);
-        cx.update(|cx| show_toast_in(None, "gone", cx));
-        assert!(cx.update(|cx| current(cx).is_some()));
+        let w = cx
+            .add_empty_window()
+            .update(|window, _| window.window_handle().window_id());
+        cx.update(|cx| show_toast_in(Some(w), "gone", cx));
+        assert!(cx.update(|cx| current_in(w, cx).is_some()));
         cx.executor().advance_clock(later);
         cx.run_until_parked();
-        assert!(cx.update(|cx| current(cx).is_none()), "the timer ended it");
+        assert!(
+            cx.update(|cx| current_in(w, cx).is_none()),
+            "the timer ended it"
+        );
         cx.update(|cx| {
             freeze(cx);
-            show_toast_in(None, "stays", cx);
+            show_toast_in(Some(w), "stays", cx);
         });
         cx.executor().advance_clock(later);
         cx.run_until_parked();
         assert_eq!(
-            cx.update(|cx| current(cx)).as_deref(),
+            cx.update(|cx| current_in(w, cx)).as_deref(),
             Some("stays"),
             "a frozen clock holds it"
         );
