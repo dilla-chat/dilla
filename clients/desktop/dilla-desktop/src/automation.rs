@@ -697,6 +697,9 @@ impl Session {
     }
 
     fn screenshot(&mut self, path: &str) -> Result<(u32, u32), String> {
+        // A shot is the end state, as the web's are shot with reduced motion (Task 36): every capture through the driver
+        // freezes the animations, whatever launched the app (a live account's own motion setting included).
+        self.cx.update(|cx| cx.set_reduce_motion(true));
         self.frame();
         let window = self.window();
         let image = self

@@ -123,6 +123,8 @@ fn shoot(view: VideoView) -> image::RgbaImage {
     let window = cx
         .update(|cx| {
             dilla_desktop::install(cx);
+            // A shot is the end state (the web's are shot with reduced motion): the ⋮ menu is not caught mid-entrance.
+            cx.set_reduce_motion(true);
             let bounds = Bounds::centered(None, gpui::size(px(520.), px(310.)), cx);
             cx.open_window(dilla_desktop::main_window_options(bounds), |_, cx| {
                 cx.new(|_| Shot { view })
