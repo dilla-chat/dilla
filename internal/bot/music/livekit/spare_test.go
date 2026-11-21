@@ -273,10 +273,10 @@ func TestRacingReservationsGetDisjointBlocks(t *testing.T) {
 			}
 		}
 		var wg sync.WaitGroup
-		blocks := make([]counter.Range, 2)
+		reserved := make([]counter.Range, 2)
 		errs := make([]error, 2)
 		for i := range 2 { // the start and the epoch follow both reserve through reserveFor
-			wg.Go(func() { blocks[i], errs[i] = p.reserveFor(context.Background(), epochs.state, group, epochs.epoch) })
+			wg.Go(func() { reserved[i], errs[i] = p.reserveFor(context.Background(), epochs.state, group, epochs.epoch) })
 		}
 		wg.Go(func() { p.prepareSpare(context.Background(), epochs.state, group, epochs.epoch, p.generation) })
 		wg.Wait()
@@ -285,6 +285,7 @@ func TestRacingReservationsGetDisjointBlocks(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		blocks := append([]counter.Range{}, reserved...)
 		if spare := spareOf(p); spare != nil {
 			blocks = append(blocks, spare.block)
 		}
