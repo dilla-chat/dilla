@@ -866,6 +866,13 @@ fn mention_list(options: &[MentionOption], active: usize, cx: &gpui::App) -> gpu
 /// Composer.css `.d-composer__box:focus-within`: `box-shadow: 0 0 0 3px var(--accent-soft)`.
 const FOCUS_RING_SPREAD: f32 = 3.0;
 
+/// Whether "send ↵" is the lit one (Composer.tsx `empty`: `value.trim() === ''` dims it). The picked command's chips hand the
+/// composer an empty draft (CommandPicker.tsx `PickerFrame.draft`: `'' with chips: send dims as in the prototype`), so with
+/// chips the button is dim whatever the fields hold; Enter runs the command.
+fn send_is_lit(draft: &str, blocked: bool) -> bool {
+    !draft.trim().is_empty() && !blocked
+}
+
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
@@ -925,9 +932,8 @@ impl Render for Composer {
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
         let rows = value.split('\n').count().clamp(1, max_rows());
         let placeholder = format!("Message {}", self.target);
-        let sendable = (!empty || chips.is_some()) && blocked.is_none();
+        let sendable = send_is_lit(&value, blocked.is_some());
         let field = div()
-        let sweep = self.sweep_strip(typing_text.is_some(), cx);
             .relative()
             .flex_1()
             .min_w_0()
@@ -1344,6 +1350,17 @@ mod tests {
             tray.bottom() <= boxed.top(),
             "the tray ends above the box: {tray:?} {boxed:?}"
         );
+    }
+
+    #[test]
+    fn send_is_dim_for_an_empty_or_blank_draft_and_while_blocked() {
+        assert!(send_is_lit("hello", false));
+        assert!(
+            !send_is_lit("", false),
+            "also with chips: their draft is empty"
+        );
+        assert!(!send_is_lit("  \n", false));
+        assert!(!send_is_lit("hello", true));
     }
 
     #[test]
