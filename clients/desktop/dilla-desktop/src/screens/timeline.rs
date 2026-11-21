@@ -1227,7 +1227,17 @@ fn draw_row(
             ),
         }
         let name_width = name.chars().count() as f32 * f32::from(text::SM) * MONO_ADVANCE;
-        let name_color = if bot { color::ACCENT_2 } else { color::FG };
+        let name_color = if bot {
+            color::ACCENT_2
+        } else {
+            name_colour_of(
+                cx_row.state,
+                cx_row.community,
+                cx_row.members,
+                item.sender_user,
+            )
+            .map_or(color::FG, |rgb| gpui::rgb(rgb).into())
+        };
         placer.line(
             line(name, text::SM, head_line(d), name_color).weight(font::WEIGHT_DISPLAY),
             CONTENT_X,
@@ -1461,6 +1471,25 @@ fn row_fill(flash: bool, replying: bool, mention: bool, focused: bool) -> RowFil
     } else {
         RowFill::Hover
     }
+}
+
+/// MessageItem.tsx `nameColorOf`: the author's name colour (README §5.5), the first of their roles that has one
+/// (0xRRGGBB), `None` for none: the text colour then. A Bot's name is the accent's second tone instead.
+fn name_colour_of(
+    state: &AppState,
+    community: CommunityId,
+    members: &[Member],
+    user: Option<UserId>,
+) -> Option<u32> {
+    let member = members.iter().find(|m| Some(m.user_id) == user)?;
+    let roles = state.roles.roles.get(&community)?;
+    member.role_ids.iter().find_map(|id| {
+        roles
+            .iter()
+            .find(|r| &r.id == id)
+            .map(|r| r.color)
+            .filter(|c| *c != 0)
+    })
 }
 
 /// Whether the row of message `msg` is the one the reply bar aims at (`target`).
@@ -2069,6 +2098,51 @@ mod tests {
         // The same day does not start one.
         let next = item(1, 1_794_441_600 + 3_000);
         assert!(!starts_day(Some(&early), &next, clock));
+    }
+
+    #[test]
+    fn an_authors_name_takes_the_first_role_colour_they_have() {
+        use dilla_client::state::roles::RoleSummary;
+        let community = CommunityId([9; 16]);
+        let role = |n: u8, color: u32| RoleSummary {
+            id: [n; 16],
+            name: format!("r{n}"),
+            color,
+            position: u32::from(n),
+            hoist: false,
+            mentionable: false,
+            allow: 0,
+            deny: 0,
+            members: 0,
+        };
+        let mut state = AppState::default();
+        state.roles.roles.insert(
+            community,
+            vec![role(1, 0), role(2, 0x5aa8e6), role(3, 0xff0000)],
+        );
+        let member = |id: u8, roles: Vec<[u8; 16]>| Member {
+            user_id: UserId([id; 16]),
+            username: "u".into(),
+            display: "U".into(),
+            kind: 0,
+            role_ids: roles,
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let members = [
+            member(1, vec![[1; 16], [2; 16], [3; 16]]),
+            member(2, vec![[1; 16]]),
+        ];
+        let of =
+            |u: Option<u8>| name_colour_of(&state, community, &members, u.map(|n| UserId([n; 16])));
+        assert_eq!(
+            of(Some(1)),
+            Some(0x005a_a8e6),
+            "the first coloured role, not the last"
+        );
+        assert_eq!(of(Some(2)), None, "a role with no colour");
+        assert_eq!(of(Some(3)), None, "not a member");
+        assert_eq!(of(None), None, "no author");
     }
 
     #[test]
