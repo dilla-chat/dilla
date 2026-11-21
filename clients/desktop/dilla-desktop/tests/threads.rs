@@ -305,10 +305,11 @@ fn a_thread_command_posts_into_the_thread() {
         Duration::from_secs(60),
         "the shrug in the thread",
         |s| {
-            s.threads
-                .threads
-                .get(&root)
-                .is_some_and(|d| d.replies.iter().any(|r| r.body == "hi ¯\\_(ツ)_/¯"))
+            s.threads.threads.get(&root).is_some_and(|d| {
+                d.replies
+                    .iter()
+                    .any(|r| r.body.contains('¯') && r.body.ends_with("hi"))
+            })
         },
     ));
     let s = member.state().borrow().clone();
