@@ -111,6 +111,9 @@ pub struct Composer {
     opened_s: Option<u64>,
     /// The message the reply bar aimed this field at when it last drew: a new target takes the keyboard.
     reply_seen: Option<dilla_client::state::MessageId>,
+    /// Tracks the box, so the ring follows the focus anywhere in it (Composer.css `.d-composer__box:focus-within`): the
+    /// field, the foot tools and the send button.
+    box_focus: FocusHandle,
     used_for: SharedString,
     used: usize,
     save: Option<Task<()>>,
@@ -210,6 +213,7 @@ impl Composer {
             dismissed: None,
             opened_s: None,
             reply_seen: None,
+            box_focus: cx.focus_handle(),
             used_for: SharedString::default(),
             used: 0,
             save: None,
@@ -1065,10 +1069,11 @@ impl Render for Composer {
         }
         let used = self.used as i64;
         let remaining = MAX_LEN as i64 - used;
-        // Composer.css: the box takes the accent border and a 3px accent-soft ring while the field holds the keyboard; a
+        // Composer.css: the box takes the accent border and a 3px accent-soft ring while the focus is anywhere in it; a
         // reply bar above it squares its top corners off.
-        let focused = field_focus.contains_focused(window, cx);
+        let focused = self.box_focus.contains_focused(window, cx);
         let box_ = div()
+            .track_focus(&self.box_focus)
             .w_full()
             .bg(color::SURFACE)
             .border_1()
@@ -1208,6 +1213,42 @@ mod tests {
         assert_eq!(f32::from(ring[0].blur_radius), 0.0);
         assert_eq!(ring[0].color, color::ACCENT_SOFT);
         assert!(!ring[0].inset);
+    }
+
+    /// Composer.css `.d-composer__box:focus-within`: the ring holds while the focus is on a tool of the box, not only on
+    /// the field (Tab from the field reaches the foot's tools).
+    #[gpui::test]
+    fn the_box_has_the_focus_while_it_is_on_a_tool_of_the_foot(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (field, boxed) = composer.read_with(vcx, |c, cx| {
+            (c.input.read(cx).focus_handle(cx), c.box_focus.clone())
+        });
+        vcx.update(|window, cx| {
+            assert!(!boxed.contains_focused(window, cx), "nothing focused yet");
+            window.focus(&field, cx);
+        });
+        draw(vcx);
+        vcx.update(|window, cx| {
+            assert!(
+                boxed.contains_focused(window, cx),
+                "the field is in the box"
+            );
+            window.focus_next(cx);
+        });
+        draw(vcx);
+        vcx.update(|window, cx| {
+            assert!(!field.is_focused(window), "the focus moved on to a tool");
+            assert!(
+                boxed.contains_focused(window, cx),
+                "a tool is in the box too"
+            );
+        });
     }
 
     #[test]
