@@ -972,6 +972,16 @@ fn every_transformer_released() -> Result<(), usize> {
     }
 }
 
+/// The transformer count is the process's, so a counting test runs alone: beside every `serial()` test and every music
+/// test, whose seats hold calls (and their transformers) of their own. `MUSIC` first, the order no other test reverses.
+fn alone() -> (
+    tokio::sync::MutexGuard<'static, ()>,
+    MutexGuard<'static, ()>,
+) {
+    let music = MUSIC.blocking_lock();
+    (music, serial())
+}
+
 fn call_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -983,7 +993,7 @@ fn call_runtime() -> tokio::runtime::Runtime {
 #[test]
 #[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
 fn leaving_a_call_releases_every_frame_transformer() {
-    let _s = serial();
+    let _alone = alone();
     let rt = call_runtime();
     let (call, _bob, _host) = seat_alice_with_bob(&rt);
     assert!(live_transformers() > 0, "the call holds its transformers");
@@ -996,7 +1006,7 @@ fn leaving_a_call_releases_every_frame_transformer() {
 #[test]
 #[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
 fn a_dropped_call_releases_every_frame_transformer() {
-    let _s = serial();
+    let _alone = alone();
     let rt = call_runtime();
     let (call, _bob, _host) = seat_alice_with_bob(&rt);
     assert!(live_transformers() > 0, "the call holds its transformers");
