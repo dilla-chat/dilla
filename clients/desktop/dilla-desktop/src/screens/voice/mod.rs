@@ -855,9 +855,8 @@ pub fn ring_notice(state: &AppState, channel: &Channel) -> Option<AnyElement> {
 }
 
 /// One stage notice (CallStage.tsx's notice region, `role="status"`): its glyph, its line, and the comparison it offers
-/// (`voice.pausedAction`) whenever it names a changed contact, as the web's (VoiceView.tsx :283, :293). The web's action
-/// opens Privacy, which compares once the contact's trust record is there; here the record the window holds when the
-/// action is pressed opens the comparison in place.
+/// (`voice.pausedAction`) whenever it names a changed contact, as the web's (VoiceView.tsx :283, :293). See
+/// [`compare_changed`] for what the action does.
 fn notice_strip(n: StageNotice) -> AnyElement {
     let action = n.compare.map(|user| {
         let button = tracked_box(
@@ -866,21 +865,7 @@ fn notice_strip(n: StageNotice) -> AnyElement {
                 "voice-notice-compare-b",
                 t("voice.pausedAction"),
             )
-            .on_click(move |_, window, cx| {
-                let w = wid(window);
-                let record = ui_of(w, cx).and_then(|u| {
-                    u.state
-                        .trust
-                        .contacts
-                        .iter()
-                        .find(|r| r.user_id == user)
-                        .cloned()
-                });
-                if let Some(record) = record {
-                    let client = client_of(w, cx);
-                    crate::screens::dms::compare::open(w, &record, client, cx);
-                }
-            }),
+            .on_click(move |_, window, cx| compare_changed(user, window, cx)),
         );
         (button.into_any_element(), button_baseline())
     });
@@ -893,6 +878,28 @@ fn notice_strip(n: StageNotice) -> AnyElement {
             .live(dilla_desktop_ui::a11y::Live::Polite),
     )
     .into_any_element()
+}
+
+/// The stage notice's Compare for the changed contact `user`. The web's action opens Settings → Privacy, which compares
+/// once the contact's trust record is there; here the record the window holds opens the comparison in place, and with
+/// no record held (trust not read yet) it opens Privacy as the web does.
+fn compare_changed(user: UserId, window: &mut Window, cx: &mut App) {
+    let w = wid(window);
+    let record = ui_of(w, cx).and_then(|u| {
+        u.state
+            .trust
+            .contacts
+            .iter()
+            .find(|r| r.user_id == user)
+            .cloned()
+    });
+    match record {
+        Some(record) => {
+            let client = client_of(w, cx);
+            crate::screens::dms::compare::open(w, &record, client, cx);
+        }
+        None => crate::screens::dms::navigate(crate::screens::dms::Nav::Privacy, window, cx),
+    }
 }
 
 impl VoiceUi {
@@ -4895,6 +4902,28 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// VoiceView.tsx :283/:293: the paused notice's Compare opens Privacy when the window holds no trust record of the
+    /// changed contact (its trust not read yet), instead of doing nothing.
+    #[gpui::test]
+    fn compare_with_no_trust_record_opens_privacy(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::screens::dms::{self, Nav};
+        let went: Rc<RefCell<Vec<Nav>>> = Rc::default();
+        let window = cx.add_empty_window();
+        let seen = went.clone();
+        window.update(|window, cx| {
+            dms::set_navigator(
+                window.window_handle().window_id(),
+                Rc::new(move |to, _, _| seen.borrow_mut().push(to)),
+                cx,
+            );
+            super::compare_changed(dilla_client::state::UserId([7; 16]), window, cx);
+        });
+        assert_eq!(*went.borrow(), vec![Nav::Privacy]);
+    }
+
     #[test]
     fn the_share_sound_follows_the_window_unless_the_person_chose() {
         use super::ShareSound::{Person, Unset, Window};
