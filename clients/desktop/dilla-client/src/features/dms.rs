@@ -101,6 +101,15 @@ pub fn picker_members(
     s: &AppState,
     community: Option<crate::state::CommunityId>,
 ) -> Vec<crate::state::Member> {
+    picker_members_in(s, community, &super::collate::locale())
+}
+
+/// [`picker_members`] ordered by the names of the locale `tag` (BCP 47), not the process locale.
+pub fn picker_members_in(
+    s: &AppState,
+    community: Option<crate::state::CommunityId>,
+    tag: &str,
+) -> Vec<crate::state::Member> {
     let own = s.account.user_id;
     let mut out: Vec<crate::state::Member> = Vec::new();
     let lists: Vec<&Vec<crate::state::Member>> = match community {
@@ -119,7 +128,7 @@ pub fn picker_members(
             }
         }
     }
-    // shell-model.ts `dmCandidates`: by shown name (`localeCompare` with base sensitivity), then by user id.
+    // shell-model.ts `dmCandidates`: by shown name (`localeCompare`, base sensitivity, the viewer's locale), then by user id.
     out.sort_by(|a, b| {
         let shown = |m: &crate::state::Member| {
             if m.display.is_empty() {
@@ -128,30 +137,9 @@ pub fn picker_members(
                 m.display.clone()
             }
         };
-        base_key(&shown(a))
-            .cmp(&base_key(&shown(b)))
-            .then(a.user_id.0.cmp(&b.user_id.0))
+        super::collate::base_in(tag, &shown(a), &shown(b)).then(a.user_id.0.cmp(&b.user_id.0))
     });
     out
-}
-
-/// A name's collation key at base sensitivity: case folded and the Latin accents taken off, so "Björn" sorts with "Bjorn"
-/// and "Åsa" with "Asa", as the browser's `localeCompare(.., { sensitivity: 'base' })` puts them.
-fn base_key(name: &str) -> Vec<char> {
-    name.chars()
-        .flat_map(char::to_lowercase)
-        .map(|c| match c {
-            'à'..='å' => 'a',
-            'ç' => 'c',
-            'è'..='ë' => 'e',
-            'ì'..='ï' => 'i',
-            'ñ' => 'n',
-            'ò'..='ö' | 'ø' => 'o',
-            'ù'..='ü' => 'u',
-            'ý' | 'ÿ' => 'y',
-            c => c,
-        })
-        .collect()
 }
 
 /// The DmPicker's type-ahead: the index of the first member at or after `from` (wrapping) whose shown name starts with
@@ -394,7 +382,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pickers_members_are_by_shown_name_at_base_sensitivity() {
+    fn the_pickers_members_are_by_shown_name_in_the_given_locale() {
         use crate::state::{CommunityId, Member, UserId};
         let c = CommunityId([9; 16]);
         let member = |id: u8, username: &str, display: &str| Member {
@@ -412,23 +400,36 @@ mod tests {
             c,
             vec![
                 member(1, "ada", "Ada"),
-                member(2, "mira", "Mira"),
+                member(2, "tom", "Tom"),
                 member(3, "bjorn", "Björn"),
                 member(4, "asa", "Åsa"),
                 member(5, "zed", ""),
+                member(6, "simon", "Šimon"),
+                member(7, "bjorn2", "Bjorn"),
             ],
         );
-        let names: Vec<String> = picker_members(&s, Some(c))
-            .iter()
-            .map(|m| {
-                if m.display.is_empty() {
-                    m.username.clone()
-                } else {
-                    m.display.clone()
-                }
-            })
-            .collect();
-        assert_eq!(names, ["Åsa", "Björn", "Mira", "zed"]);
+        let names = |tag: &str| -> Vec<String> {
+            picker_members_in(&s, Some(c), tag)
+                .iter()
+                .map(|m| {
+                    if m.display.is_empty() {
+                        m.username.clone()
+                    } else {
+                        m.display.clone()
+                    }
+                })
+                .collect()
+        };
+        // English folds Å into A, Š into S; Björn and Bjorn are equal at base strength, so the user id (3 before 7) orders them.
+        assert_eq!(
+            names("en-US"),
+            ["Åsa", "Björn", "Bjorn", "Šimon", "Tom", "zed"]
+        );
+        // Swedish puts Å after Z, and Ö is a letter of its own after it: Bjorn sorts before Björn.
+        assert_eq!(
+            names("sv-SE"),
+            ["Bjorn", "Björn", "Šimon", "Tom", "zed", "Åsa"]
+        );
     }
 
     #[test]

@@ -133,6 +133,9 @@ impl Driver {
         let mut child = Command::new(automation_binary())
             .arg("--automation")
             .args(args)
+            // The web shooter runs en-US; the app reads the OS locale for dates and name order, so a frame never depends
+            // on the machine's (a caller's `env` may override it).
+            .env("LC_ALL", "en_US.UTF-8")
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
