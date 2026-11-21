@@ -11,7 +11,7 @@ use super::halo;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::text::{MONO_ADVANCE, line};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// A chip's height: 26px (`height: 1.625rem`) inside its 1px border.
 pub const CHIP: f32 = 26.0;
@@ -44,9 +44,10 @@ impl CommandChips {
 }
 
 impl RenderOnce for CommandChips {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let lh = crate::text::root_line_height(text::UI);
-        div()
+        let enter = (self.id.clone(), "enter");
+        let chips = div()
             .id(self.id)
             .flex()
             .flex_1()
@@ -70,7 +71,9 @@ impl RenderOnce for CommandChips {
                         line(self.name, text::UI, lh, color::ACCENT_2).weight(font::WEIGHT_DISPLAY),
                     ),
             )
-            .children(self.fields)
+            .children(self.fields);
+        // CommandPicker.css:31: the chips fade in (`d-fade` over `--duration-tab`, `ease`) when a command is picked.
+        crate::motion::fade_in(chips, enter, motion::TAB, crate::motion::EASE, cx)
     }
 }
 
@@ -255,13 +258,14 @@ impl CommandBar {
 }
 
 impl RenderOnce for CommandBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (fg, icon) = match self.tone {
             BarTone::Info => (color::FG_2, color::ACCENT),
             BarTone::Danger => (color::DANGER, color::DANGER),
         };
         let lh = crate::text::root_line_height(text::XS);
-        div()
+        let enter = (self.id.clone(), "enter");
+        let bar = div()
             .id(self.id)
             .flex()
             .items_center()
@@ -276,7 +280,16 @@ impl RenderOnce for CommandBar {
                     .min_w_0()
                     .child(line(self.text, text::XS, lh, fg).ellipsis()),
             )
-            .children(self.hint.map(|h| line(h, text::XS, lh, color::FG_3)))
+            .children(self.hint.map(|h| line(h, text::XS, lh, color::FG_3)));
+        // CommandPicker.css:63: the bar rises in (`d-up` over `--duration-turn`, `ease`) when it appears.
+        crate::motion::up_in(
+            bar,
+            enter,
+            std::time::Duration::ZERO,
+            motion::TURN,
+            crate::motion::EASE,
+            cx,
+        )
     }
 }
 

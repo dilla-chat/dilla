@@ -81,7 +81,7 @@ impl ReplyBar {
 }
 
 impl RenderOnce for ReplyBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let size = text::BTN;
         let lh = crate::text::root_line_height(size);
         let mut cancel = div()
@@ -109,7 +109,8 @@ impl RenderOnce for ReplyBar {
             label =
                 label.child(line(format!(" · {}", self.excerpt), size, lh, color::FG_3).ellipsis());
         }
-        div()
+        let enter = (self.id.clone(), "enter");
+        let chip = div()
             .id(self.id)
             .flex()
             .items_center()
@@ -132,7 +133,16 @@ impl RenderOnce for ReplyBar {
             .child(match self.wrap_cancel {
                 Some(wrap) => wrap(cancel.into_any_element()),
                 None => cancel.into_any_element(),
-            })
+            });
+        // ReplyChip.css:3: the chip rises in (`d-up` over `--duration-normal`, `ease`) when a reply starts.
+        crate::motion::up_in(
+            chip,
+            enter,
+            std::time::Duration::ZERO,
+            crate::tokens::motion::NORMAL,
+            crate::motion::EASE,
+            cx,
+        )
     }
 }
 
