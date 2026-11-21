@@ -141,6 +141,18 @@ fn parity_commands_picker_empty() {
     dilla_parity::screen::assert_screen(&fixture("commands/picker-empty.json")).unwrap();
 }
 
+/// Task 42: `/selfrole list` run in a community that approves no role: the answer as a private row ("Only you can see
+/// this"), "No self-assignable roles are available." under Done. The fixture window ends the row from its own state (no
+/// Bot to ask), the web shot has the real Bot answer.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_commands_private_result() {
+    dilla_parity::screen::assert_screen(&fixture("commands/private-result.json")).unwrap();
+}
+
 /// `/modlog` (CommandHost.tsx:411, Decision D1): the moderation history opens in a dialog over the channel, the row under
 /// the log saying so.
 #[test]
