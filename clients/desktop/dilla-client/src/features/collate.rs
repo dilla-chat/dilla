@@ -26,41 +26,49 @@ pub fn set_locale(tag: &str) {
 
 /// The process locale: the one set, else English.
 pub fn locale() -> String {
-    let set = LOCALE.read().unwrap_or_else(PoisonError::into_inner);
-    if set.is_empty() {
-        FALLBACK.to_owned()
-    } else {
-        set.clone()
-    }
+    with_locale(str::to_owned)
 }
 
+/// Runs `f` with the process locale, without copying it.
+fn with_locale<R>(f: impl FnOnce(&str) -> R) -> R {
+    let set = LOCALE.read().unwrap_or_else(PoisonError::into_inner);
+    f(if set.is_empty() { FALLBACK } else { &set })
+}
+
+type Pair = [Option<Rc<Collator>>; 2];
+
 thread_local! {
-    /// The collators this thread built (an ICU collator is not `Send`), one per locale and strength.
-    static CACHE: RefCell<HashMap<(String, bool), Rc<Collator>>> = RefCell::new(HashMap::new());
+    /// The collators this thread built (an ICU collator is not `Send`), per locale: [default strength, base strength].
+    static CACHE: RefCell<HashMap<String, Pair>> = RefCell::new(HashMap::new());
+}
+
+fn build(tag: &str, base: bool) -> Rc<Collator> {
+    let locale = tag
+        .parse::<Locale>()
+        .or_else(|_| FALLBACK.parse::<Locale>())
+        .unwrap_or(Locale::UNKNOWN);
+    let mut options = CollatorOptions::default();
+    if base {
+        options.strength = Some(Strength::Primary);
+    }
+    let borrowed = Collator::try_new(CollatorPreferences::from(&locale), options)
+        .or_else(|_| Collator::try_new(CollatorPreferences::default(), options))
+        .expect("the compiled collation data holds the root collator");
+    Rc::new(borrowed.static_to_owned())
 }
 
 /// The collator of `tag`: base letters only when `base` (localeCompare `sensitivity: 'base'`), else ICU's default
-/// strength (accents and case break ties). Built once per locale.
+/// strength (accents and case break ties). Built once per locale and strength; a hit allocates nothing.
 fn collator(tag: &str, base: bool) -> Rc<Collator> {
     CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .entry((tag.to_owned(), base))
-            .or_insert_with(|| {
-                let locale = tag
-                    .parse::<Locale>()
-                    .or_else(|_| FALLBACK.parse::<Locale>())
-                    .unwrap_or(Locale::UNKNOWN);
-                let mut options = CollatorOptions::default();
-                if base {
-                    options.strength = Some(Strength::Primary);
-                }
-                let borrowed = Collator::try_new(CollatorPreferences::from(&locale), options)
-                    .or_else(|_| Collator::try_new(CollatorPreferences::default(), options))
-                    .expect("the compiled collation data holds the root collator");
-                Rc::new(borrowed.static_to_owned())
-            })
-            .clone()
+        let mut cache = cache.borrow_mut();
+        let slot = usize::from(base);
+        if let Some(found) = cache.get(tag).and_then(|pair| pair[slot].clone()) {
+            return found;
+        }
+        let built = build(tag, base);
+        cache.entry(tag.to_owned()).or_default()[slot] = Some(built.clone());
+        built
     })
 }
 
@@ -76,12 +84,12 @@ pub fn default_in(tag: &str, a: &str, b: &str) -> Ordering {
 
 /// [`base_in`] in the process locale.
 pub fn base(a: &str, b: &str) -> Ordering {
-    base_in(&locale(), a, b)
+    with_locale(|tag| base_in(tag, a, b))
 }
 
 /// [`default_in`] in the process locale.
 pub fn by_default(a: &str, b: &str) -> Ordering {
-    default_in(&locale(), a, b)
+    with_locale(|tag| default_in(tag, a, b))
 }
 
 #[cfg(test)]
@@ -125,6 +133,15 @@ mod tests {
         assert_eq!(default_in("en-US", "bjorn", "Bjorn"), Ordering::Less);
         assert_eq!(default_in("en-US", "bjorn", "björn"), Ordering::Less);
         assert_eq!(default_in("en-US", "björn", "bjorn2"), Ordering::Less);
+    }
+
+    #[test]
+    fn a_second_call_reuses_the_collator_of_its_locale_and_strength() {
+        let a = collator("sv-SE", true);
+        let b = collator("sv-SE", true);
+        assert!(Rc::ptr_eq(&a, &b), "one collator per locale and strength");
+        assert!(!Rc::ptr_eq(&a, &collator("sv-SE", false)));
+        assert!(!Rc::ptr_eq(&a, &collator("en-US", true)));
     }
 
     #[test]
