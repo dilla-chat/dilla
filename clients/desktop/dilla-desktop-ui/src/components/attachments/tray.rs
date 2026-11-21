@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, div, img, px, relative,
+    AnyElement, App, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px, relative,
 };
 
 use super::OnClick;
@@ -14,7 +14,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{TRACKING_TAG, focus_ring};
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// `.d-attachment-tray__item`: 84px high inside its 1px line (content-box).
 pub const ITEM_H: f32 = 84.0;
@@ -82,7 +82,7 @@ pub fn height() -> f32 {
     ITEM_H + 2.0 + GAP
 }
 
-fn card(e: TrayEntry) -> AnyElement {
+fn card(e: TrayEntry, cx: &App) -> AnyElement {
     let failed = e.step == Step::Failed;
     let w = match e.preview {
         Preview::None => FILE_W,
@@ -188,7 +188,8 @@ fn card(e: TrayEntry) -> AnyElement {
         _ => color::ACCENT,
     };
     let on_remove = e.on_remove.clone();
-    div()
+    let enter_id = gpui::ElementId::Name(format!("tray-enter-{}", e.id).into());
+    let item = div()
         .id(gpui::ElementId::Name(format!("tray-{}", e.id).into()))
         .relative()
         .flex_none()
@@ -234,12 +235,20 @@ fn card(e: TrayEntry) -> AnyElement {
                 .focus_visible(|s| s.shadow(focus_ring()))
                 .on_click(move |ev, w, cx| on_remove(ev, w, cx))
                 .child(Icon::new(IconName::X).size(px(11.0)).color(color::FG_CHIP)),
-        )
-        .into_any_element()
+        );
+    // AttachmentTray.css:5: each item rises in (`d-up` over `--duration-toggle`, `ease`) when it joins the tray.
+    crate::motion::up_in(
+        item,
+        enter_id,
+        std::time::Duration::ZERO,
+        motion::TOGGLE,
+        crate::motion::EASE,
+        cx,
+    )
 }
 
 /// The tray, or `None` while it is empty (nothing renders).
-pub fn tray(entries: Vec<TrayEntry>) -> Option<AnyElement> {
+pub fn tray(entries: Vec<TrayEntry>, cx: &App) -> Option<AnyElement> {
     if entries.is_empty() {
         return None;
     }
@@ -249,7 +258,7 @@ pub fn tray(entries: Vec<TrayEntry>) -> Option<AnyElement> {
             .gap(px(GAP))
             .pb(px(GAP))
             .overflow_hidden()
-            .children(entries.into_iter().map(card))
+            .children(entries.into_iter().map(|e| card(e, cx)))
             .into_any_element(),
     )
 }

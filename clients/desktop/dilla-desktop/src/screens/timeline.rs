@@ -32,10 +32,11 @@ use dilla_desktop_ui::components::button::{Button, ButtonVariant};
 use dilla_desktop_ui::components::tag::{Tag, TagKind, look};
 use dilla_desktop_ui::components::{Avatar, AvatarShape, AvatarSize};
 use dilla_desktop_ui::metrics::Density;
+use dilla_desktop_ui::motion;
 use dilla_desktop_ui::text::{
     Face, Line, MONO_ADVANCE, chromium_baseline, line, line_height, paragraph,
 };
-use dilla_desktop_ui::tokens::{color, font, radius, text};
+use dilla_desktop_ui::tokens::{color, font, motion as token, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
 
 use crate::format;
@@ -221,7 +222,7 @@ impl Plan {
     }
 
     /// The elements, laid out in `width`.
-    fn laid(self, width: f32, y0: f32) -> Laid {
+    fn laid(self, width: f32, y0: f32, code_age: Option<std::time::Duration>) -> Laid {
         match self {
             Self::Editor(l) => l,
             Self::Text {
@@ -229,7 +230,7 @@ impl Plan {
                 color,
                 height,
             } => {
-                let mut laid = body::layout_from(&parts, width, color, y0);
+                let mut laid = body::layout_entering(&parts, width, color, y0, code_age);
                 laid.height = height;
                 laid
             }
@@ -1055,6 +1056,8 @@ struct RowCx<'a> {
     active: Option<String>,
     /// The window's density.
     density: Density,
+    /// The clock the rows' entrances run on (Task 36c).
+    now: std::time::Instant,
 }
 
 /// The shaped width of meta text (a webhook's name is the admin's: wide glyphs and emoji are measured, not counted;
@@ -1147,7 +1150,14 @@ fn draw_row(
         let at = local + shift + body_offset(shown.grouped, shown.marks, d);
         at - snap_px(at)
     };
-    let laid = shown.body.laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac);
+    // CodeBlock.css:2: a code card rises in over `--duration-slow` from the row's mount (the row's stagger does not delay it).
+    let code_age = (!cx.reduce_motion())
+        .then(|| ui.read(cx).entrances.of(&item.key, cx_row.now))
+        .flatten()
+        .map(|(elapsed, _)| elapsed);
+    let laid = shown
+        .body
+        .laid(cx_row.width - CONTENT_X - ROW_RIGHT, frac, code_age);
     let height = row_height(
         shown.grouped,
         shown.marks,
@@ -1380,6 +1390,15 @@ fn draw_row(
         .w(px(cx_row.width))
         .h(px(snap_px(top + height) - base))
         .group(group.clone());
+    // MessageRow.css:8: `d-up` over `--duration-enter` on `--ease-out`, delayed by the first paint's stagger.
+    if !cx.reduce_motion()
+        && let Some((elapsed, delay)) = ui.read(cx).entrances.of(&item.key, cx_row.now)
+        && elapsed < delay + token::ENTER
+    {
+        let (opacity, offset) =
+            motion::rise_after_at(elapsed, delay, token::ENTER, token::EASE_OUT);
+        row = row.top(px(base + offset)).opacity(opacity);
+    }
     if focused_in {
         row = row.shadow(inset_ring());
     }
@@ -1767,6 +1786,17 @@ pub fn render(
             .filter(|k| order.contains(k))
             .or_else(|| order.last().cloned())
     });
+    // Task 36c: the log mounts for a channel and its read state (Conversation.tsx `logKey`); its rows enter once, from the
+    // frame the log first holds them, and the log asks for frames while any of it is still moving.
+    let now = cx.background_executor().now();
+    let reduced = cx.reduce_motion();
+    let ready = state.timelines.contains_key(&channel.id);
+    let entering = ui.update(cx, |u, _| {
+        u.enter_log((channel.id, ready), &order, now, reduced)
+    });
+    if entering.running {
+        window.request_animation_frame();
+    }
     let reveal = ui.update(cx, |u, _| u.reveal.take());
     let revealed = reveal.as_deref().and_then(|key| {
         let i = shown.iter().position(|s| s.item.key == key)?;
@@ -1853,6 +1883,7 @@ pub fn render(
         order: order.clone(),
         active: active.clone(),
         density,
+        now,
     };
     // Only the rows near the viewport are drawn (a screen above and below it): the rest keep their height from the memo.
     let at = if jumped.is_some() || revealed.is_some() {
@@ -1999,7 +2030,14 @@ pub fn render(
             scroll.set_offset(gpui::point(len(0.), len(0.)));
             leave_end(true, cx);
         })
-        .child(div().relative().w_full().h(px(inner)).children(placer.out))
+        .child({
+            let content = div().relative().w_full().h(px(inner)).children(placer.out);
+            // MessageLog.css:3-4: a channel switch fades the log in while it rises 6px.
+            match entering.log {
+                Some((opacity, offset)) => content.top(px(offset)).opacity(opacity),
+                None => content,
+            }
+        })
 }
 
 gpui::actions!(message_log, [PageUp, PageDown, LogTop, FocusComposer]);

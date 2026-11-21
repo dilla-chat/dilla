@@ -187,6 +187,9 @@ pub struct AttachmentsUi {
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
     pub players: HashMap<CardKey, Player>,
+    /// When each file card (by its id) first drew: its `d-up` entrance (AttachmentCard.css:14) runs once from there, not
+    /// again when its row leaves the drawn range of the log and comes back.
+    pub entered: dilla_desktop_ui::motion::Entrances<String>,
     /// The newest open's generation of each image, card and player (the key names its client): [`release`] drops what
     /// that client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
     pub media_owners: HashMap<MediaKey, u64>,

@@ -208,6 +208,57 @@ pub struct MessageUi {
     pub prev_height: f32,
     /// The channel whose "load earlier" is being read (Shell.tsx `loadingEarlier`): its log is busy meanwhile.
     pub loading_earlier: Option<ChannelId>,
+    /// Task 36c: the log's mount (Conversation.tsx `key={logKey}`: the channel and whether its timeline is read), when it
+    /// mounted, whether its first paint is still to come, and when each row entered. The rows are not all drawn, so a row's
+    /// entrance cannot live in its element state (it would play again when the row scrolls back into the drawn range).
+    log_mount: Option<LogMount>,
+    pub entrances: dilla_desktop_ui::motion::Entrances<String>,
+}
+
+/// The log's mount: the web's `logKey` (the channel, and whether its timeline is read), and when it mounted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LogMount {
+    key: (ChannelId, bool),
+    at: Instant,
+    /// The first paint's rows have not been staggered yet (MessageLog.tsx's mount effect runs once).
+    fresh: bool,
+}
+
+/// MessageLog.tsx `STAGGER_ROWS`: how many of the log's last rows the first paint staggers.
+pub const STAGGER_ROWS: usize = 20;
+
+/// What the open log's entrances ask of this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogMotion {
+    /// The log's own fade and rise (`d-log-fade`, `d-log-rise`): its opacity and its offset down in px; `None` once over.
+    pub log: Option<(f32, f32)>,
+    /// Some entrance, the log's or a row's, is still running: the log asks for another frame.
+    pub running: bool,
+}
+
+impl LogMotion {
+    /// Nothing enters (reduced motion, or the end state).
+    pub const STILL: Self = Self {
+        log: None,
+        running: false,
+    };
+}
+
+/// MessageLog.tsx's first-paint stagger: the log's last [`STAGGER_ROWS`] rows take `--d-enter-i` 0, 1, 2... in order, each
+/// delayed by that many `--duration-stagger`; the rows before them, and every row that arrives later, have none.
+pub fn stagger(keys: &[String], first_paint: bool) -> Vec<(String, Duration)> {
+    let from = keys.len().saturating_sub(STAGGER_ROWS);
+    keys.iter()
+        .enumerate()
+        .map(|(n, key)| {
+            let delay = if first_paint && n >= from {
+                dilla_desktop_ui::tokens::motion::STAGGER * (n - from) as u32
+            } else {
+                Duration::ZERO
+            };
+            (key.clone(), delay)
+        })
+        .collect()
 }
 
 /// The window's message state, created on first use. Notifying it redraws the view that drew the timeline.
@@ -285,6 +336,47 @@ impl MessageUi {
         }
         at.is_some_and(|at| at.elapsed() < FLASH)
             .then_some(self.flash_seq)
+    }
+
+    /// The log is drawn at `now` for `key` (the channel and whether its timeline is read: a change of either mounts the log
+    /// anew, as Conversation.tsx's `key={logKey}` does) with the rows `order`: every row new to the log enters now, the
+    /// log's first paint staggered ([`stagger`]). With `reduced` (or the web's zeroed durations) nothing enters.
+    pub fn enter_log(
+        &mut self,
+        key: (ChannelId, bool),
+        order: &[String],
+        now: Instant,
+        reduced: bool,
+    ) -> LogMotion {
+        use dilla_desktop_ui::motion;
+        use dilla_desktop_ui::tokens::motion as token;
+        // Reduced motion draws every entrance finished; the rows and the mount are still taken in as long past, so that
+        // turning motion on later plays nothing back.
+        let long_ago = now.checked_sub(Duration::from_secs(3600)).unwrap_or(now);
+        let (at, fresh) = if reduced {
+            (long_ago, false)
+        } else {
+            (now, true)
+        };
+        if self.log_mount.is_none_or(|m| m.key != key) {
+            self.log_mount = Some(LogMount { key, at, fresh });
+            self.entrances.clear();
+        }
+        let mount = self.log_mount.as_mut().expect("just mounted");
+        let first_paint = std::mem::take(&mut mount.fresh);
+        let seen = if reduced { long_ago } else { now };
+        let rows = self
+            .entrances
+            .sync(stagger(order, first_paint), seen, token::ENTER);
+        if reduced {
+            return LogMotion::STILL;
+        }
+        let since = now.saturating_duration_since(mount.at);
+        let log_over = since >= token::SWITCH.max(token::SWITCH_RISE);
+        LogMotion {
+            log: (!log_over).then(|| motion::log_at(since)),
+            running: rows || !log_over,
+        }
     }
 
     /// Starts editing `item`: the field holds the text as `@names`, focused with the caret at its end.
@@ -654,5 +746,77 @@ pub fn open_pins(channel: ChannelId, client: Option<&Rc<Client>>, window: &Windo
     }
     if let Some(ui) = handle(window, cx) {
         ui.update(cx, |ui, cx| ui.open_pins(channel, cx));
+    }
+}
+
+#[cfg(test)]
+mod entrance_tests {
+    use super::*;
+    use dilla_desktop_ui::tokens::motion as token;
+
+    fn keys(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("k{i}")).collect()
+    }
+
+    /// MessageLog.tsx:82-83: only the last 20 rows of the first paint take `--d-enter-i` 0.., the rows before them none.
+    #[test]
+    fn the_first_paint_staggers_the_last_twenty_rows_40ms_apart() {
+        let all = stagger(&keys(30), true);
+        assert!(all[..10].iter().all(|(_, d)| d.is_zero()));
+        assert_eq!(all[10].1, Duration::ZERO);
+        assert_eq!(all[11].1, token::STAGGER);
+        assert_eq!(all[29].1, token::STAGGER * 19);
+        // A later paint (a row arriving, earlier rows loaded) staggers nothing.
+        assert!(stagger(&keys(30), false).iter().all(|(_, d)| d.is_zero()));
+        // Fewer than twenty rows: they take 0, 1, 2...
+        let few = stagger(&keys(3), true);
+        assert_eq!(few[2].1, token::STAGGER * 2);
+    }
+
+    /// The first paint's rows enter staggered; a row that arrives later enters at once; scrolling or a redraw never replays
+    /// an entrance; another channel (or the timeline becoming read) mounts the log afresh; reduced motion draws nothing
+    /// and plays nothing back when motion is turned on.
+    #[test]
+    fn rows_enter_once_and_a_remount_enters_them_again() {
+        let mut ui = MessageUi::default();
+        let (a, b) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let t0 = Instant::now();
+        let rows = keys(3);
+        let first = ui.enter_log((a, true), &rows, t0, false);
+        assert!(first.running && first.log.is_some());
+        let k2 = "k2".to_string();
+        assert_eq!(ui.entrances.of(&k2, t0).unwrap().1, token::STAGGER * 2);
+        // A redraw much later: nothing runs, the log is over.
+        let later = t0 + Duration::from_secs(5);
+        assert_eq!(
+            ui.enter_log((a, true), &rows, later, false),
+            LogMotion::STILL
+        );
+        // A new row enters then, with no delay.
+        let more = keys(4);
+        let fresh = ui.enter_log((a, true), &more, later, false);
+        assert!(fresh.running && fresh.log.is_none());
+        let k3 = "k3".to_string();
+        assert_eq!(
+            ui.entrances.of(&k3, later),
+            Some((Duration::ZERO, Duration::ZERO))
+        );
+        // Scrolling draws more or fewer rows of the log; it holds the same rows, so nothing enters again.
+        let age = later + Duration::from_secs(5);
+        ui.enter_log((a, true), &more, age, false);
+        assert!(ui.entrances.of(&"k0".to_string(), age).unwrap().0 >= Duration::from_secs(5));
+        // Another channel, or the same one once it is read, mounts afresh and staggers again.
+        ui.enter_log((b, false), &[], age, false);
+        let again = ui.enter_log((b, true), &rows, age, false);
+        assert!(again.running);
+        assert_eq!(
+            ui.entrances.of(&"k1".to_string(), age).unwrap().1,
+            token::STAGGER
+        );
+        // Reduced motion: still, and turning motion on afterwards plays nothing back.
+        let mut ui = MessageUi::default();
+        assert_eq!(ui.enter_log((a, true), &rows, t0, true), LogMotion::STILL);
+        let on = ui.enter_log((a, true), &rows, t0 + Duration::from_millis(10), false);
+        assert_eq!(on, LogMotion::STILL, "{on:?}");
     }
 }

@@ -625,6 +625,24 @@ where
     enter(el, id, run, cx, modal_at)
 }
 
+/// [`modal_in`], or `el` as it is when `still` (an entrance the web switches off for this element).
+pub fn modal_in_unless<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    run: Duration,
+    still: bool,
+    cx: &App,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if still {
+        el.into_any_element()
+    } else {
+        modal_in(el, id, run, cx)
+    }
+}
+
 /// `el` entering with `d-toast` over [`motion::TOAST`] on `--ease-out`, once per mount (see [`enter`]). The `scale(0.96)` is
 /// not drawn, as with [`modal_in`].
 pub fn toast_in<E>(el: E, id: impl Into<ElementId>, cx: &App) -> AnyElement
@@ -722,6 +740,224 @@ pub fn pop_in(
             },
         )
         .into_any_element()
+}
+
+// Task 36c: the entrances that rise and fade in as the web's do (base.css:170-181 and the components' own keyframes).
+
+/// `d-log-rise`'s start offset (`translateY(6px)`, MessageLog.css:8).
+const LOG_RISE_PX: f32 = 6.0;
+
+/// What an `animation-delay` leaves of `elapsed`: nothing until the delay is over (the keyframe's first frame stands, as a
+/// `backwards` or `both` fill draws it), then the time since.
+pub fn after(elapsed: Duration, delay: Duration) -> Duration {
+    elapsed.saturating_sub(delay)
+}
+
+/// `d-up` with an `animation-delay` of `delay` (the message rows' `--d-enter-i` stagger, the call stage's tiles).
+pub fn rise_after_at(
+    elapsed: Duration,
+    delay: Duration,
+    run: Duration,
+    curve: [f32; 4],
+) -> (f32, f32) {
+    rise_at(after(elapsed, delay), run, curve)
+}
+
+/// `d-invite-up` (InvitePanel.css:35, `from { opacity: 0; translateY(8px) }`): the same fade and 8px rise as `d-up`.
+pub fn invite_up_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> (f32, f32) {
+    rise_at(elapsed, run, curve)
+}
+
+/// `d-poll-card-entry` (PollCard.css:34) and `d-poll-answer-entry` (PollDialog.css:58): `opacity: 0; translateY(8px)` to
+/// none, on `ease` (the CSS names no other curve).
+pub fn poll_entry_at(elapsed: Duration, run: Duration) -> (f32, f32) {
+    rise_at(elapsed, run, EASE)
+}
+
+/// `d-poll-voter-pop` (PollCard.css:35, `scale(.3)` to 1.2 at 60% to 1): `d-pop`'s keyframes, on `ease`.
+pub fn poll_voter_pop_at(elapsed: Duration, run: Duration) -> f32 {
+    pop_at(elapsed, run, EASE)
+}
+
+/// `d-log-fade` (MessageLog.css:7, `from { opacity: 0 }`, `both`, the default curve) `elapsed` into its run.
+pub fn log_fade_at(elapsed: Duration, run: Duration) -> f32 {
+    fade_at(elapsed, run, EASE)
+}
+
+/// `d-log-rise` (MessageLog.css:8, `from { translateY(6px) }`, `--ease-out`): the downward offset in px `elapsed` into its
+/// run. A run of zero is over at once.
+pub fn log_rise_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> f32 {
+    if run.is_zero() {
+        return 0.0;
+    }
+    LOG_RISE_PX * (1.0 - cubic_bezier(curve, elapsed.as_secs_f32() / run.as_secs_f32()))
+}
+
+/// `d-splash-in` (Splash.css:6, `from { opacity: 0 }`, `--ease-out`, no fill): the opacity `elapsed` into its run.
+pub fn splash_in_at(elapsed: Duration, run: Duration) -> f32 {
+    fade_at(elapsed, run, motion::EASE_OUT)
+}
+
+/// `el` entering with `d-up` after `delay` and over `run` on `curve`, once for as long as it stays drawn at `id`'s place
+/// (the element fades in while it rises into position; its layout does not move). `el` must be in the flow of its parent
+/// (not `.absolute()`). The delay holds the first frame. With reduced motion it is drawn as it is.
+pub fn up_in<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    delay: Duration,
+    run: Duration,
+    curve: [f32; 4],
+    cx: &App,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    let total = delay + run;
+    el.with_animation(id, Animation::new(total), move |el, delta| {
+        if delta >= 1.0 {
+            el
+        } else {
+            let (opacity, offset) = rise_after_at(total.mul_f32(delta), delay, run, curve);
+            el.relative().top(px(offset)).opacity(opacity)
+        }
+    })
+    .into_any_element()
+}
+
+/// Draws `el` through the fade-and-rise `at` gives over `run`, once per mount (the shape the keyframes above share).
+fn rise_with<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    run: Duration,
+    cx: &App,
+    at: impl Fn(Duration) -> (f32, f32) + 'static,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(id, Animation::new(run), move |el, delta| {
+        if delta >= 1.0 {
+            el
+        } else {
+            let (opacity, offset) = at(run.mul_f32(delta));
+            el.relative().top(px(offset)).opacity(opacity)
+        }
+    })
+    .into_any_element()
+}
+
+/// `el` entering with `d-invite-up` over `run` on `curve` (see [`up_in`], whose keyframe it shares).
+pub fn invite_up_in<E>(
+    el: E,
+    id: impl Into<ElementId>,
+    run: Duration,
+    curve: [f32; 4],
+    cx: &App,
+) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    rise_with(el, id, run, cx, move |t| invite_up_at(t, run, curve))
+}
+
+/// `el` entering with `d-poll-card-entry` or `d-poll-answer-entry` over `run` on `ease`, once per mount.
+pub fn poll_entry_in<E>(el: E, id: impl Into<ElementId>, run: Duration, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    rise_with(el, id, run, cx, move |t| poll_entry_at(t, run))
+}
+
+/// `el` fading in with `d-splash-in` over `run` on `--ease-out`, once per mount. With reduced motion (Splash.css's own
+/// `animation: none`) it is drawn as it is.
+pub fn splash_in<E>(el: E, id: impl Into<ElementId>, run: Duration, cx: &App) -> AnyElement
+where
+    E: Styled + IntoElement + 'static,
+{
+    if cx.reduce_motion() {
+        return el.into_any_element();
+    }
+    el.with_animation(id, Animation::new(run), move |el, delta| {
+        if delta >= 1.0 {
+            el
+        } else {
+            el.opacity(splash_in_at(run.mul_f32(delta), run))
+        }
+    })
+    .into_any_element()
+}
+
+/// The message log's channel switch (MessageLog.css:3-4) as it stands at `elapsed`: `d-log-fade` over
+/// [`motion::SWITCH`] and `d-log-rise` over [`motion::SWITCH_RISE`] on `--ease-out`, at once. The opacity and the downward
+/// offset in px.
+pub fn log_at(elapsed: Duration) -> (f32, f32) {
+    (
+        log_fade_at(elapsed, motion::SWITCH),
+        log_rise_at(elapsed, motion::SWITCH_RISE, motion::EASE_OUT),
+    )
+}
+
+/// The entrances of a list that is not drawn whole (the message log draws the rows near its viewport): an element state
+/// keyed to the row would be dropped when the row scrolls out of the drawn range and play again when it returns, so the
+/// list remembers when each key entered. A key is remembered from the frame the list first holds it, drawn or not (the
+/// web's row mounts whether or not it is on screen), and forgotten when the list no longer holds it.
+#[derive(Debug)]
+pub struct Entrances<K> {
+    entered: std::collections::HashMap<K, (std::time::Instant, Duration)>,
+}
+
+impl<K> Default for Entrances<K> {
+    fn default() -> Self {
+        Self {
+            entered: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone> Entrances<K> {
+    /// The list as of `now`: `keys` are what it holds, each with the delay its entrance starts after. Keys not seen before
+    /// enter now; keys that are gone are forgotten. Answers whether any entrance is still running at `now` for a run of
+    /// `run` (the caller asks for another frame while it is).
+    pub fn sync(
+        &mut self,
+        keys: impl IntoIterator<Item = (K, Duration)>,
+        now: std::time::Instant,
+        run: Duration,
+    ) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        for (key, delay) in keys {
+            self.entered.entry(key.clone()).or_insert((now, delay));
+            seen.insert(key);
+        }
+        self.entered.retain(|k, _| seen.contains(k));
+        self.entered
+            .values()
+            .any(|(at, delay)| now.saturating_duration_since(*at) < *delay + run)
+    }
+
+    /// How long `key` has been entering at `now`, and its delay; `None` for a key the list does not hold.
+    pub fn of(&self, key: &K, now: std::time::Instant) -> Option<(Duration, Duration)> {
+        self.entered
+            .get(key)
+            .map(|(at, delay)| (now.saturating_duration_since(*at), *delay))
+    }
+
+    /// `key` is drawn at `now`: it enters now when it is new, and answers how long it has been entering.
+    pub fn touch(&mut self, key: K, now: std::time::Instant) -> Duration {
+        let (at, _) = *self.entered.entry(key).or_insert((now, Duration::ZERO));
+        now.saturating_duration_since(at)
+    }
+
+    /// Forgets everything: the next [`Self::sync`] enters every key it holds (a log remounted for another channel).
+    pub fn clear(&mut self) {
+        self.entered.clear();
+    }
 }
 
 #[cfg(test)]
@@ -1337,5 +1573,166 @@ mod tests {
         let mut moving = cx.update(|cx| flash(div().shadow(shadow()), "f", cx));
         assert_eq!(moving.style().box_shadow.clone().unwrap(), shadow());
         assert!(moving.style().background.is_none(), "the layer is the tint");
+    }
+
+    // Task 36c.
+
+    /// `d-up` after a delay holds its first frame (opacity 0, 8px down) until the delay is over, then runs as `d-up` does.
+    #[test]
+    fn a_delayed_rise_holds_its_first_frame_then_runs() {
+        let (run, delay) = (motion::ENTER, motion::STAGGER * 3);
+        let curve = motion::EASE_OUT;
+        let first = rise_after_at(Duration::ZERO, delay, run, curve);
+        assert!(near(first.0, 0.0) && near(first.1, 8.0));
+        let held = rise_after_at(delay, delay, run, curve);
+        assert!(near(held.0, 0.0) && near(held.1, 8.0));
+        assert!(
+            near(
+                rise_after_at(delay - Duration::from_millis(1), delay, run, curve).0,
+                0.0
+            ),
+            "the delay holds the first frame"
+        );
+        let mid = rise_after_at(delay + run / 2, delay, run, curve);
+        assert_eq!(mid, rise_at(run / 2, run, curve));
+        assert!(mid.0 > 0.5 && mid.1 < 4.0, "--ease-out is ahead of linear");
+        let end = rise_after_at(delay + run, delay, run, curve);
+        assert!(near(end.0, 1.0) && near(end.1, 0.0));
+    }
+
+    /// `d-invite-up`, `d-poll-card-entry` and `d-poll-answer-entry` are `d-up`'s fade and 8px rise.
+    #[test]
+    fn the_invite_and_poll_entries_fade_and_rise_8px() {
+        let run = motion::STEP;
+        for at in [
+            invite_up_at(Duration::ZERO, run, motion::EASE_OUT),
+            poll_entry_at(Duration::ZERO, run),
+        ] {
+            assert!(near(at.0, 0.0) && near(at.1, 8.0), "{at:?}");
+        }
+        let mid = poll_entry_at(run / 2, run);
+        assert!(near(mid.0, 0.8024) && near(mid.1, 8.0 * (1.0 - 0.8024)));
+        let end = invite_up_at(run, run, motion::EASE_OUT);
+        assert!(near(end.0, 1.0) && near(end.1, 0.0));
+        assert_eq!(poll_entry_at(Duration::ZERO, Duration::ZERO), (1.0, 0.0));
+    }
+
+    /// `d-poll-voter-pop`: 0.3 at the start, 1.2 at 60%, 1 at the end.
+    #[test]
+    fn the_voter_pop_is_the_pop_on_ease() {
+        let run = motion::STEP;
+        assert!(near(poll_voter_pop_at(Duration::ZERO, run), 0.3));
+        assert!(near(poll_voter_pop_at(run.mul_f32(0.6), run), 1.2));
+        assert!(near(poll_voter_pop_at(run, run), 1.0));
+        assert!(near(poll_voter_pop_at(Duration::ZERO, Duration::ZERO), 1.0));
+    }
+
+    /// `d-log-fade` (140ms, `ease`) and `d-log-rise` (240ms, `--ease-out`, 6px) run at once and end apart.
+    #[test]
+    fn the_log_fades_in_140ms_and_rises_6px_in_240ms() {
+        let start = log_at(Duration::ZERO);
+        assert!(near(start.0, 0.0) && near(start.1, 6.0));
+        let mid = log_at(Duration::from_millis(70));
+        assert!(near(mid.0, 0.8024), "{mid:?}");
+        assert!(
+            mid.1 < 1.0 && mid.1 > 0.0,
+            "--ease-out is ahead of linear: {mid:?}"
+        );
+        let faded = log_at(motion::SWITCH);
+        assert!(near(faded.0, 1.0) && faded.1 > 0.0, "{faded:?}");
+        let over = log_at(motion::SWITCH_RISE);
+        assert!(near(over.0, 1.0) && near(over.1, 0.0));
+        assert_eq!(log_rise_at(Duration::ZERO, Duration::ZERO, EASE), 0.0);
+    }
+
+    /// `d-splash-in`: opacity 0 to 1 on `--ease-out`; a zero run is over at once.
+    #[test]
+    fn the_splash_fades_in_on_ease_out() {
+        let run = motion::SLOW;
+        assert!(near(splash_in_at(Duration::ZERO, run), 0.0));
+        assert!(splash_in_at(run / 4, run) > 0.5);
+        assert!(near(splash_in_at(run, run), 1.0));
+        assert_eq!(splash_in_at(Duration::ZERO, Duration::ZERO), 1.0);
+    }
+
+    /// A list that is drawn in part remembers when each key entered: a key seen again does not enter again, a gone key is
+    /// forgotten (it enters afresh if it returns), and the list answers whether anything still runs.
+    #[test]
+    fn entrances_are_remembered_per_key() {
+        let t0 = std::time::Instant::now();
+        let run = Duration::from_millis(300);
+        let mut e: Entrances<&str> = Entrances::default();
+        let delay = Duration::from_millis(40);
+        assert!(e.sync([("a", Duration::ZERO), ("b", delay)], t0, run));
+        let later = t0 + Duration::from_millis(100);
+        assert_eq!(
+            e.of(&"a", later),
+            Some((Duration::from_millis(100), Duration::ZERO))
+        );
+        assert_eq!(e.of(&"b", later), Some((Duration::from_millis(100), delay)));
+        // A key new later enters then, with no delay; the old ones keep their start.
+        assert!(e.sync(
+            [
+                ("a", Duration::ZERO),
+                ("b", Duration::ZERO),
+                ("c", Duration::ZERO)
+            ],
+            later,
+            run
+        ));
+        assert_eq!(e.of(&"b", later).unwrap().1, delay);
+        assert_eq!(e.of(&"c", later).unwrap().0, Duration::ZERO);
+        // Over: nothing runs once every run is done.
+        let over = t0 + Duration::from_secs(5);
+        assert!(!e.sync(
+            [
+                ("a", Duration::ZERO),
+                ("b", Duration::ZERO),
+                ("c", Duration::ZERO)
+            ],
+            over,
+            run
+        ));
+        // `a` leaves and returns: it enters again.
+        e.sync([("b", Duration::ZERO)], over, run);
+        assert!(e.of(&"a", over).is_none());
+        e.sync([("a", Duration::ZERO), ("b", Duration::ZERO)], over, run);
+        assert_eq!(e.of(&"a", over).unwrap().0, Duration::ZERO);
+        assert_eq!(e.touch("z", over), Duration::ZERO);
+        assert_eq!(
+            e.touch("z", over + Duration::from_millis(7)),
+            Duration::from_millis(7)
+        );
+    }
+
+    #[gpui::test]
+    fn an_up_entrance_with_a_delay_runs_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 380 + 80, |cx| {
+            up_in(
+                div(),
+                "up-delayed",
+                motion::STAGGER * 2,
+                motion::ENTER,
+                motion::EASE_OUT,
+                cx,
+            )
+        });
+    }
+
+    #[gpui::test]
+    fn an_invite_entrance_runs_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 300, |cx| {
+            invite_up_in(div(), "invite", motion::SLOW, motion::EASE_OUT, cx)
+        });
+    }
+
+    #[gpui::test]
+    fn a_poll_entrance_runs_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 360, |cx| poll_entry_in(div(), "poll", motion::STEP, cx));
+    }
+
+    #[gpui::test]
+    fn the_splash_fades_in_once_per_mount(cx: &mut gpui::TestAppContext) {
+        runs_once(cx, 300, |cx| splash_in(div(), "splash", motion::SLOW, cx));
     }
 }

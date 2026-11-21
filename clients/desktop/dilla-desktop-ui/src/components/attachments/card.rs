@@ -14,7 +14,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// AttachmentCard.tsx `CARD_MAX_PX`: a sent image's tile is 280 wide, 4:3.
 pub const IMAGE_W: f32 = 280.0;
@@ -202,6 +202,8 @@ pub fn file_card(
     // The download, named for a screen reader (`shell.attachment.save`), and the save itself.
     on_save: Option<(SharedString, OnClick)>,
     height: f32,
+    // How long the card has been entering (`d-up` over `--duration-slow`, AttachmentCard.css:14); `None` draws it as it is.
+    entered: Option<std::time::Duration>,
 ) -> AnyElement {
     let id: SharedString = id.into();
     let mut card = div()
@@ -276,6 +278,10 @@ pub fn file_card(
                         .color(color::FG_STRONG),
                 ),
         );
+    }
+    if let Some(elapsed) = entered.filter(|e| *e < motion::SLOW) {
+        let (opacity, offset) = crate::motion::rise_at(elapsed, motion::SLOW, crate::motion::EASE);
+        card = card.relative().top(px(offset)).opacity(opacity);
     }
     card.into_any_element()
 }

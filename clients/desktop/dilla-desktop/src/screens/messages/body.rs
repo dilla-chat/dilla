@@ -15,7 +15,7 @@ use gpui::{AnyElement, FontWeight, Hsla, IntoElement, ParentElement, Styled, div
 use dilla_desktop_ui::text::{
     Face, MONO_ADVANCE, ascent_descent, chromium_baseline, line, line_height,
 };
-use dilla_desktop_ui::tokens::{color, font, radius, text};
+use dilla_desktop_ui::tokens::{color, font, motion as token, radius, text};
 
 use std::sync::OnceLock;
 
@@ -678,6 +678,18 @@ pub fn layout(parts: &[Body], width: f32, fg: Hsla) -> Laid {
 /// [`layout`] with the first line `y0` px below the box's top: the box sits on a whole pixel and the body's own position
 /// has a fraction, which the lines keep (they are placed at the CSS position, not rounded with the box).
 pub fn layout_from(parts: &[Body], width: f32, fg: Hsla, y0: f32) -> Laid {
+    layout_entering(parts, width, fg, y0, None)
+}
+
+/// [`layout_from`] with the code cards `entered` ago (`d-up` over `--duration-slow`, CodeBlock.css:2, from the row's mount;
+/// `None` draws them as they are).
+pub fn layout_entering(
+    parts: &[Body],
+    width: f32,
+    fg: Hsla,
+    y0: f32,
+    entered: Option<std::time::Duration>,
+) -> Laid {
     let mut out: Vec<AnyElement> = Vec::new();
     if !parts.iter().any(|p| matches!(p, Body::CodeBlock { .. })) {
         let h = layout_run(&mut out, parts, y0, width, fg);
@@ -710,14 +722,13 @@ pub fn layout_from(parts: &[Body], width: f32, fg: Hsla, y0: f32) -> Laid {
             }
             first = false;
             let (card, h) = code_card(lang.as_deref(), text, card_width(width));
-            out.push(
-                div()
-                    .absolute()
-                    .left(len(0.))
-                    .top(px(y.round()))
-                    .child(card)
-                    .into_any_element(),
-            );
+            let mut slot = div().absolute().left(len(0.)).top(px(y.round()));
+            if let Some(age) = entered.filter(|a| *a < token::SLOW) {
+                let (opacity, offset) =
+                    dilla_desktop_ui::motion::rise_at(age, token::SLOW, token::EASE_OUT);
+                slot = slot.top(px(y.round() + offset)).opacity(opacity);
+            }
+            out.push(slot.child(card).into_any_element());
             y += h;
         } else {
             run.push(p.clone());

@@ -398,13 +398,23 @@ pub fn attachment_cards(
                     })
                 });
                 let state = state_text.clone();
+                // AttachmentCard.css:14: the file card rises in once, from its first draw.
+                let entered = (!cx.reduce_motion())
+                    .then(|| {
+                        let now = cx.background_executor().now();
+                        ui::ui(cx).entered.touch(id.clone(), now)
+                    })
+                    .filter(|e| *e < dilla_desktop_ui::tokens::motion::SLOW);
+                if entered.is_some() {
+                    window.request_animation_frame();
+                }
                 let element: Box<dyn FnOnce(f32) -> AnyElement> = Box::new(move |line_h| {
                     let own = line_h
                         - state
                             .as_ref()
                             .map_or(0.0, |_| STATE_GAP + state_line_height());
                     let save = save.map(|s| (save_label, s));
-                    let el = file_card(id, name, meta, save, own.max(file_card_height()));
+                    let el = file_card(id, name, meta, save, own.max(file_card_height()), entered);
                     match state {
                         None => el,
                         Some((s, failed)) => div()
@@ -486,7 +496,7 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
             }
         })
         .collect();
-    tray_view::tray(entries)
+    tray_view::tray(entries, cx)
 }
 
 /// A 26x24 tool of the composer's foot (`.d-composer__tool`).
