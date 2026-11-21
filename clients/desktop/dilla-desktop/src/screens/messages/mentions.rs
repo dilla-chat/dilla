@@ -304,10 +304,11 @@ pub fn mention_options(
     roles: &[RoleInfo],
 ) -> Vec<MentionOption> {
     let q = query.to_lowercase();
+    // shell-model.ts `mentionOptions`: `localeCompare(.., { sensitivity: 'base' })` in the viewer's locale.
     let by_name =
-        |a: &&Member, b: &&Member| a.username.to_lowercase().cmp(&b.username.to_lowercase());
+        |a: &&Member, b: &&Member| dilla_client::features::collate::base(&a.username, &b.username);
     let by_display =
-        |a: &&Member, b: &&Member| a.display.to_lowercase().cmp(&b.display.to_lowercase());
+        |a: &&Member, b: &&Member| dilla_client::features::collate::base(&a.display, &b.display);
     let mut username: Vec<&Member> = candidates
         .iter()
         .filter(|m| m.username.to_lowercase().starts_with(&q))
@@ -478,6 +479,16 @@ mod tests {
             user_id: id.into(),
             username: username.into(),
         }
+    }
+
+    /// shell-model.ts `mentionOptions`: the usernames are ordered by `localeCompare` at base sensitivity, so "Šimon" comes
+    /// before "Tom" (the process locale is en-US under test).
+    #[test]
+    fn candidates_are_ordered_by_collation_not_by_code_point() {
+        let all = [member(1, "tom", "Tom"), member(2, "Šimon", "Simon")];
+        let options = mention_options("", &all, false, &[]);
+        let names: Vec<&str> = options.iter().map(|o| o.secondary.as_str()).collect();
+        assert_eq!(names, ["@Šimon", "@tom"]);
     }
 
     #[test]
