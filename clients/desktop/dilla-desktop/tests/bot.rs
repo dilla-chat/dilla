@@ -1671,19 +1671,23 @@ fn role_commands_grant_then_ask_and_revoke(cx: &mut gpui::TestAppContext) {
         channel: Some(general),
         ..SlotCx::default()
     };
-    // The last row once it settled (a row is published a moment after it is added or finished).
-    let settled = |cx: &mut gpui::VisualTestContext| -> (ResultStatus, String) {
+    // The row `row` once it settled, or with `None` the conversation's only row. A row is published a moment after it is
+    // added or finished, so the snapshot can still end with an earlier command's settled row: reading the last row would
+    // take the grant's "Crew added" for the revoke's answer.
+    let settled = |cx: &mut gpui::VisualTestContext, row: Option<u64>| -> (ResultStatus, String) {
         for _ in 0..600 {
             cx.run_until_parked();
-            let last = client
-                .state()
-                .borrow()
-                .bot
-                .results(&conversation)
-                .last()
-                .map(|r| (r.status, r.text.clone()));
-            if let Some(last) = last.filter(|(s, _)| *s != ResultStatus::Pending) {
-                return last;
+            let found = {
+                let state = client.state().borrow().clone();
+                let rows = state.bot.results(&conversation);
+                match row {
+                    Some(id) => rows.iter().find(|r| r.id == id),
+                    None => rows.first().filter(|_| rows.len() == 1),
+                }
+                .map(|r| (r.status, r.text.clone()))
+            };
+            if let Some(found) = found.filter(|(s, _)| *s != ResultStatus::Pending) {
+                return found;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1702,7 +1706,7 @@ fn role_commands_grant_then_ask_and_revoke(cx: &mut gpui::TestAppContext) {
         "adding asks nothing"
     );
     assert_eq!(
-        settled(vcx),
+        settled(vcx, None),
         (ResultStatus::Success, "Crew added to Bea.".to_owned())
     );
     drop(ctx);
@@ -1742,7 +1746,7 @@ fn role_commands_grant_then_ask_and_revoke(cx: &mut gpui::TestAppContext) {
                 cx,
             )
         });
-        settled(cx)
+        settled(cx, Some(row))
     };
     assert_eq!(
         revoke(vcx),
