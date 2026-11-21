@@ -77,8 +77,8 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 - A ban shows its details: who, when, why and for how long.
 - Server settings → Welcome messages sets the channel and text the Bot welcomes new members with.
-- Check boxes are 22 px, and the bio field in your profile can be dragged taller by its corner grip.
-- Compact message density applies inside settings only, for now.
+- Check boxes match the web's size, and the bio field in your profile can be dragged taller by its corner grip.
+- Compact message density applies to the whole app, as in the browser.
 
 **Desktop only.** Two things the browser does not have: a channel's menu also has **Mark as read** and **Copy link**, and a
 thread's pane has **Load earlier** for a long thread.
@@ -309,7 +309,6 @@ what the client still does not do.
   the newest message; Up, Down, Home and End step through the messages, Tab reaches the focused message's actions and
   Escape goes back to the composer. The recovery key and an authenticator's setup key are read out only on request: Tab to "Read aloud" beside them
   (shown while it has the focus) and press it; the key is read once, in groups of four.
-- **Compact density:** applies only inside settings; the message log keeps its normal density.
 - **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
   comes after the switch.
 - **Video playback speed:** a speed other than Normal changes the pitch of the sound (the browser kept it).
