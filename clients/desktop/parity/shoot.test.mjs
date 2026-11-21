@@ -61,6 +61,8 @@ test('a gateway ticket of a Bot world tells the wall clock: the expiry moves bac
     return out;
   };
   assert.deepEqual(wallExpiry(body(1_795_218_000), 1000), body(1_795_217_000));
-  const other = Buffer.from([0x81, 0x01]);
-  assert.equal(wallExpiry(other, 1000), other);
+  assert.throws(() => wallExpiry(Buffer.from([0x81, 0x01]), 1000), /not \[text, uint32\]/);
+  // The longer text lengths (0x78 one byte, 0x79 two bytes) read the same.
+  const long = Buffer.concat([Buffer.from([0x82, 0x78, 30]), Buffer.alloc(30, 0x61), Buffer.from([0x1a, 0, 0, 0x03, 0xe8])]);
+  assert.equal(wallExpiry(long, 8).readUInt32BE(long.length - 4), 992);
 });

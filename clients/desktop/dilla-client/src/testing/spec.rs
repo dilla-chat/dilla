@@ -682,6 +682,12 @@ impl ScreenFixture {
                 history.push(m.channel.clone());
             }
         }
+        // The owner of a server with a Bot enables it (the parity world's seed/bot.rs), so it holds a client.
+        for s in &self.world.servers {
+            if s.bot.is_some() && !clients.contains(&s.owner) {
+                clients.push(s.owner.clone());
+            }
+        }
         // The route's own text channels come last, with or without history: an empty channel is still opened.
         let mut route_channels = Vec::new();
         let mut rest = self.route.as_str();

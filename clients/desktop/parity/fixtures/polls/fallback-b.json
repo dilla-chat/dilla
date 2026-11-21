@@ -30,6 +30,7 @@
         "name": "Asgard Expedition Society",
         "owner": "bjorn",
         "members": ["ada", "bjorn", "mira", "liv", "sven", "kari", "dillabot"],
+        "bot": {"capabilities": ["polls"], "botChannels": ["war-council"]},
         "channels": [
           { "id": "general", "kind": "text", "name": "general" },
           { "id": "war-council", "kind": "text", "name": "war-council" },
@@ -44,7 +45,7 @@
         "channel": "asgard/war-council",
         "sender": "dillabot",
         "ts": 1794484200,
-        "body": "Which route do we take to the northern harbour once the ice breaks, given that the bridge troll is back and the fjord ferry only runs on Thursdays?\nthe long coastal road past the old lighthouse\nthe fjord ferry\nover the mountain pass\nVote with /poll vote.\nCloses: <t:1800003600:R>\n[dilla-poll:v1:abababababababababababababababab]"
+        "body": "Which route do we take to the northern harbour once the ice breaks, given that the bridge troll is back and the fjord ferry only runs on Thursdays?\n\nthe long coastal road past the old lighthouse\nthe fjord ferry\nover the mountain pass\n\nVote with /poll vote.\n\nCloses: <t:1800003600:R>\n[dilla-poll:v1:abababababababababababababababab]"
       }
     ]
   }

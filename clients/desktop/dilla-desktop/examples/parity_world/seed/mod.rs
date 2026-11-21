@@ -63,6 +63,11 @@ pub fn is_server_bot(f: &ScreenFixture, id: &str) -> bool {
             .any(|s| s.bot.is_some() && s.members.iter().any(|m| m == id))
 }
 
+/// Whether the fixture holds a poll post the browser gives up on (polls).
+pub fn polls_give_up(f: &ScreenFixture) -> bool {
+    polls::polls_give_up(f)
+}
+
 /// What this world cannot seed yet, by facet; empty when it can seed the fixture.
 pub fn unseedable(f: &ScreenFixture) -> Vec<String> {
     let mut out = Vec::new();

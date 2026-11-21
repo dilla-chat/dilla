@@ -31,11 +31,6 @@ const BAR_LOW: f32 = 0.2;
 /// `d-up`'s start offset (`translateY(8px)`).
 const RISE_PX: f32 = 8.0;
 
-/// A duration under the motion choice: the token as it is, zero when motion is reduced.
-pub fn duration(token: Duration, reduced: bool) -> Duration {
-    if reduced { Duration::ZERO } else { token }
-}
-
 /// The value of the CSS curve `cubic-bezier(x1, y1, x2, y2)` at time `x` (0 to 1): the curve's parameter is found for `x`
 /// by bisection, and its `y` there is the answer.
 pub fn cubic_bezier([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
@@ -87,31 +82,35 @@ pub fn rise_at(elapsed: Duration, run: Duration, curve: [f32; 4]) -> (f32, f32) 
     (p, RISE_PX * (1.0 - p))
 }
 
+/// How often the equaliser repaints while it bounces: the 520ms beat reads as smooth at 30 frames a second, half the
+/// cost of a repaint on every display frame.
+pub const EQUALISER_FPS: f32 = 30.0;
+
 /// The three `--ok` equaliser bars (`.d-np__bars`), `height` px tall and 2px wide, 1.5px apart, bouncing from their bottom
-/// on `--duration-beat`. Draw them only while the music plays: a drawn equaliser asks for a frame on every frame, an
-/// undrawn one costs nothing. With reduced motion they stand at full height.
+/// on `--duration-beat`. One animation drives the three, so one timer repaints them together, at [`EQUALISER_FPS`]. Draw
+/// them only while the music plays: a drawn equaliser keeps asking for frames, an undrawn one costs nothing. With reduced
+/// motion they stand at full height.
 pub fn equaliser(id: impl Into<ElementId>, height: f32, cx: &App) -> AnyElement {
-    let id: ElementId = id.into();
-    let bar = |scale: f32| div().w(px(2.0)).h(px(height * scale)).bg(color::OK);
-    let mut row = div()
-        .flex()
-        .flex_none()
-        .items_end()
-        .gap(px(1.5))
-        .h(px(height));
-    for i in 0..3 {
-        row = if cx.reduce_motion() {
-            row.child(bar(1.0))
-        } else {
-            let beat = motion::BEAT;
-            row.child(bar(1.0).with_animation(
-                (id.clone(), format!("bar{i}")),
-                Animation::new(beat).repeat(),
-                move |el, delta| el.h(px(height * bar_scale(beat.mul_f32(delta), beat, i))),
-            ))
-        };
+    let bars = move |scale: [f32; 3]| {
+        div()
+            .flex()
+            .flex_none()
+            .items_end()
+            .gap(px(1.5))
+            .h(px(height))
+            .children(scale.map(|s| div().w(px(2.0)).h(px(height * s)).bg(color::OK)))
+    };
+    if cx.reduce_motion() {
+        return bars([1.0; 3]).into_any_element();
     }
-    row.into_any_element()
+    let beat = motion::BEAT;
+    bars([1.0; 3])
+        .with_animation(
+            id,
+            Animation::new(beat).repeat().with_max_fps(EQUALISER_FPS),
+            move |_, delta| bars([0, 1, 2].map(|i| bar_scale(beat.mul_f32(delta), beat, i))),
+        )
+        .into_any_element()
 }
 
 /// `el` entering with `d-up` over `run` on `curve` (`EASE` unless the CSS names `--ease-out`), once for as long as it stays
@@ -195,44 +194,104 @@ mod tests {
     /// Reduced motion zeroes the durations: the bars are full and nothing rises.
     #[test]
     fn reduced_motion_has_full_bars_and_no_entrance() {
-        let beat = duration(BEAT, true);
-        assert_eq!(beat, Duration::ZERO);
         for bar in 0..3 {
-            assert_eq!(bar_scale(Duration::from_millis(100), beat, bar), 1.0);
+            assert_eq!(
+                bar_scale(Duration::from_millis(100), Duration::ZERO, bar),
+                1.0
+            );
         }
-        assert_eq!(
-            rise_at(Duration::ZERO, duration(motion::PLAYER, true), EASE),
-            (1.0, 0.0)
-        );
-        assert_eq!(duration(BEAT, false), BEAT);
+        assert_eq!(rise_at(Duration::ZERO, Duration::ZERO, EASE), (1.0, 0.0));
     }
 
-    /// An equaliser asks for animation frames while it is drawn; with reduced motion, or not drawn (a paused player draws
-    /// none), the window is left alone.
-    #[gpui::test]
-    fn only_a_drawn_equaliser_schedules_frames(cx: &mut gpui::TestAppContext) {
-        struct Host(bool);
-        impl gpui::Render for Host {
-            fn render(
-                &mut self,
-                _: &mut gpui::Window,
-                cx: &mut gpui::Context<Self>,
-            ) -> impl IntoElement {
-                let bars = self.0.then(|| equaliser("eq", 11.0, cx));
-                div().children(bars)
-            }
+    /// A view that counts its renders and draws `build`'s element.
+    struct Host {
+        renders: usize,
+        build: Box<dyn Fn(&App) -> AnyElement>,
+    }
+    impl gpui::Render for Host {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            self.renders += 1;
+            (self.build)(cx)
         }
-        let frames = |cx: &mut gpui::TestAppContext, drawn: bool, reduced: bool| {
-            cx.update(|cx| cx.set_reduce_motion(reduced));
-            let (_host, vcx) = cx.add_window_view(|_, _| Host(drawn));
+    }
+
+    /// Renders of a host drawing `build` over `ms` of test clock, in 10ms steps (animation frames are delivered by hand,
+    /// as a test has no platform frame loop).
+    fn renders_over(
+        cx: &mut gpui::TestAppContext,
+        reduced: bool,
+        ms: u64,
+        build: impl Fn(&App) -> AnyElement + 'static,
+    ) -> usize {
+        cx.update(|cx| cx.set_reduce_motion(reduced));
+        let (host, vcx) = cx.add_window_view(|_, _| Host {
+            renders: 0,
+            build: Box::new(build),
+        });
+        vcx.run_until_parked();
+        let before = host.read_with(vcx, |h, _| h.renders);
+        for _ in 0..ms / 10 {
+            vcx.executor().advance_clock(Duration::from_millis(10));
             vcx.run_until_parked();
-            vcx.update(|window, cx| window.simulate_next_frame(cx))
-        };
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        host.read_with(vcx, |h, _| h.renders) - before
+    }
+
+    /// A drawn equaliser repaints, at the cap and not at every frame (a 10ms step is a 100 Hz display: a second of it asks
+    /// for about 30 repaints, not 100); reduced motion, or no equaliser drawn (a paused player draws none), repaints nothing.
+    #[gpui::test]
+    fn the_equaliser_repaints_at_its_cap_only_while_drawn(cx: &mut gpui::TestAppContext) {
+        let drawn = |cx: &App| equaliser("eq", 11.0, cx);
+        let playing = renders_over(cx, false, 1000, drawn);
         assert!(
-            frames(cx, true, false) > 0,
-            "a playing equaliser must keep drawing"
+            (20..=40).contains(&playing),
+            "{playing} repaints in a second"
         );
-        assert_eq!(frames(cx, false, false), 0, "no equaliser, no frames");
-        assert_eq!(frames(cx, true, true), 0, "reduced motion, no frames");
+        assert_eq!(renders_over(cx, true, 1000, drawn), 0, "reduced motion");
+        assert_eq!(
+            renders_over(cx, false, 1000, |_| div().into_any_element()),
+            0,
+            "nothing drawn"
+        );
+    }
+
+    /// An entrance runs once: it repaints while it rises, and not at all after it has finished, however long the element
+    /// stays and however often its parent renders; reduced motion draws no entrance.
+    #[gpui::test]
+    fn an_entrance_runs_once_per_mount(cx: &mut gpui::TestAppContext) {
+        let rising = |cx: &App| rise_in(div(), "up", motion::PLAYER, EASE, cx);
+        let during = renders_over(cx, false, 300, rising);
+        assert!(during > 0, "the entrance repaints while it runs");
+        // The element has been up for longer than its run; frames after that are none.
+        let (host, vcx) = cx.add_window_view(|_, _| Host {
+            renders: 0,
+            build: Box::new(rising),
+        });
+        vcx.run_until_parked();
+        for _ in 0..60 {
+            vcx.executor().advance_clock(Duration::from_millis(10));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        let settled = host.read_with(vcx, |h, _| h.renders);
+        host.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
+        for _ in 0..10 {
+            vcx.executor().advance_clock(Duration::from_millis(10));
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.renders),
+            settled + 1,
+            "a re-render after the entrance asks for no more frames"
+        );
+        assert_eq!(renders_over(cx, true, 300, rising), 0, "reduced motion");
     }
 }

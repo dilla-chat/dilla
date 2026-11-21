@@ -17,6 +17,7 @@
         "name": "Midgard Crew",
         "owner": "ada",
         "members": ["ada", "bjorn", "mira", "dillabot"],
+        "bot": {"capabilities": ["polls"], "botChannels": ["general"]},
         "channels": [
           { "id": "general", "kind": "text", "name": "general" },
           { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
@@ -31,7 +32,7 @@
         "channel": "midgard/general",
         "sender": "dillabot",
         "ts": 1794481700,
-        "body": "What should we raid on Friday?\nthe bridge\nthe harbour\nVote with /poll vote.\nCloses: <t:1800003600:R>\n[dilla-poll:v1:abababababababababababababababab]"
+        "body": "What should we raid on Friday?\n\nthe bridge\nthe harbour\n\nVote with /poll vote.\n\nCloses: <t:1800003600:R>\n[dilla-poll:v1:abababababababababababababababab]"
       }
     ]
   }

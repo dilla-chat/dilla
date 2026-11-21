@@ -130,14 +130,16 @@ function parseArgs(argv) {
   return args;
 }
 
-/** `[ticket text, expires uint]` with the expiry moved back by the instance's lead over the wall clock: the page reads its
- *  instance clock as `expires - TTL` at the mint. Anything but that exact shape is passed on as it came. */
+/** `[ticket text, expires uint32]` with the expiry moved back by the instance's lead over the wall clock: the page reads its
+ *  instance clock as `expires - TTL` at the mint. Any other shape throws: the Bot would refuse the page's commands for a clock
+ *  nobody can see. */
 export function wallExpiry(body, lead) {
-  if (body[0] !== 0x82 || body[1] >> 5 !== 3) return body;
+  const bad = () => new Error(`the gateway ticket answer is not [text, uint32]: ${body.toString('hex').slice(0, 40)}`);
+  if (body[0] !== 0x82 || body[1] >> 5 !== 3) throw bad();
   const info = body[1] & 31;
   const [length, at] = info < 24 ? [info, 2] : info === 24 ? [body[2], 3] : info === 25 ? [body.readUInt16BE(2), 4] : [-1, 0];
   const end = at + length;
-  if (length < 0 || body[end] !== 0x1a || body.length !== end + 5) return body;
+  if (length < 0 || body[end] !== 0x1a || body.length !== end + 5) throw bad();
   const out = Buffer.from(body);
   out.writeUInt32BE(body.readUInt32BE(end + 1) - lead, end + 1);
   return out;
@@ -311,7 +313,7 @@ async function shoot(args, fixture, text) {
     // A world with the Bot: the Bot refuses a command whose `sent_at` is more than 120 s from the wall clock it runs on, and
     // the page signs its commands with the instance's clock as its last gateway ticket gave it, which the world has moved
     // far past the wall to reach the frame. The ticket the page is given tells the wall's time instead.
-    if (state.bot) await context.route('**/v1/gateway/ticket', (route) => wallTicket(route, state.control));
+    if (state.bot && !state.pollGivesUp) await context.route('**/v1/gateway/ticket', (route) => wallTicket(route, state.control));
     await page.goto(`${state.publicUrl}/welcome`);
     // A `signed_out` fixture is a browser with no account on it: no sign-in, the route opened as a fresh load.
     const signedOut = fixture.phase === 'signed_out';
@@ -371,7 +373,15 @@ async function shoot(args, fixture, text) {
     // The last message of the route's own channel is on screen before the frame.
     const target = [...fixture.route.matchAll(/\{([^}/]+\/[^}]+)\}/g)].map((m) => m[1]).at(-1);
     const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
-    if (last && !boot) await page.getByText(last.body, { exact: true }).first().waitFor();
+    // A poll post the browser gives up on (its read is refused and tried again 2, 5 and 10 s later) is drawn as its own text,
+    // the marker line gone and the time tag a local time, so the last message is found by its fixed line instead.
+    // A Bot world: the Bot's member row is in the page's members list before the frame (a command dialog names the Bot from that
+    // list, and draws the fallback name's initials while the row is missing).
+    const botName = (fixture.world.people ?? []).find((person) => person.bot)?.display;
+    if (state.bot && botName !== undefined && !boot) {
+      await page.locator(`.d-member-list__open[aria-label^="${botName}"]`).first().waitFor({ state: 'attached' });
+    }
+    if (last && !boot) await page.getByText(state.pollGivesUp ? 'Vote with /poll vote.' : last.body, { exact: !state.pollGivesUp }).first().waitFor();
     // Task 19b: a fixture's `density` is put on the document root as App.tsx:105 puts the saved choice (`data-density`);
     // the stylesheet's `[data-density]` rules then step every rule that reads the six density variables.
     if (fixture.density !== undefined) {

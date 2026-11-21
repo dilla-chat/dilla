@@ -85,13 +85,11 @@ fn an_unverified_poll_post_shows_its_text_and_no_card() {
 }
 
 #[test]
-#[ignore = "parity after T6c: no reference: the web draws a poll post's own text only for the real Bot's post, and the parity world cannot make the Bot post arbitrary text (its posts come from its operations, seed/polls.rs), nor give up reading a poll it made (Task 40)"]
 fn parity_polls_fallback() {
     dilla_parity::screen::assert_screen(&fixture("polls/fallback.json")).unwrap();
 }
 
 #[test]
-#[ignore = "parity after T6c: no reference: the web draws a poll post's own text only for the real Bot's post, and the parity world cannot make the Bot post arbitrary text (its posts come from its operations, seed/polls.rs), nor give up reading a poll it made (Task 40)"]
 fn parity_polls_fallback_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/fallback-b.json")).unwrap();
 }

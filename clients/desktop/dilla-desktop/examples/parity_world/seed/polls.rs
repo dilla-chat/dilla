@@ -15,7 +15,7 @@ use dilla_client::state::{
 };
 use dilla_client::testing::host::bot::wait_for_catalog;
 use dilla_client::testing::host::{self as world, Person};
-use dilla_client::testing::spec::{MessageSpec, ScreenFixture, derive_id, unhex16};
+use dilla_client::testing::spec::{MessageSpec, PollSpec, ScreenFixture, derive_id, unhex16};
 
 /// The duration a fixture's poll runs (the form's default, 24h), as `fixture/polls.rs` draws it.
 const DURATION: u64 = 86_400;
@@ -26,11 +26,46 @@ const CATALOG: Duration = Duration::from_secs(90);
 const RETRIES: u32 = 12;
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 
+/// A Bot person's post of a poll that is never verified (the web's give-up path, Task 39): its body is what the Bot posts for
+/// a poll (cmd/dillabot/utility_runtime.go: question, answers, "Vote with /poll vote." and "Closes:" in blank-line separated
+/// paragraphs, then the marker line). The world has the real Bot make that poll, and the shooter leaves the browser's read of
+/// it to be refused (`pollGivesUp`), so the web draws the post's own text. The question and the answers, `None` for any other
+/// message.
+fn unverified_poll(f: &ScreenFixture, m: &MessageSpec) -> Option<PollSpec> {
+    if m.poll.is_some()
+        || !super::is_server_bot(f, &m.sender)
+        || final_poll_marker(&m.body).is_none()
+    {
+        return None;
+    }
+    let mut paragraphs = m.body.split("\n\n");
+    let question = paragraphs.next()?.to_owned();
+    let options: Vec<String> = paragraphs.next()?.lines().map(str::to_owned).collect();
+    Some(PollSpec {
+        question,
+        options,
+        votes: Vec::new(),
+        closed: false,
+    })
+}
+
+/// Whether the fixture holds a poll post the browser gives up on (see [`unverified_poll`]).
+pub(super) fn polls_give_up(f: &ScreenFixture) -> bool {
+    f.world
+        .messages
+        .iter()
+        .any(|m| unverified_poll(f, m).is_some())
+}
+
 /// Names the facet when the fixture asks for it and this world cannot seed it: a poll needs the Bot of its server, with
 /// the polls capability and its channel marked.
 pub(super) fn unseedable(f: &ScreenFixture, out: &mut Vec<String>) {
     let w = &f.world;
-    for m in w.messages.iter().filter(|m| m.poll.is_some()) {
+    for m in w
+        .messages
+        .iter()
+        .filter(|m| m.poll.is_some() || unverified_poll(f, m).is_some())
+    {
         let ready = w.channel(&m.channel).is_some_and(|(s, c)| {
             s.bot.as_ref().is_some_and(|b| {
                 b.capabilities.iter().any(|n| n == "polls") && b.bot_channels.contains(&c.id)
@@ -47,7 +82,10 @@ pub(super) fn unseedable(f: &ScreenFixture, out: &mut Vec<String>) {
 
 /// Whether the fixture holds a poll, which the Bot must be enabled for before the history is posted.
 pub(super) fn needs_bot_first(f: &ScreenFixture) -> bool {
-    f.world.messages.iter().any(|m| m.poll.is_some())
+    f.world
+        .messages
+        .iter()
+        .any(|m| m.poll.is_some() || unverified_poll(f, m).is_some())
 }
 
 /// Posts `m` when it is a poll: the viewer's client creates it through the Bot, which posts it, and every voter votes (and
@@ -60,7 +98,8 @@ pub(super) async fn post(
     channel: ChannelId,
     posted: &HashMap<String, MessageId>,
 ) -> Option<Result<MessageId, dilla_client::ClientError>> {
-    let poll = m.poll.as_ref()?;
+    let unverified = unverified_poll(f, m);
+    let poll = m.poll.as_ref().or(unverified.as_ref())?;
     let client_of = |who: &str| {
         &clients
             .iter()

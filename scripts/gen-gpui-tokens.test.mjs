@@ -19,3 +19,8 @@ test('colour parsing and the HSL conversion', () => {
   assert.deepEqual(toHsl([255, 0, 0]), [0, 1, 0.5]);
   assert.deepEqual(toHsl([255, 255, 255]), [0, 0, 1]);
 });
+
+test('tokens.rs carries --ease-out as its four control values', async () => {
+  const tokens = [...(await generate())].find(([p]) => p.replaceAll('\\', '/').endsWith('src/tokens.rs'))[1];
+  assert.match(tokens, /pub const EASE_OUT: \[f32; 4\] = \[0\.16, 1\.0, 0\.3, 1\.0\];/);
+});

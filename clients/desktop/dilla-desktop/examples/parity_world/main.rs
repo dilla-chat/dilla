@@ -238,6 +238,8 @@ async fn main() {
         "shift": shift,
         // Whether the host supervises the Bot, which checks a command's `sent_at` against the wall clock (shoot.mjs).
         "bot": bot,
+        // A poll post the browser gives up on: its read of the poll is left to be refused (shoot.mjs).
+        "pollGivesUp": seed::polls_give_up(&f),
         "ids": ids,
         "lastMessage": f.world.messages.iter().max_by_key(|m| m.ts).map(|m| m.body.clone()),
     });

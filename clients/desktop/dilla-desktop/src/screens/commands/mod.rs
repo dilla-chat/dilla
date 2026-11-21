@@ -342,8 +342,29 @@ pub fn poll_card_below_body(
 /// MessageRow.css `.d-message-row__attachments.d-message-row__card`: `margin-top: 6px`.
 const CONTAINER_MARGIN: f32 = 6.0;
 
-/// [`poll_card_in`] with `lead` px of the box above the card (the loading line has none).
+/// [`poll_card_in`] with `lead` px of the box above the card (the loading line has none). A post that ends in the poll
+/// marker has the card's container under it whatever is drawn in it (MessageItem.tsx mounts `PollCard` for any marker, and a
+/// card that gave up or was never one leaves the container, with its margin, empty), so the row keeps its room: with a
+/// `lead`, a post that draws no card is an empty box that high.
 fn poll_card_led(
+    item: &TimelineItem,
+    ctx: &SlotCx,
+    thread: Option<dilla_client::state::MessageId>,
+    lead: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    let drawn = poll_card_drawn(item, ctx, thread, lead, window, cx);
+    if drawn.is_some() || lead <= 0.0 || polls::final_poll_marker(&item.body).is_none() {
+        return drawn;
+    }
+    Some(Extra {
+        element: div().into_any_element(),
+        height: lead,
+    })
+}
+
+fn poll_card_drawn(
     item: &TimelineItem,
     ctx: &SlotCx,
     thread: Option<dilla_client::state::MessageId>,
