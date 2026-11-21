@@ -23,6 +23,7 @@ pub mod keys;
 pub mod modlog_dialog;
 pub mod picker;
 pub mod poll_form;
+pub mod poll_votes;
 pub mod reminders;
 pub mod role_panel_form;
 
@@ -457,16 +458,28 @@ fn poll_card_drawn(
     }
     // The card is at most 440px of content: the log is always wider than the card's box, the thread pane's column is not.
     let mine = ctx.state.account.user_id == Some(poll.creator);
+    // PollCard.tsx `canClose`: the poll's creator, or a member who may manage messages in its channel.
+    let manages = dilla_client::features::roles::viewer_channel_bits(&ctx.state, poll.channel)
+        .is_some_and(|bits| {
+            bits & u64::from(dilla_client::features::roles::perm::MANAGE_MESSAGES) != 0
+        });
+    // The card's vote or close under way, or held after an uncertain outcome (PollCard.tsx's `busy`, `attempt`, `selected`).
+    let action = ctx.client.as_ref().map_or_else(Default::default, |client| {
+        poll_votes::action_of(client.serial(), message, thread, cx)
+    });
+    let shown_mine = action.mine(poll);
     let options = polls::card_options(poll)
         .into_iter()
-        .map(|o| poll_card::Option_ {
+        .enumerate()
+        .map(|(i, o)| poll_card::Option_ {
             text: o.text.into(),
             pct: o.pct,
-            mine: o.mine,
+            mine: shown_mine.contains(&i),
             winner: o.winner,
             voters: o.voters.into_iter().map(Into::into).collect(),
         })
         .collect::<Vec<_>>();
+    let can_close = mine || manages;
     let closed_tag = t("poll.closedTag");
     let height = PollCard::height(
         &poll.question,
@@ -474,8 +487,10 @@ fn poll_card_drawn(
         width,
         poll.closed.then_some(closed_tag),
         &poll_meta(poll),
-        (!poll.closed && mine).then(|| t("poll.close")),
+        (!poll.closed && can_close).then(|| t("poll.close")),
     );
+    let (vote_ctx, vote_item, vote_poll) = (ctx.clone(), item.clone(), poll.clone());
+    let (close_ctx, close_item, close_poll) = (ctx.clone(), item.clone(), poll.clone());
     let card = PollCard::new(
         ElementId::Name(format!("poll-{}", item.key).into()),
         poll.question.clone(),
@@ -490,14 +505,40 @@ fn poll_card_drawn(
         width,
     )
     .scope(dilla_desktop_ui::motion::scope(cx))
-    .can_vote(!poll.closed && ctx.client.is_some())
-    .can_close(mine);
+    .can_vote(!poll.closed && ctx.client.is_some() && action.can_vote())
+    .can_close(can_close)
+    .busy(action.busy)
+    .pending_answer(action.pending_answer())
+    .on_vote(move |answer, _, cx| {
+        poll_votes::vote(&vote_ctx, &vote_item, thread, &vote_poll, answer, cx)
+    })
+    .on_close(move |window, cx| {
+        poll_votes::close(&close_ctx, &close_item, thread, &close_poll, window, cx)
+    });
+    // PollCard.tsx: the outcome's line under the card (`<p role="alert">`, the body's text with a paragraph's 1em margins).
+    let alert_width = width.min(poll_card::MAX_WIDTH + 26.0);
+    let alert = action.error.map(|key| {
+        let lh = dilla_desktop_ui::text::root_line_height(text::BASE);
+        let lines =
+            dilla_desktop_ui::text::paragraph(t(key), text::BASE, lh, color::FG, alert_width);
+        let height = lines.len() as f32 * lh + 2.0 * f32::from(text::BASE);
+        let element = div()
+            .id("poll-alert")
+            .a11y(Role::Alert, t(key))
+            .py(text::BASE)
+            .flex()
+            .flex_col()
+            .children(lines);
+        (element, height)
+    });
+    let alert_height = alert.as_ref().map_or(0.0, |(_, h)| *h);
     Some(Extra {
         element: div()
             .pt(gpui::px(lead))
             .child(crate::tracked_box("poll-card", card))
+            .children(alert.map(|(e, _)| e))
             .into_any_element(),
-        height: height + lead,
+        height: height + lead + alert_height,
     })
 }
 

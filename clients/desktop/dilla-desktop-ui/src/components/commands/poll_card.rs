@@ -72,6 +72,10 @@ pub struct PollCard {
     options: Vec<Option_>,
     can_vote: bool,
     can_close: bool,
+    /// A vote or a close is under way: no answer and no Close poll takes a click (`busy`).
+    busy: bool,
+    /// The answer of a vote whose outcome is uncertain: only it may be clicked again, to retry (`pendingAnswer`).
+    pending_answer: Option<usize>,
     labels: Labels,
     width: f32,
     on_vote: Option<OnVote>,
@@ -102,6 +106,8 @@ impl PollCard {
             options,
             can_vote: false,
             can_close: false,
+            busy: false,
+            pending_answer: None,
             labels,
             width,
             on_vote: None,
@@ -124,6 +130,21 @@ impl PollCard {
     pub fn can_close(mut self, can: bool) -> Self {
         self.can_close = can;
         self
+    }
+
+    pub fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
+        self
+    }
+
+    pub fn pending_answer(mut self, answer: Option<usize>) -> Self {
+        self.pending_answer = answer;
+        self
+    }
+
+    /// PollCard.tsx: whether answer `i` takes a click (`onClick`'s guard).
+    fn votes_on(&self, i: usize) -> bool {
+        !self.closed && self.can_vote && !self.busy && self.pending_answer.is_none_or(|a| a == i)
     }
 
     pub fn on_vote(mut self, f: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
@@ -321,6 +342,7 @@ impl RenderOnce for PollCard {
                             .tracking(LABEL_TRACKING),
                     )
             }));
+        let votes_on: Vec<bool> = (0..self.options.len()).map(|i| self.votes_on(i)).collect();
         let options = self.options.iter().enumerate().map(|(i, o)| {
             let winner = self.closed && o.winner && o.pct > 0;
             let edge = if o.mine {
@@ -372,9 +394,10 @@ impl RenderOnce for PollCard {
                     .ml(px(-5.0))
                 }));
             let vote = self.on_vote.clone();
-            let can = !self.closed && self.can_vote;
+            let can = votes_on[i];
             div()
                 .id(("poll-option", i))
+                .debug_selector(move || format!("poll-option-{i}"))
                 .relative()
                 .min_h(px(ROW + 2.0))
                 .rounded(radius::SEG)
@@ -439,6 +462,7 @@ impl RenderOnce for PollCard {
                 )
         });
         let close = self.on_close.clone();
+        let busy = self.busy;
         let close_label = (self.can_close && !self.closed).then(|| self.labels.close.to_string());
         let meta_lh = crate::text::root_line_height(text::META);
         let meta = div()
@@ -460,6 +484,7 @@ impl RenderOnce for PollCard {
             .children((self.can_close && !self.closed).then(|| {
                 div()
                     .id("poll-close")
+                    .debug_selector(|| "poll-close".to_owned())
                     .h(px(26.0))
                     .px(px(8.0))
                     .rounded(radius::ROW)
@@ -469,6 +494,9 @@ impl RenderOnce for PollCard {
                     .items_center()
                     .cursor_pointer()
                     .on_click(move |_, window, cx| {
+                        if busy {
+                            return;
+                        }
                         if let Some(f) = &close {
                             f(window, cx);
                         }
@@ -640,6 +668,85 @@ mod tests {
                 "{voters} voters"
             );
         }
+    }
+
+    /// PollCard.tsx: a click on an answer votes for it; nothing while busy; with an uncertain vote held, only its answer
+    /// (the retry); and Close poll closes, but not while busy.
+    #[gpui::test]
+    fn clicks_vote_and_close_as_the_web_guards_them(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+
+        use gpui::{Context, Modifiers, Render};
+
+        type Log = Rc<RefCell<Vec<String>>>;
+        struct Host {
+            busy: bool,
+            pending: Option<usize>,
+            log: Log,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let (votes, closes) = (self.log.clone(), self.log.clone());
+                let option = |text: &str| Option_ {
+                    text: text.to_owned().into(),
+                    pct: 0,
+                    mine: false,
+                    winner: false,
+                    voters: Vec::new(),
+                };
+                div().w(px(500.0)).child(
+                    PollCard::new(
+                        "poll",
+                        "Raid?",
+                        false,
+                        false,
+                        "Open",
+                        vec![option("the bridge"), option("the harbour")],
+                        Labels {
+                            closed: "CLOSED".into(),
+                            close: "Close poll".into(),
+                        },
+                        500.0,
+                    )
+                    .can_vote(true)
+                    .can_close(true)
+                    .busy(self.busy)
+                    .pending_answer(self.pending)
+                    .on_vote(move |i, _, _| votes.borrow_mut().push(format!("vote {i}")))
+                    .on_close(move |_, _| closes.borrow_mut().push("close".into())),
+                )
+            }
+        }
+
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let log: Log = Rc::default();
+        let (host, vcx) = cx.add_window_view(|_, _| Host {
+            busy: false,
+            pending: None,
+            log: log.clone(),
+        });
+        let click = |vcx: &mut gpui::VisualTestContext, id: &'static str| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            let at = vcx.debug_bounds(id).expect(id).center();
+            vcx.simulate_click(at, Modifiers::default());
+            vcx.run_until_parked();
+        };
+        click(vcx, "poll-option-1");
+        click(vcx, "poll-close");
+        host.update(vcx, |h, cx| {
+            h.busy = true;
+            cx.notify();
+        });
+        click(vcx, "poll-option-0");
+        click(vcx, "poll-close");
+        host.update(vcx, |h, cx| {
+            h.busy = false;
+            h.pending = Some(1);
+            cx.notify();
+        });
+        click(vcx, "poll-option-0");
+        click(vcx, "poll-option-1");
+        assert_eq!(*log.borrow(), ["vote 1", "close", "vote 1"]);
     }
 
     #[test]

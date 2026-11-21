@@ -385,6 +385,64 @@ async fn create_poll_over(
     Ok(poll)
 }
 
+/// `pollVote` (73) of the held `poll` at its revision, in its channel: the Bot's answer must be the same poll in the same
+/// place carrying exactly `choices` as this member's, else the vote is uncertain (`decodePollVote`).
+async fn vote_over(
+    ops: &BotOperations,
+    poll: &PollView,
+    choices: &[usize],
+    request: [u8; 16],
+) -> Result<PollView, UtilityError> {
+    let selection = polls::encode_poll_selection(choices).map_err(|_| UtilityError::Payload)?;
+    let result = send_over(
+        ops,
+        BotRequest {
+            operation: 73,
+            channel: Some(poll.channel),
+            args: vec![BotArg::Text(hex16(&poll.id)), BotArg::Bytes(selection)],
+            revision: Some(poll.revision),
+            request_id: Some(request),
+        },
+    )
+    .await?;
+    let mut sorted = choices.to_vec();
+    sorted.sort_unstable();
+    wire::decode_poll(&result.data, poll.id, Some(poll))
+        .ok()
+        .filter(|p| {
+            poll_in_place(p, poll.channel, poll.thread)
+                && p.my_choices.as_deref() == Some(&sorted[..])
+        })
+        .ok_or(UtilityError::Uncertain {
+            request_id: result.request_id,
+        })
+}
+
+/// `pollClose` (74) of the held `poll` at its revision: the answer must be the same poll, in the same place, closed.
+async fn close_over(
+    ops: &BotOperations,
+    poll: &PollView,
+    request: [u8; 16],
+) -> Result<PollView, UtilityError> {
+    let result = send_over(
+        ops,
+        BotRequest {
+            operation: 74,
+            channel: Some(poll.channel),
+            args: vec![BotArg::Text(hex16(&poll.id))],
+            revision: Some(poll.revision),
+            request_id: Some(request),
+        },
+    )
+    .await?;
+    wire::decode_poll(&result.data, poll.id, Some(poll))
+        .ok()
+        .filter(|p| poll_in_place(p, poll.channel, poll.thread) && p.closed)
+        .ok_or(UtilityError::Uncertain {
+            request_id: result.request_id,
+        })
+}
+
 fn hex16(b: &[u8; 16]) -> String {
     crate::state::hex(b)
 }
@@ -474,67 +532,40 @@ impl Utilities {
         create_poll_over(&self.operations(community), &input, request).await
     }
 
-    /// Votes on the held poll of `message` (73): `choices` replace this member's; an empty set withdraws the vote.
+    /// Votes on the held poll of `message` (73) under `request` (PollCard.tsx `submit`): `choices` replace this member's;
+    /// an empty set withdraws the vote. The held record must be the card's own: for `channel` and `thread` (a thread's root
+    /// card or another place's record is `NoPoll`). A retry of an uncertain vote passes the same request.
     pub async fn vote(
         &self,
         community: CommunityId,
         message: MessageId,
+        place: (ChannelId, Option<MessageId>),
         choices: Vec<usize>,
+        request: [u8; 16],
     ) -> Result<PollView, UtilityError> {
-        let poll = self.poll(message).ok_or(UtilityError::NoPoll)?;
-        let selection =
-            polls::encode_poll_selection(&choices).map_err(|_| UtilityError::Payload)?;
-        let result = self
-            .send(
-                community,
-                BotRequest {
-                    operation: 73,
-                    channel: Some(poll.channel),
-                    args: vec![BotArg::Text(hex16(&poll.id)), BotArg::Bytes(selection)],
-                    revision: Some(poll.revision),
-                    ..BotRequest::default()
-                },
-            )
-            .await?;
-        let next = wire::decode_poll(&result.data, poll.id, Some(&poll)).map_err(|_| {
-            UtilityError::Uncertain {
-                request_id: result.request_id,
-            }
-        })?;
-        if next.my_choices.as_deref() != Some(&choices[..]) {
-            return Err(UtilityError::Uncertain {
-                request_id: result.request_id,
-            });
-        }
+        let poll = self
+            .poll(message)
+            .filter(|p| poll_in_place(p, place.0, place.1))
+            .ok_or(UtilityError::NoPoll)?;
+        let next = vote_over(&self.operations(community), &poll, &choices, request).await?;
         self.hold_poll(message, next.clone());
         Ok(next)
     }
 
-    /// Closes the held poll of `message` (74; the Bot allows its creator and moderators).
+    /// Closes the held poll of `message` (74; the Bot allows its creator and moderators) under `request`, for the card's
+    /// own `channel` and `thread` as [`Utilities::vote`].
     pub async fn close(
         &self,
         community: CommunityId,
         message: MessageId,
+        place: (ChannelId, Option<MessageId>),
+        request: [u8; 16],
     ) -> Result<PollView, UtilityError> {
-        let poll = self.poll(message).ok_or(UtilityError::NoPoll)?;
-        let result = self
-            .send(
-                community,
-                BotRequest {
-                    operation: 74,
-                    channel: Some(poll.channel),
-                    args: vec![BotArg::Text(hex16(&poll.id))],
-                    revision: Some(poll.revision),
-                    ..BotRequest::default()
-                },
-            )
-            .await?;
-        let next = wire::decode_poll(&result.data, poll.id, Some(&poll))
-            .ok()
-            .filter(|p| p.closed)
-            .ok_or(UtilityError::Uncertain {
-                request_id: result.request_id,
-            })?;
+        let poll = self
+            .poll(message)
+            .filter(|p| poll_in_place(p, place.0, place.1))
+            .ok_or(UtilityError::NoPoll)?;
+        let next = close_over(&self.operations(community), &poll, request).await?;
         self.hold_poll(message, next.clone());
         Ok(next)
     }
@@ -1026,6 +1057,88 @@ mod tests {
             Err(UtilityError::Payload)
         );
         assert!(fake.sent.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    /// The held poll `[1; 16]` of the Bot's create answer.
+    fn held() -> PollView {
+        wire::decode_poll(&created(Some(vec![])), [1; 16], None).expect("the poll")
+    }
+
+    /// PollCard.tsx `submit`: a vote is operation 73 in the poll's channel at its revision under the card's request id;
+    /// an answer that does not carry exactly the chosen answers as this member's is uncertain, and keeps that id.
+    #[test]
+    fn a_vote_goes_at_the_polls_revision_under_its_request_id() {
+        let poll = held();
+        let voted = |mine: Option<Vec<u64>>| {
+            let fake = Arc::new(Fake {
+                sent: std::sync::Mutex::default(),
+                data: created(mine),
+            });
+            let ops = BotOperations::new(CommunityId([9; 16]), fake.clone());
+            let answer = run(vote_over(&ops, &poll, &[0], [7; 16]));
+            (answer, fake.sent.lock().unwrap().clone())
+        };
+        let (answer, sent) = voted(Some(vec![0]));
+        assert_eq!(answer.expect("the vote").my_choices, Some(vec![0]));
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].operation,
+            crate::state::bot_admin::sealed_operation(73)
+        );
+        assert_eq!(sent[0].channel, Some(poll.channel));
+        assert_eq!(sent[0].request_id, [7; 16]);
+        assert_eq!(
+            sent[0].args,
+            [
+                BotArg::Uint(poll.revision),
+                BotArg::Bytes(poll.id.to_vec()),
+                BotArg::Bytes(polls::encode_poll_selection(&[0]).unwrap())
+            ]
+        );
+        assert_eq!(
+            voted(Some(vec![1])).0,
+            Err(UtilityError::Uncertain {
+                request_id: [7; 16]
+            })
+        );
+    }
+
+    /// PollCard.tsx `close`: operation 74 at the poll's revision under the card's request id; an answer that is not the
+    /// poll closed is uncertain.
+    #[test]
+    fn a_close_goes_at_the_polls_revision_and_must_come_back_closed() {
+        let poll = held();
+        let closed = |shut: bool| {
+            let data = crate::gateway::frames::Value::Array(vec![
+                crate::gateway::frames::Value::Uint(1),
+                wire::tests::poll_value([1; 16], [0, 0], Some(vec![]), shut),
+            ])
+            .encode();
+            let fake = Arc::new(Fake {
+                sent: std::sync::Mutex::default(),
+                data,
+            });
+            let ops = BotOperations::new(CommunityId([9; 16]), fake.clone());
+            let answer = run(close_over(&ops, &poll, [8; 16]));
+            (answer, fake.sent.lock().unwrap().clone())
+        };
+        let (answer, sent) = closed(true);
+        assert!(answer.expect("closed").closed);
+        assert_eq!(
+            sent[0].operation,
+            crate::state::bot_admin::sealed_operation(74)
+        );
+        assert_eq!(sent[0].request_id, [8; 16]);
+        assert_eq!(
+            sent[0].args,
+            [BotArg::Uint(poll.revision), BotArg::Bytes(poll.id.to_vec())]
+        );
+        assert_eq!(
+            closed(false).0,
+            Err(UtilityError::Uncertain {
+                request_id: [8; 16]
+            })
+        );
     }
 
     /// An answer envelope the Bot sent with status 200 and that cannot be read.

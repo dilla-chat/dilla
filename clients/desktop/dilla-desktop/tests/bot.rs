@@ -2863,3 +2863,181 @@ fn an_uncertain_schedule_or_poll_is_reconciled_from_the_pending_branch(
     vcx.update(|_, cx| dilla_desktop::release::release_client(&client, cx));
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
+
+/// e2e/web/slash-commands.spec.ts "polls ... accept real votes ... and close by the creator", against dillad and its Bot:
+/// a click on an answer of the card (the card's `on_vote`, `poll_votes::vote`) casts this member's vote through the Bot,
+/// and a second click on it takes the vote back; a vote scoped to another place (a thread the poll is not in) sends nothing
+/// and says the poll could not be read; and the creator's Close poll (`poll_votes::close`) closes it.
+#[gpui::test]
+#[ignore = "needs dillad with its Bot: target/dilla-testhost, target/dillabot, dilla-bot-core and the wasi core"]
+fn a_poll_card_votes_and_its_creator_closes_it(cx: &mut gpui::TestAppContext) {
+    use std::rc::Rc;
+
+    use dilla_client::features::bot::{self, Plan};
+    use dilla_client::features::roles::viewer_channel_bits;
+    use dilla_client::features::utilities::polls::{PollCreate, final_poll_marker};
+    use dilla_client::state::bot_admin::sealed_operation;
+    use dilla_client::state::{CommunityId, MessageId};
+    use dilla_desktop::screens::commands::poll_votes;
+    use dilla_desktop::screens::create;
+    use dilla_desktop::slots::SlotCx;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let host = world::start_bot_host("fw-poll-vote", "127.0.0.1:0");
+    let invite = host.invites.last().unwrap().clone();
+    let ada = rt.block_on(world::sign_up(&host, &invite, "ada", "Ada", "fw-poll-vote"));
+    let c = CommunityId(world::community(&host, &ada, "Harbour", &[]));
+    world::clear_session(&ada);
+    let client = Rc::new(rt.block_on(world::start(&ada)));
+    rt.block_on(world::bot::enable_bot(&client, c.0, world::bot::cap::POLLS));
+    let general = rt
+        .block_on(world::wait_for(
+            &client,
+            Duration::from_secs(30),
+            "#general",
+            |s| s.channel_named(c, "general").is_some(),
+        ))
+        .channel_named(c, "general")
+        .unwrap()
+        .id;
+    rt.block_on(client.bot_admin().mark_bot_channel(c, general))
+        .expect("an answer")
+        .expect("#general is marked a Bot channel");
+    let ready = |state: &dilla_client::state::AppState| {
+        matches!(
+            bot::plan_in(state, Some(c), Some(general), "/poll create"),
+            Plan::Bot { .. }
+        ) && state.bot.catalogs.get(&c).is_some_and(|v| {
+            v.bot_user.is_some()
+                && [70, 73, 74].iter().all(|op| {
+                    v.commands
+                        .iter()
+                        .any(|x| u64::from(x.operation) == sealed_operation(*op))
+                })
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    while !ready(&client.state().borrow()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Bot's catalog never offered polls: {:?}",
+            host.bot_refusals()
+        );
+        let _ = rt.block_on(client.bot().sync_catalog(c));
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    client.threads().set_channel_bits(
+        general,
+        viewer_channel_bits(&client.state().borrow(), general),
+    );
+    let _ = rt.block_on(client.open_channel(general));
+
+    // The poll, made as the form makes it, and its post verified as the card reads it.
+    let request = [0x61; 16];
+    let made = PollCreate {
+        channel: general.0,
+        thread: None,
+        question: "Raid on Friday?".into(),
+        answers: vec!["the bridge".into(), "the harbour".into()],
+        multi: false,
+        duration: 86_400,
+    };
+    let created = rt.block_on(
+        client
+            .utilities()
+            .run(move |u| async move { u.create_poll(c, made, request).await }),
+    );
+    // The Bot's first poll can outlast the wait (as in the reconcile test): its post below is what counts.
+    assert!(
+        matches!(
+            created,
+            Ok(_) | Err(dilla_client::features::utilities::UtilityError::Uncertain { .. })
+        ),
+        "{created:?} {:?}",
+        host.bot_refusals()
+    );
+    let post = |state: &dilla_client::state::AppState| {
+        state.timelines.get(&general).and_then(|t| {
+            t.items
+                .iter()
+                .find(|i| i.bot && final_poll_marker(&i.body) == Some(request))
+                .cloned()
+        })
+    };
+    let item = post(&rt.block_on(world::wait_for(
+        &client,
+        Duration::from_secs(60),
+        "the Bot's poll post",
+        |s| post(s).is_some(),
+    )))
+    .unwrap();
+    let message = item.msg_id.expect("a stored post");
+    let item_read = item.clone();
+    let held = rt.block_on(
+        client
+            .utilities()
+            .run(move |u| async move { u.read_poll(c, general, None, &item_read).await }),
+    );
+    assert!(held.is_ok(), "the post is a verified poll");
+
+    cx.update(dilla_desktop::install);
+    cx.executor().allow_parking();
+    let vcx = cx.add_empty_window();
+    vcx.update(|window, cx| create::attach(window, client.clone(), Rc::new(|_, _, _| {}), cx));
+    let ctx = || SlotCx {
+        state: client.state().borrow().clone(),
+        client: Some(client.clone()),
+        community: Some(c),
+        channel: Some(general),
+        ..SlotCx::default()
+    };
+    let poll = || client.utilities().poll(message).expect("the held poll");
+    // Waits until the card's action is over, and answers its line.
+    let settle = |vcx: &mut gpui::VisualTestContext, thread: Option<MessageId>| {
+        for _ in 0..1200 {
+            vcx.run_until_parked();
+            let action =
+                vcx.update(|_, cx| poll_votes::action_of(client.serial(), message, thread, cx));
+            if !action.busy {
+                return action.error;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the card stayed busy");
+    };
+
+    // A click on "the harbour" votes for it.
+    let here = ctx();
+    let p = poll();
+    vcx.update(|_, cx| poll_votes::vote(&here, &item, None, &p, 1, cx));
+    assert_eq!(settle(vcx, None), None, "{:?}", host.bot_refusals());
+    assert_eq!(poll().my_choices.as_deref(), Some(&[1][..]));
+    assert_eq!(poll().counts, [0, 1]);
+
+    // The same card scoped to a thread the poll is not in: nothing is sent, the vote stays.
+    let elsewhere = Some(MessageId([0x77; 16]));
+    let p = poll();
+    vcx.update(|_, cx| poll_votes::vote(&here, &item, elsewhere, &p, 0, cx));
+    assert_eq!(settle(vcx, elsewhere), Some("poll.readError"));
+    assert_eq!(poll().my_choices.as_deref(), Some(&[1][..]));
+
+    // A second click on it takes the vote back.
+    let p = poll();
+    vcx.update(|_, cx| poll_votes::vote(&ctx(), &item, None, &p, 1, cx));
+    assert_eq!(settle(vcx, None), None, "{:?}", host.bot_refusals());
+    assert_eq!(poll().my_choices.as_deref(), Some(&[][..]));
+    assert_eq!(poll().counts, [0, 0]);
+
+    // The creator closes it.
+    let p = poll();
+    vcx.update(|window, cx| poll_votes::close(&ctx(), &item, None, &p, window, cx));
+    assert_eq!(settle(vcx, None), None, "{:?}", host.bot_refusals());
+    assert!(poll().closed, "closed");
+    drop(here);
+    vcx.update(|_, cx| dilla_desktop::release::release_client(&client, cx));
+    Rc::try_unwrap(client).ok().expect("the last handle").stop();
+}
