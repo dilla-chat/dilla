@@ -10,6 +10,11 @@ draft. You can also type a complete command and its named arguments. Normal
 mentions, multiline text, IME input, and attachments keep their usual behavior.
 
 Command drafts stay separate from text drafts for each conversation and thread.
+
+**In the desktop app** every built-in command runs, in channels and in threads, with the same picker, chips and private
+results. A command whose outcome is uncertain (the connection dropped before the answer) reopens its draft instead of
+being sent twice. The poll form, the announcement editor and the role panel editor (`/rolepanel create`) open as
+dialogs, as in the browser.
 A command does not take an unrelated reply or attachment with it. Unknown slash
 input stays private. Choose **Send as text**, or prefix the text with `//`, to post
 a slash literally. Ordinary messages, edits, history replay, and bot-authored
@@ -198,6 +203,8 @@ The form stays open when the Bot's command list refreshes in the background. If 
 while the form is open, the form closes and a private reply says "The Bot stopped offering polls. Try again."
 
 ![Create a poll](screenshots/signal-poll-dialog.png)
+
+The desktop app draws the same form, and polls in threads work there too (see [Dilla desktop](desktop.md#polls-and-commands)).
 
 Voting is single-choice by default; the creator can enable multiple
 choices. The poll shows named voters. Members can replace or withdraw their vote.
