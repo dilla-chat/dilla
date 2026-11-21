@@ -322,6 +322,8 @@ impl Composer {
         });
         if let Some(text) = text {
             self.set_text(&text, None, window, cx);
+            let field = self.input.read(cx).focus_handle(cx);
+            crate::screens::commands::set_composer(wid, &field, cx);
             crate::screens::commands::draft_changed(wid, &text, cx);
         }
     }
@@ -819,9 +821,10 @@ impl Render for Composer {
         let ctx = self.slots.clone();
         let leading = slots::composer_leading(&ctx, window, cx);
         let buttons = slots::composer_buttons(&ctx, window, cx);
-        let popup = slots::composer_popup(&ctx, window, cx);
+        let field_focus = self.input.read(cx).focus_handle(cx);
+        let popup = slots::composer_popup(&ctx, &field_focus, window, cx);
         // A picked command's chips in place of the field (Task 20's hook, Task 28 follow-up 14).
-        let chips = slots::composer_chips(&ctx, window, cx);
+        let chips = slots::composer_chips(&ctx, &field_focus, window, cx);
         let now_ms = ctx.clock.now() * 1000;
         let now_ms = match ctx.clock {
             crate::screens::shell::Clock::Local => std::time::SystemTime::now()

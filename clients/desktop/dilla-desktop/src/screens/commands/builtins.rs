@@ -83,6 +83,24 @@ pub fn prepared(
     channel: ChannelId,
     encode: &dyn Fn(&str) -> String,
 ) -> Builtin {
+    prepared_in(
+        run,
+        state,
+        Conversation {
+            channel,
+            thread: None,
+        },
+        encode,
+    )
+}
+
+/// [`prepared`] for a draft typed in `conversation`: in a thread the excerpt is read from the thread's replies.
+pub fn prepared_in(
+    run: Builtin,
+    state: &AppState,
+    conversation: Conversation,
+    encode: &dyn Fn(&str) -> String,
+) -> Builtin {
     match run {
         Builtin::Reply { to, text } => Builtin::Reply {
             to,
@@ -95,7 +113,8 @@ pub fn prepared(
         Builtin::RemoveOther {
             msg, seq, reason, ..
         } => {
-            let body = bot::exact_message(state, channel, &msg.hex()).map_or("", |i| &i.body);
+            let body =
+                bot::exact_message_in(state, conversation, &msg.hex()).map_or("", |i| &i.body);
             let mut excerpt = crate::screens::threads::excerpt(body);
             let mut cut = excerpt.len().min(EXCERPT_MAX_BYTES);
             while !excerpt.is_char_boundary(cut) {
@@ -166,11 +185,16 @@ pub fn run(
                 return finish(failed("Message exceeds the 4000 byte limit."));
             }
             // builtin.ts:41-42: a send of this request whose answer was uncertain is never sent again.
-            let key = Publications::key(request, channel, None, Some(to), &text);
+            let thread = conversation.thread;
+            let key = Publications::key(request, channel, thread, Some(to), &text);
             if lock(&memory).publications.contains(&key) {
                 return finish(Outcome::Uncertain(NO_MESSAGE_ID.to_owned()));
             }
-            let sent = client.threads().reply(channel, to, text);
+            // In a thread the reply is one of its replies (builtin.ts:47 `targetThread`).
+            let sent = match thread {
+                Some(root) => client.threads().reply_in_thread(channel, root, to, text),
+                None => client.threads().reply(channel, to, text),
+            };
             cx.background_executor()
                 .spawn(async move {
                     let answer = sent_answer(

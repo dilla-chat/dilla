@@ -1351,9 +1351,18 @@ pub fn focus_field(wid: gpui::WindowId, i: usize, window: &mut Window, cx: &mut 
     window.refresh();
 }
 
-/// The chips in place of the composer's field (`None` while no command is picked).
-pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+/// The chips in place of the field of the composer `owner` (`None` while no command is picked, or while another composer
+/// reported the draft: only that one shows them).
+pub fn view(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
+    if !super::owns(wid, owner, cx) {
+        return None;
+    }
     let chips = super::picker_state(wid, cx).chips?;
     let Some(definition) = definition(&ctx.state, ctx.community, &chips.command) else {
         // The command went (the Bot's catalog changed): back to the typed draft.

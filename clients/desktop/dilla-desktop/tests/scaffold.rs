@@ -47,7 +47,7 @@ fn stubs_change_nothing(cx: &mut TestAppContext) {
     assert!(slots::message_actions(&item(), &ctx).is_empty());
     let window = cx.add_empty_window();
     window.update(|window, cx| {
-        assert!(slots::composer_popup(&ctx, window, cx).is_none());
+        assert!(slots::composer_popup(&ctx, &cx.focus_handle(), window, cx).is_none());
         assert!(slots::aside(&route, window, cx).is_none());
         assert!(slots::dock(window, cx).is_none());
         assert!(slots::overlays(&slots::SlotCx::default(), window, cx).is_empty());

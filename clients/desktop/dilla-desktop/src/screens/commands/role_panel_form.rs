@@ -432,14 +432,14 @@ impl Job {
 /// the rights or the Bot's offer ends it Failed ([`check`]); otherwise the approved roles are read from the instance and
 /// the editor opens in [`after_roles`]. A fixture reads them from its state. A run whose request already sent a panel
 /// reconciles that attempt first, with neither the catalog's offer nor the editor.
-pub fn run(ctx: &SlotCx, attempt: Attempt, window: WindowId, cx: &mut App) {
-    let Some(channel) = ctx.channel else {
-        return;
-    };
-    let conversation = Conversation {
-        channel,
-        thread: None,
-    };
+pub fn run(
+    ctx: &SlotCx,
+    conversation: Conversation,
+    attempt: Attempt,
+    window: WindowId,
+    cx: &mut App,
+) {
+    let channel = conversation.channel;
     // The web has one path for an uncertain attempt: its dialog closes and the reopened draft reconciles it. Here the
     // editor stays open and locked on it, so the reopened draft sent again is that editor's Publish: its own row, one
     // reconcile at a time, never a second row for the same request.
@@ -1735,7 +1735,11 @@ mod tests {
             slot(w, cx).form = Some(editor);
             assert!(routes_to_editor(w, &same, cx));
             assert!(!routes_to_editor(w, &other, cx), "another request");
-            run(&ctx, same.clone(), w, cx);
+            let at = Conversation {
+                channel: ChannelId(CHANNEL),
+                thread: None,
+            };
+            run(&ctx, at, same.clone(), w, cx);
             assert!(held_rows(w, cx).is_empty(), "no second row");
             release_sent(form_of(w, cx).unwrap());
             assert!(!routes_to_editor(w, &same, cx), "no longer locked");

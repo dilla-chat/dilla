@@ -147,6 +147,7 @@ pub fn validate(
     multi: bool,
     duration: usize,
     channel: [u8; 16],
+    thread: Option<[u8; 16]>,
 ) -> Result<polls::PollCreate, &'static str> {
     let question = question.trim();
     let answers: Vec<String> = answers
@@ -174,7 +175,7 @@ pub fn validate(
     }
     let input = polls::PollCreate {
         channel,
-        thread: None,
+        thread,
         question: question.to_owned(),
         answers,
         multi,
@@ -353,14 +354,15 @@ fn fail(ctx: &SlotCx, window: WindowId, conversation: Conversation, text: &str, 
 /// `/poll create` was sent from the composer: the form opens with the typed arguments, or the command's row says why it
 /// cannot (Failed). The form is drawn from the next frame ([`overlay`]). A run whose request already sent a poll that may
 /// have been made reconciles it instead, without the form ([`reconcile`]).
-pub fn open(ctx: &SlotCx, args: &Args, attempt: Attempt, window: WindowId, cx: &mut App) {
-    let Some(channel) = ctx.channel else {
-        return;
-    };
-    let conversation = Conversation {
-        channel,
-        thread: None,
-    };
+pub fn open(
+    ctx: &SlotCx,
+    conversation: Conversation,
+    args: &Args,
+    attempt: Attempt,
+    window: WindowId,
+    cx: &mut App,
+) {
+    let channel = conversation.channel;
     if let Some(client) = &ctx.client {
         let prior = super::with_memory(client, |m| m.polls.get(&attempt.request).cloned());
         if let Some(prior) = prior {
@@ -565,12 +567,15 @@ struct Typed {
     multi: bool,
     duration: usize,
     channel: [u8; 16],
+    thread: Option<[u8; 16]>,
 }
 
 fn typed(w: WindowId, cx: &mut App) -> Option<Typed> {
     let form = slot(w, cx).form.as_ref()?;
     let (question, answers) = (form.question.clone(), form.answers.clone());
     let (multi, duration, channel) = (form.multi, form.duration, form.conversation.channel.0);
+    // A poll made from a thread's composer is posted into that thread (UtilityCommandProvider.tsx:379, :391).
+    let thread = form.conversation.thread.map(|root| root.0);
     let value = |input: &Entity<InputState>| input.read(cx).value().to_string();
     Some(Typed {
         question: value(&question),
@@ -578,6 +583,7 @@ fn typed(w: WindowId, cx: &mut App) -> Option<Typed> {
         multi,
         duration,
         channel,
+        thread,
     })
 }
 
@@ -596,6 +602,7 @@ pub fn submit(w: WindowId, cx: &mut App) {
         typed.multi,
         typed.duration,
         typed.channel,
+        typed.thread,
     ) {
         Ok(input) => input,
         Err(key) => {
@@ -963,7 +970,7 @@ mod tests {
     #[test]
     fn poll_form_validates_as_the_web() {
         let ok = rows(&["x", "y"]);
-        let check = |q: &str, a: &[String]| validate(q, a, false, 3, CHANNEL).map(|_| ());
+        let check = |q: &str, a: &[String]| validate(q, a, false, 3, CHANNEL, None).map(|_| ());
         assert_eq!(check("", &ok), Err("poll.questionRequired"));
         assert_eq!(check("  ", &ok), Err("poll.questionRequired"));
         assert_eq!(check(&"a".repeat(301), &ok), Err("poll.questionLong"));
@@ -988,7 +995,7 @@ mod tests {
             Err("poll.aggregateValidation")
         );
         // The answers' order is the person's, the blank ones go, and the default duration is 24 hours.
-        let good = validate(" Raid? ", &rows(&[" b ", "", "a"]), true, 3, CHANNEL).unwrap();
+        let good = validate(" Raid? ", &rows(&[" b ", "", "a"]), true, 3, CHANNEL, None).unwrap();
         assert_eq!(good.question, "Raid?");
         assert_eq!(good.answers, ["b", "a"]);
         assert_eq!(
@@ -997,7 +1004,9 @@ mod tests {
         );
         assert_eq!(good.channel, CHANNEL);
         assert_eq!(
-            validate("q", &ok, false, 0, CHANNEL).unwrap().duration,
+            validate("q", &ok, false, 0, CHANNEL, None)
+                .unwrap()
+                .duration,
             3600
         );
     }

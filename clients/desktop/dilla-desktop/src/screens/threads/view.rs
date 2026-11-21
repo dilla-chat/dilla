@@ -5,7 +5,8 @@
 
 use std::rc::Rc;
 
-use dilla_client::state::threads::ThreadData;
+use dilla_client::state::bot::Conversation;
+use dilla_client::state::threads::{OpenThread, ThreadData};
 use dilla_client::state::{MessageId, TimelineItem, TimelineItemState};
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
@@ -36,6 +37,9 @@ const COMPOSER_BOTTOM: f32 = 12.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_LEFT: f32 = 10.0;
 const ROW_PAD: f32 = 4.0;
+/// Extra space between the list and the composer's top edge: the web pane draws the list 4px higher than the channel does
+/// (the 8px padding above the box and the list's own 6px lie under it).
+const POPUP_GAP: f32 = 4.0;
 /// The hover toolbar's gap between its buttons (MessageRow.css `__toolbar` gap 2px).
 const TOOL_GAP: f32 = 2.0;
 
@@ -103,6 +107,14 @@ pub fn delete_row(
     ui.update(cx, |ui, cx| ui.ask_delete(channel, msg, cx));
 }
 
+/// The conversation of `open`'s composer: its own command memory, private rows and message lookups (CommandHost.tsx:74).
+fn conversation(open: OpenThread) -> Conversation {
+    Conversation {
+        channel: open.channel,
+        thread: Some(open.root),
+    }
+}
+
 /// Emitted when the thread composer sends: the thread's root and the text.
 pub struct Sent(pub MessageId, pub String);
 
@@ -162,6 +174,7 @@ impl PaneView {
         let Some(open) = open_of(&ctx, cx) else {
             return;
         };
+        let wid = window.window_handle().window_id();
         match event {
             InputEvent::Change => {
                 // A thread's draft is its own, apart from the channel's (`threads.draft.<root>`).
@@ -172,18 +185,61 @@ impl PaneView {
                         .threads()
                         .set_draft(open.root, &input.read(cx).value());
                 }
+                // The `/` list reads the draft this composer reports, as the channel's does (composer.rs). Only a draft
+                // typed here counts: the field also changes as the pane loads another thread's draft.
+                let focus = input.read(cx).focus_handle(cx);
+                if focus.is_focused(window) {
+                    crate::screens::commands::set_composer(wid, &focus, cx);
+                    crate::screens::commands::draft_changed(wid, &input.read(cx).value(), cx);
+                }
                 cx.notify();
             }
             InputEvent::PressEnter { shift: false, .. } => {
                 let composing = input
                     .update(cx, |s, cx| s.marked_text_range(window, cx))
                     .is_some();
-                let draft = input.read(cx).value().to_string();
+                // A picked command's chips are what is sent (composer.rs `send`), while this composer's own are shown.
+                let focus = input.read(cx).focus_handle(cx);
+                let chips = crate::screens::commands::owns(wid, &focus, cx);
+                if chips && crate::screens::commands::chips::hold_unnamed_member(&ctx, wid, cx) {
+                    window.refresh();
+                    return;
+                }
+                let typed = chips
+                    .then(|| crate::screens::commands::chips::draft(&ctx, wid, cx))
+                    .flatten();
+                let draft = typed.unwrap_or_else(|| input.read(cx).value().to_string());
                 // A reader who cannot send has a disabled composer (ThreadView `blocked`).
                 if composing || draft.trim().is_empty() || !ctx.state.threads.can_send(open.channel)
                 {
                     return;
                 }
+                // The Bot area decides first, as for the channel's composer: a literal text or `//x` is posted into the
+                // thread, a built-in answers privately or runs in it, and a command still lacking arguments keeps its
+                // draft. The thread composer encodes no mentions, so the encoder is the identity.
+                let at_thread = crate::slots::SlotCx {
+                    channel: Some(open.channel),
+                    ..ctx.clone()
+                };
+                let draft = match crate::screens::commands::on_send_in(
+                    &at_thread,
+                    Some(open.root),
+                    &draft,
+                    &|t| t.to_owned(),
+                    wid,
+                    cx,
+                ) {
+                    crate::screens::commands::SendDecision::Post(text) => text,
+                    crate::screens::commands::SendDecision::Handled => {
+                        input.update(cx, |s, cx| s.set_value("", window, cx));
+                        if let Some(client) = &ctx.client {
+                            client.threads().set_draft(open.root, "");
+                        }
+                        cx.notify();
+                        return;
+                    }
+                    crate::screens::commands::SendDecision::Keep => return,
+                };
                 self.in_flight = true;
                 input.update(cx, |s, cx| s.set_value("", window, cx));
                 if let Some(client) = ctx.client.clone() {
@@ -216,16 +272,49 @@ impl PaneView {
     }
 
     /// The field holds the open thread's draft, not the previous thread's.
-    fn settle_draft(&mut self, root: MessageId, window: &mut Window, cx: &mut Context<Self>) {
+    ///
+    /// Task 31 (Task 30's memory): the draft of an uncertain command of this thread comes back before the stored draft, as
+    /// the channel composer's load prefers it (`loaded_draft`).
+    fn settle_draft(&mut self, open: OpenThread, window: &mut Window, cx: &mut Context<Self>) {
+        let (root, at) = (open.root, conversation(open));
         if self.shown == Some(root) {
             return;
         }
         self.shown = Some(root);
         let draft = current(self.window, cx)
-            .and_then(|c| c.client.map(|client| client.threads().draft(root)))
+            .and_then(|c| {
+                c.client.map(|client| {
+                    crate::screens::commands::with_memory(&client, |m| m.take_reopen(at))
+                        .unwrap_or_else(|| client.threads().draft(root))
+                })
+            })
             .unwrap_or_default();
         self.input
             .update(cx, |s, cx| s.set_value(draft, window, cx));
+    }
+
+    /// Task 30 (CommandHost.tsx:293-296): a command run from this thread's composer whose answer was uncertain comes back
+    /// into it, so the list opens on the same draft and a resend is the same request. The draft the window was handed
+    /// (`commands::reopen`) is taken first, else the one the command memory keeps for this thread. Only for the composer
+    /// of the thread it was typed in, and of the client that ran it.
+    fn reopen(&mut self, open: OpenThread, window: &mut Window, cx: &mut Context<Self>) {
+        let at = conversation(open);
+        let wid = window.window_handle().window_id();
+        let client = current(self.window, cx).and_then(|c| c.client);
+        let serial = client.as_ref().map(|c| c.serial());
+        let handed = crate::screens::commands::take_reopen(wid, serial, at, cx);
+        let text = handed.or_else(|| {
+            client
+                .as_ref()
+                .and_then(|c| crate::screens::commands::with_memory(c, |m| m.take_reopen(at)))
+        });
+        if let Some(text) = text {
+            self.input
+                .update(cx, |s, cx| s.set_value(text.clone(), window, cx));
+            let focus = self.input.read(cx).focus_handle(cx);
+            crate::screens::commands::set_composer(wid, &focus, cx);
+            crate::screens::commands::draft_changed(wid, &text, cx);
+        }
     }
 
     fn row(
@@ -374,7 +463,8 @@ impl Render for PaneView {
         let Some(open) = open_of(&ctx, cx) else {
             return div().into_any_element();
         };
-        self.settle_draft(open.root, window, cx);
+        self.settle_draft(open, window, cx);
+        self.reopen(open, window, cx);
         // The rows' actions act on the thread's channel (the shell's view may show another one).
         let ctx = crate::slots::SlotCx {
             channel: Some(open.channel),
@@ -400,7 +490,7 @@ impl Render for PaneView {
             )
             .into_any_element(),
         });
-        let replies: Vec<_> = data
+        let mut replies: Vec<_> = data
             .map(|d| {
                 d.replies
                     .iter()
@@ -409,6 +499,27 @@ impl Render for PaneView {
                     .collect()
             })
             .unwrap_or_default();
+        // The thread's private results (a command's answer, only this device shows it) come after its replies
+        // (ThreadView.tsx:243-244), in the log's width: the pane less the rows' 14px sides.
+        let result_width =
+            f32::from(dilla_desktop_ui::tokens::layout::THREAD) - 2.0 * thread_row::SIDE;
+        replies.extend(
+            crate::screens::commands::private_results_in(
+                &ctx,
+                Some(open.root),
+                result_width,
+                window,
+                cx,
+            )
+            .into_iter()
+            .map(|(row, height)| {
+                div()
+                    .w(px(result_width))
+                    .h(px(height))
+                    .child(row)
+                    .into_any_element()
+            }),
+        );
         // Fix round 2 of the web: the rule counts the thread's replies (the root's summary), not only those read so far.
         let count = data.map_or(0, |d| d.count.max(d.replies.len() as u32));
         let rule = match count {
@@ -507,6 +618,11 @@ impl Render for PaneView {
         } else {
             t("thread.composer").to_owned()
         };
+        // Task 31: the command list over the composer and a picked command's chips in place of its field, while this
+        // composer is the one that reported the draft. Only the command list is drawn here: the emoji grid of
+        // `slots::composer_popup` belongs to the channel's composer.
+        let popup = crate::screens::commands::picker(&ctx, &focus, window, cx);
+        let chips = crate::slots::composer_chips(&ctx, &focus, window, cx);
         let field = div()
             .relative()
             .flex_1()
@@ -520,15 +636,24 @@ impl Render for PaneView {
             .child(tracked_focus(
                 "thread-composer",
                 &focus,
-                div().w_full().h(px(rows as f32 * FIELD_LINE)).child(
-                    // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which wins.
-                    Textarea::new(&self.input)
-                        .aria_label(crate::strings::t("thread.composer"))
-                        .appearance(false)
-                        .disabled(blocked)
-                        .text_size(text::INPUT)
-                        .line_height(px(FIELD_LINE))
-                        .h(px(rows as f32 * FIELD_LINE)),
+                crate::screens::composer::typed_text(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(rows as f32 * FIELD_LINE))
+                        .child(crate::screens::messages::textarea_origin(
+                            // The textarea's own size sets 14px text; the field's 13px on its lines are set on it, which
+                            // wins.
+                            Textarea::new(&self.input)
+                                .aria_label(crate::strings::t("thread.composer"))
+                                .appearance(false)
+                                .disabled(blocked)
+                                .text_size(text::INPUT)
+                                .line_height(px(FIELD_LINE))
+                                .h(px(rows as f32 * FIELD_LINE)),
+                        )),
+                    &self.input.read(cx).value(),
+                    FIELD_LINE,
                 ),
             ))
             .children(value_empty.then(|| {
@@ -543,6 +668,7 @@ impl Render for PaneView {
         // `.d-thread-pane__composer .d-composer`: 8px 12px 12px around a --bg-3 box in the hairline, 8px corners; the accent
         // line while the field is focused; `.d-composer__row` 4px 4px 4px 10px, the accent `›` and no send button.
         let composer = div()
+            .relative()
             .on_action(cx.listener(|_, _: &Enter, _, _| {}))
             .px(px(thread_row::SIDE - 2.0))
             .pt(px(COMPOSER_TOP))
@@ -567,8 +693,27 @@ impl Render for PaneView {
                         line("›", text::BASE, line_height(text::BASE, 1.5), color::ACCENT)
                             .weight(font::WEIGHT_DISPLAY),
                     )
-                    .child(field),
+                    .child(match chips {
+                        // The textarea stays in the tree, empty-sized: it keeps the focus and its Enter sends the chips.
+                        Some(chips) => div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .child(chips)
+                            .child(div().w_0().h_0().overflow_hidden().child(field))
+                            .into_any_element(),
+                        None => field.into_any_element(),
+                    }),
             )
+            .children(popup.map(|popup| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_full()
+                    .mb(px(POPUP_GAP))
+                    .child(popup)
+            }))
             .into_any_element();
         let close_focus = self.close_focus.clone();
         let parts = PaneParts {
@@ -622,5 +767,100 @@ mod tests {
         assert_eq!(earlier_shown(Some(&data(false)), false), None);
         assert_eq!(earlier_shown(Some(&data(true)), false), Some(true));
         assert_eq!(earlier_shown(Some(&data(true)), true), Some(false));
+    }
+
+    /// The window's composers (the channel's and a thread's) both draw the list slot: only the one that reported the draft
+    /// draws the list.
+    #[gpui::test]
+    fn the_list_belongs_to_the_composer_that_reported_the_draft(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands;
+        use crate::slots::SlotCx;
+        cx.update(crate::install);
+        let window = cx.add_empty_window();
+        window.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            let (channel_focus, thread_focus) = (cx.focus_handle(), cx.focus_handle());
+            let ctx = SlotCx::default();
+            commands::set_composer(w, &thread_focus, cx);
+            commands::draft_changed(w, "/", cx);
+            assert!(commands::picker(&ctx, &channel_focus, window, cx).is_none());
+            assert!(commands::picker(&ctx, &thread_focus, window, cx).is_some());
+            // The chips follow the same owner.
+            assert!(crate::slots::composer_chips(&ctx, &channel_focus, window, cx).is_none());
+        });
+    }
+
+    /// The pane's window: it records what it draws as the shell does (`threads::sync`), then draws the pane.
+    struct Host(crate::slots::SlotCx);
+
+    impl Render for Host {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            super::super::sync(&self.0, window, cx);
+            div().child(
+                super::super::pane(&crate::router::Route::Root, window, cx)
+                    .unwrap_or_else(|| div().into_any_element()),
+            )
+        }
+    }
+
+    /// Task 30's command memory binds a reopened draft to the thread it was typed in: the thread's composer takes it, and
+    /// the picker opens on it; a draft left for another thread stays untaken.
+    #[gpui::test]
+    fn an_uncertain_thread_command_reopens_in_the_thread(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands;
+        cx.update(crate::install);
+        let channel = ChannelId([3; 16]);
+        let (root, other) = (MessageId([7; 16]), MessageId([8; 16]));
+        let ctx = crate::slots::SlotCx {
+            channel: Some(channel),
+            ..crate::slots::SlotCx::default()
+        };
+        let (_host, vcx) = cx.add_window_view(|_, _| Host(ctx.clone()));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        let w = vcx.update(|window, cx| {
+            super::super::open_thread(channel, root, &ctx, cx);
+            window.window_handle().window_id()
+        });
+        draw(vcx);
+        let field = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|_, cx| {
+                let pane = super::super::ui(cx)
+                    .windows
+                    .get(&w)
+                    .and_then(|p| p.pane.clone())
+                    .expect("the pane is drawn");
+                let input = pane.read(cx).input();
+                input.read(cx).value().to_string()
+            })
+        };
+        assert_eq!(field(vcx), "");
+        let at = |thread| Conversation {
+            channel,
+            thread: Some(thread),
+        };
+        vcx.update(|_, cx| commands::reopen(w, None, at(other), "/pin message:y".into(), cx));
+        draw(vcx);
+        assert_eq!(field(vcx), "", "another thread's draft is not taken here");
+        assert!(
+            vcx.update(|_, cx| commands::picker_state(w, cx).reopen)
+                .is_some(),
+            "it waits for its own thread"
+        );
+        vcx.update(|_, cx| commands::reopen(w, None, at(root), "/pin message:x".into(), cx));
+        draw(vcx);
+        assert_eq!(field(vcx), "/pin message:x", "the thread's composer");
+        assert_eq!(
+            vcx.update(|_, cx| commands::picker_state(w, cx).draft),
+            "/pin message:x",
+            "the picker opens on it"
+        );
+        assert!(
+            vcx.update(|_, cx| commands::picker_state(w, cx).reopen)
+                .is_none(),
+            "taken once"
+        );
     }
 }

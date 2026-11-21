@@ -516,9 +516,25 @@ pub fn gifs_on(ctx: &SlotCx, cx: &mut App) -> bool {
     }
 }
 
-/// The command picker over the composer (`slots::composer_popup`).
-pub fn picker(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+/// Whether `owner`, a composer's field, is the one that reported the window's draft ([`set_composer`]): the channel's
+/// composer and a thread's both draw `slots::composer_popup`, and only the one being typed in draws the list and the chips.
+pub fn owns(window: gpui::WindowId, owner: &gpui::FocusHandle, cx: &App) -> bool {
+    crate::per_window::get::<PickerState>(window, cx)
+        .and_then(|s| s.composer.as_ref()?.upgrade())
+        .is_some_and(|focus| &focus == owner)
+}
+
+/// The command picker over the composer whose field is `owner` (`slots::composer_popup`).
+pub fn picker(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
+    if !owns(wid, owner, cx) {
+        return None;
+    }
     let state = crate::per_window::get::<PickerState>(wid, cx)?.clone();
     // A picked command's chips: the popup is the active chip's suggestions instead of the list.
     if let Some(chips) = &state.chips {
@@ -624,21 +640,32 @@ pub fn on_send(
     window: gpui::WindowId,
     cx: &mut App,
 ) -> SendDecision {
+    on_send_in(ctx, None, draft, encode, window, cx)
+}
+
+/// [`on_send`] for the composer of `thread` in the channel of `ctx` (`None`: the channel's own). The thread binding is the
+/// conversation's: its message lookups, its private rows, its command memory and what a post or a reply is sent into
+/// (ComposerArea.tsx:292, CommandHost.tsx:84-86).
+pub fn on_send_in(
+    ctx: &SlotCx,
+    thread: Option<dilla_client::state::MessageId>,
+    draft: &str,
+    encode: &dyn Fn(&str) -> String,
+    window: gpui::WindowId,
+    cx: &mut App,
+) -> SendDecision {
     let Some(channel) = ctx.channel else {
         return SendDecision::Post(draft.to_owned());
     };
-    let plan = bot::plan_in(&ctx.state, ctx.community, Some(channel), draft);
-    let at = Conversation {
-        channel,
-        thread: None,
-    };
+    let at = Conversation { channel, thread };
+    let plan = bot::plan_at(&ctx.state, ctx.community, Some(at), draft);
     // The web runs `poll create` through its own handler, not as a typed Bot command: the form opens over the
     // conversation (UtilityCommandProvider.tsx `handlers['poll create']`), with or without a client. Its run takes the
     // remembered request id (Task 30), so a create whose answer was uncertain is reconciled, not made twice.
     if let Plan::Bot { definition, args } = &plan
         && definition.id == "poll create"
     {
-        poll_form::open(ctx, args, attempt_of(ctx, at, draft), window, cx);
+        poll_form::open(ctx, at, args, attempt_of(ctx, at, draft), window, cx);
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }
@@ -647,7 +674,15 @@ pub fn on_send(
     if let Plan::Bot { definition, args } = &plan
         && let Some(command) = announcement_form::Command::of(&definition.id)
     {
-        announcement_form::run(ctx, command, args, attempt_of(ctx, at, draft), window, cx);
+        announcement_form::run(
+            ctx,
+            at,
+            command,
+            args,
+            attempt_of(ctx, at, draft),
+            window,
+            cx,
+        );
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }
@@ -656,7 +691,7 @@ pub fn on_send(
     if let Plan::Bot { definition, .. } = &plan
         && definition.id == role_panel_form::COMMAND
     {
-        role_panel_form::run(ctx, attempt_of(ctx, at, draft), window, cx);
+        role_panel_form::run(ctx, at, attempt_of(ctx, at, draft), window, cx);
         draft_changed(window, "", cx);
         return SendDecision::Handled;
     }
@@ -664,15 +699,7 @@ pub fn on_send(
         (_, Plan::Post(text)) => SendDecision::Post(text),
         (_, Plan::Incomplete) => SendDecision::Keep,
         (Some(client), Plan::Private(status, text, provider)) => {
-            client.bot().add_result(
-                Conversation {
-                    channel,
-                    thread: None,
-                },
-                status,
-                text,
-                provider,
-            );
+            client.bot().add_result(at, status, text, provider);
             SendDecision::Handled
         }
         (None, Plan::Private(..)) => SendDecision::Handled,
@@ -683,11 +710,9 @@ pub fn on_send(
             // bot-run.ts: music has no text channel, so a music command goes with the voice room this device is in (when
             // it is in one); every other Bot command is sent from this channel. Its answer still shows here.
             let send = bot::room::send_channel(&ctx.state, &definition.id, channel);
+            // The command itself carries no thread (bot-run.ts has none); only its result row is the thread's.
             client.bot().run_command(
-                Conversation {
-                    channel,
-                    thread: None,
-                },
+                at,
                 community,
                 Some(send),
                 definition,
@@ -704,10 +729,7 @@ pub fn on_send(
                 window,
                 confirm::Confirming {
                     moderation,
-                    conversation: Conversation {
-                        channel,
-                        thread: None,
-                    },
+                    conversation: at,
                     client: client.clone(),
                 },
                 cx,
@@ -726,7 +748,7 @@ pub fn on_send(
                     .as_ref()
                     .is_some_and(|c| builtins::timeout_was_sent(c, &run, attempt.request))
             });
-            let run = builtins::prepared(run, &ctx.state, channel, encode);
+            let run = builtins::prepared_in(run, &ctx.state, at, encode);
             let text = copy::pending(run.id());
             let row = match client {
                 Some(c) => c.bot().add_result(
@@ -879,13 +901,22 @@ pub fn private_results(
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<(AnyElement, f32)> {
+    private_results_in(ctx, None, width, window, cx)
+}
+
+/// [`private_results`] of `thread`'s pane (`None`: the channel's own log): the rows are kept per thread
+/// (CommandHost.tsx:74) and drawn after its replies (ThreadView.tsx:243-244).
+pub fn private_results_in(
+    ctx: &SlotCx,
+    thread: Option<dilla_client::state::MessageId>,
+    width: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<(AnyElement, f32)> {
     let Some(channel) = ctx.channel else {
         return Vec::new();
     };
-    let conversation = Conversation {
-        channel,
-        thread: None,
-    };
+    let conversation = Conversation { channel, thread };
     let (zone, _) = zone_of(ctx.clock);
     let fixture_rows: Vec<PrivateResult> = if ctx.client.is_none() {
         crate::per_window::get::<FixtureRows>(window.window_handle().window_id(), cx)

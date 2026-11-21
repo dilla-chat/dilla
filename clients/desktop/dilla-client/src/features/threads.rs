@@ -303,6 +303,17 @@ impl Threads {
         self.send(channel, Some(to), None, text)
     }
 
+    /// Posts `text` in the thread of `root` as a reply to `to` (`/reply` in a thread composer).
+    pub fn reply_in_thread(
+        &self,
+        channel: ChannelId,
+        root: MessageId,
+        to: MessageId,
+        text: String,
+    ) -> Done<MessageId> {
+        self.send(channel, Some(to), Some(root), text)
+    }
+
     /// Posts `text` in the thread of `root`.
     pub fn send_in_thread(
         &self,

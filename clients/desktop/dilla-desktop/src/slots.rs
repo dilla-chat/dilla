@@ -230,13 +230,26 @@ const COMPOSER_TOOL_GAP: f32 = 2.0;
 
 /// The popup over the composer: the command picker (20), else the emoji grid (10). The mention popup stays the
 /// composer's own (9).
-pub fn composer_popup(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    commands::picker(ctx, window, cx).or_else(|| reactions::emoji_popup(ctx, window, cx))
+///
+/// `focus` is the focus handle of the composer's field: the channel's composer and a thread's both draw it, and the command
+/// list belongs to the one that reported the draft.
+pub fn composer_popup(
+    ctx: &SlotCx,
+    focus: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    commands::picker(ctx, focus, window, cx).or_else(|| reactions::emoji_popup(ctx, window, cx))
 }
 
-/// In place of the composer's field: a picked command's chips (20).
-pub fn composer_chips(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    commands::chips::view(ctx, window, cx)
+/// In place of the composer's field (`focus`, as for [`composer_popup`]): a picked command's chips (20).
+pub fn composer_chips(
+    ctx: &SlotCx,
+    focus: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    commands::chips::view(ctx, focus, window, cx)
 }
 
 /// Under a channel's row in the list: a voice channel's people (17).

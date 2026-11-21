@@ -148,6 +148,25 @@ pub fn plan_in(
     channel: Option<ChannelId>,
     draft: &str,
 ) -> Plan {
+    plan_at(
+        state,
+        community,
+        channel.map(|channel| Conversation {
+            channel,
+            thread: None,
+        }),
+        draft,
+    )
+}
+
+/// [`plan_in`] for a draft typed in `conversation`: a channel, or one of its threads. In a thread the message lookups
+/// read the thread's replies ([`exact_message_in`]) and `/pin` and `/unpin` refuse (ThreadView.tsx:237, builtin.ts:434).
+pub fn plan_at(
+    state: &AppState,
+    community: Option<CommunityId>,
+    conversation: Option<Conversation>,
+    draft: &str,
+) -> Plan {
     let defs = definitions(state, community);
     let refs: Vec<&CommandDefinition> = defs.iter().collect();
     match registry::parse_command(draft, &refs) {
@@ -221,7 +240,7 @@ pub fn plan_in(
                     member_builtin_plan(state, community, &command_id, &args)
                 }
                 "reply" | "edit" | "delete" | "pin" | "unpin" | "topic" => {
-                    message_plan(state, community, channel, &command_id, &args)
+                    message_plan(state, community, conversation, &command_id, &args)
                 }
                 "role add" | "role remove" | "selfrole list" | "selfrole add"
                 | "selfrole remove" => role_plan(state, community, &command_id, &args),
@@ -250,7 +269,7 @@ pub fn plan_in(
                 }
                 "giphy" | "invite" | "search" | "thread" | "dm" | "modlog" | "join" | "leave"
                 | "mute" | "unmute" | "deafen" | "undeafen" => {
-                    navigation_plan(state, community, channel, &command_id, &args)
+                    navigation_plan(state, community, conversation, &command_id, &args)
                 }
                 // `registry::commands()` is closed and `every_builtin_has_a_handler` walks it: a built-in added there
                 // without an arm above does not parse there, which fails that test. Nothing answers "unavailable".
@@ -817,7 +836,34 @@ pub fn exact_message<'a>(
     channel: ChannelId,
     id: &str,
 ) -> Option<&'a TimelineItem> {
-    state.timelines.get(&channel)?.items.iter().find(|i| {
+    exact_message_in(
+        state,
+        Conversation {
+            channel,
+            thread: None,
+        },
+        id,
+    )
+}
+
+/// [`exact_message`] in `conversation`: a thread's lookups read its replies, without the root (ThreadView.tsx:94, :237),
+/// when that thread belongs to the conversation's channel.
+pub fn exact_message_in<'a>(
+    state: &'a AppState,
+    conversation: Conversation,
+    id: &str,
+) -> Option<&'a TimelineItem> {
+    let items = match conversation.thread {
+        Some(root) => {
+            let data = state.threads.threads.get(&root)?;
+            if data.channel != conversation.channel {
+                return None;
+            }
+            &data.replies
+        }
+        None => &state.timelines.get(&conversation.channel)?.items,
+    };
+    items.iter().find(|i| {
         i.state == TimelineItemState::Ok
             && i.seq.is_some()
             && i.msg_id.is_some_and(|m| m.hex() == id)
@@ -1091,11 +1137,12 @@ fn reason_problem(reason: &str) -> bool {
 fn message_plan(
     state: &AppState,
     community: Option<CommunityId>,
-    channel: Option<ChannelId>,
+    conversation: Option<Conversation>,
     command_id: &str,
     args: &registry::Args,
 ) -> Plan {
     use crate::features::roles::{perm, viewer_channel_bits};
+    let channel = conversation.map(|c| c.channel);
     let failed = |text: &str| {
         Plan::Private(
             ResultStatus::Failed,
@@ -1122,8 +1169,8 @@ fn message_plan(
             _ => failed("You cannot manage this channel."),
         };
     }
-    let item = channel.and_then(|c| exact_message(state, c, arg("message")));
-    // `exact_message` finds only a stored message: it has its id and its seq.
+    let item = conversation.and_then(|c| exact_message_in(state, c, arg("message")));
+    // `exact_message_in` finds only a stored message: it has its id and its seq.
     let found = item.and_then(|i| Some((i, i.msg_id?, i.seq?)));
     match command_id {
         "reply" => match found {
@@ -1182,6 +1229,9 @@ fn message_plan(
             let Some((item, msg, _)) = found else {
                 return failed("That message is not available in this channel.");
             };
+            if conversation.is_some_and(|c| c.thread.is_some()) {
+                return failed("Messages in threads cannot be pinned from the command composer.");
+            }
             if community.is_some() && !has(perm::PIN_MESSAGES) {
                 return failed("You cannot pin messages here.");
             }
@@ -1323,11 +1373,12 @@ fn member_builtin_plan(
 fn navigation_plan(
     state: &AppState,
     community: Option<CommunityId>,
-    channel: Option<ChannelId>,
+    conversation: Option<Conversation>,
     command_id: &str,
     args: &registry::Args,
 ) -> Plan {
     use crate::features::roles::{perm, viewer_channel_bits};
+    let channel = conversation.map(|c| c.channel);
     let failed = |text: &str| {
         Plan::Private(
             ResultStatus::Failed,
@@ -1368,8 +1419,8 @@ fn navigation_plan(
             }
         }
         "thread" => {
-            let root = channel
-                .and_then(|c| exact_message(state, c, arg("message")))
+            let root = conversation
+                .and_then(|c| exact_message_in(state, c, arg("message")))
                 .and_then(|i| i.msg_id);
             match (community, root) {
                 (Some(_), Some(root)) => run(Builtin::Thread { root }),
@@ -2311,6 +2362,72 @@ mod tests {
         assert_eq!(
             plan_in(&s, None, Some(dm), &format!("/pin message:{b}")),
             failed("That message is not available in this channel.")
+        );
+    }
+
+    /// ThreadView.tsx:237 and builtin.ts:434-435: a thread's composer reads the thread's replies, not the channel's
+    /// timeline, and refuses to pin from it; `/reply` in a thread finds a reply, and outside it does not.
+    #[test]
+    fn thread_commands_bind_to_the_thread() {
+        use crate::features::roles::perm;
+        use crate::state::TimelineItem;
+        use crate::state::threads::ThreadData;
+        let (mut s, c, ch) = message_world(perm::PIN_MESSAGES);
+        let root = MessageId([0xa; 16]);
+        let mut reply: TimelineItem = s.timelines[&ch].items[0].clone();
+        reply.msg_id = Some(MessageId([0xd; 16]));
+        reply.pinned = false;
+        s.threads.threads.insert(
+            root,
+            ThreadData {
+                channel: ch,
+                root: None,
+                replies: vec![reply],
+                has_earlier: false,
+                count: 1,
+            },
+        );
+        let (r, channel_only) = (MessageId([0xd; 16]).hex(), MessageId([0xb; 16]).hex());
+        let thread = Some(Conversation {
+            channel: ch,
+            thread: Some(root),
+        });
+        let failed = |text: &str| {
+            Plan::Private(
+                ResultStatus::Failed,
+                text.to_owned(),
+                ResultProvider::Builtin,
+            )
+        };
+        assert_eq!(
+            plan_at(&s, Some(c), thread, &format!("/pin message:{r}")),
+            failed("Messages in threads cannot be pinned from the command composer.")
+        );
+        assert_eq!(
+            plan_at(&s, Some(c), thread, &format!("/pin message:{channel_only}")),
+            failed("That message is not available in this channel.")
+        );
+        assert_eq!(
+            plan_at(&s, Some(c), thread, &format!("/reply message:{r} text:x")),
+            Plan::Builtin {
+                run: Builtin::Reply {
+                    to: MessageId([0xd; 16]),
+                    text: "x".into()
+                },
+                confirm: None,
+            }
+        );
+        assert_eq!(
+            plan_at(
+                &s,
+                Some(c),
+                Some(Conversation {
+                    channel: ch,
+                    thread: None
+                }),
+                &format!("/reply message:{r} text:x")
+            ),
+            failed("That message is not available in this conversation.")
         );
     }
 
