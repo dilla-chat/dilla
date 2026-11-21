@@ -171,6 +171,11 @@ fn label_for(option: &CommandOption, over: Option<&str>) -> String {
     }
 }
 
+/// Whether the command `id` opens a form when picked (`PickerEntry.opensForm`), with no chips.
+pub fn opens_form(id: &str) -> bool {
+    prototype(id).is_some_and(|(_, _, form, _)| form)
+}
+
 /// `pickerEntry`.
 pub fn entry(command: &CommandDefinition, bot_name: &str) -> Entry {
     let over = prototype(&command.id);

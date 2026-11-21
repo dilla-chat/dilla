@@ -47,9 +47,22 @@ pub fn bind(cx: &mut App) {
             ("escape", false) => Key::Escape,
             _ => return,
         };
-        if apply(window.window_handle().window_id(), key, cx) {
-            cx.stop_propagation();
-            window.refresh();
+        let wid = window.window_handle().window_id();
+        match apply(wid, key, cx) {
+            Applied::Pass => {}
+            Applied::Took => {
+                cx.stop_propagation();
+                window.refresh();
+            }
+            Applied::Run => {
+                cx.stop_propagation();
+                let owner = crate::per_window::get::<PickerState>(wid, cx)
+                    .and_then(|s| s.composer.as_ref()?.upgrade());
+                if let Some(owner) = owner {
+                    run_picked(&owner, window, cx);
+                }
+                window.refresh();
+            }
         }
     })
     .detach();
@@ -62,52 +75,76 @@ pub fn takes_keys(window: &gpui::Window, cx: &App) -> bool {
         .is_some_and(|focus| focus.is_focused(window))
 }
 
-/// Applies `key` to the open list; `false` when the list is closed or the key is not the list's.
-pub fn apply(window: gpui::WindowId, key: Key, cx: &mut App) -> bool {
+/// What a key did to the open list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Applied {
+    /// The list is closed or the key is not the list's: the composer handles it.
+    Pass,
+    /// The list took the key.
+    Took,
+    /// The list took the key and picked a command that opens a form: its composer runs it now ([`run_picked`]).
+    Run,
+}
+
+/// Applies `key` to the open list.
+pub fn apply(window: gpui::WindowId, key: Key, cx: &mut App) -> Applied {
     let Some(state) = crate::per_window::get::<PickerState>(window, cx) else {
-        return false;
+        return Applied::Pass;
     };
     let Some(rows) = state.rows.as_ref() else {
-        return false;
+        return Applied::Pass;
     };
     match picker::key(rows.len(), state.selected, key) {
-        Effect::Pass => false,
+        Effect::Pass => Applied::Pass,
         Effect::Select(i) => {
             super::picker_state_mut(window, cx).selected = i;
-            true
+            Applied::Took
         }
         Effect::Pick(i) => {
-            // CommandPicker.tsx `onRunDetached`: `poll create` opens a form, so picking it runs it with no chips. The draft
-            // already names it whole, so Enter is left to the composer, whose send runs the draft (`on_send`).
-            let names_form = state.draft.trim().eq_ignore_ascii_case("/poll create")
-                && rows.get(i).is_some_and(|id| id == "poll create");
-            if names_form {
-                return false;
+            if pick(window, i, cx) {
+                Applied::Run
+            } else {
+                Applied::Took
             }
-            pick(window, i, cx);
-            true
         }
         Effect::Close { .. } => {
             let s = super::picker_state_mut(window, cx);
             s.closed_for = Some(s.draft.clone());
             s.rows = None;
-            true
+            Applied::Took
         }
     }
 }
 
-/// Picks row `i` of the open list: it becomes the command the chips are for, and the list closes.
-pub fn pick(window: gpui::WindowId, i: usize, cx: &mut App) {
+/// CommandPicker.tsx `enterCommand`: a command that opens a form (`opensForm`, `poll create`) runs as it is picked, by
+/// Tab, Enter or a click, with no chips to fill (`onRunDetached`). The composer `owner` is sent its Enter, so its send
+/// runs the picked command (`chips::draft`), the form opens and the picker empties.
+pub fn run_picked(owner: &gpui::FocusHandle, window: &gpui::Window, cx: &mut App) {
+    let owner = owner.clone();
+    window.defer(cx, move |window, cx| {
+        let enter = gpui_component::input::Enter {
+            secondary: false,
+            shift: false,
+        };
+        owner.dispatch_action(&enter, window, cx);
+    });
+}
+
+/// Picks row `i` of the open list: it becomes the command the chips are for, and the list closes. `true` when the
+/// command opens a form, which the composer then runs at once ([`run_picked`]).
+pub fn pick(window: gpui::WindowId, i: usize, cx: &mut App) -> bool {
     let s = super::picker_state_mut(window, cx);
     let Some(id) = s.rows.as_ref().and_then(|r| r.get(i)).cloned() else {
-        return;
+        return false;
     };
     s.selected = i;
     s.picked = Some(id.clone());
     s.closed_for = Some(s.draft.clone());
     s.rows = None;
     // The composer's field becomes the command's chips (CommandPicker.tsx `enterCommand`).
+    let opens_form = picker::opens_form(&id);
     s.chips = Some(super::chips::Chips::new(id));
+    opens_form
 }
 
 /// A key while `window`'s composer shows chips: typing fills the active field, Backspace deletes its last character,
@@ -299,6 +336,40 @@ mod tests {
             }
             assert!(chips_key(w, &stroke("down", None, Modifiers::none()), cx));
             assert_eq!(super::super::picker_state(w, cx).chips.unwrap().sug, 1);
+        });
+    }
+
+    /// CommandPicker.tsx `enterCommand` (CommandPicker.test.tsx "runs poll create detached"): Tab or Enter on `poll create`
+    /// runs it, typed whole or not, so the composer sends it and its form opens; it never stops at chips with nothing to
+    /// fill, nor lets Tab move the focus off the composer. A command with fields stops at its chips.
+    #[gpui::test]
+    fn picking_poll_create_runs_its_form(cx: &mut gpui::TestAppContext) {
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        cx.update(|cx| {
+            let listed = |draft: &str, rows: &[&str], cx: &mut App| {
+                super::super::draft_changed(w, draft, cx);
+                super::super::picker_state_mut(w, cx).rows =
+                    Some(rows.iter().map(|r| (*r).to_owned()).collect());
+            };
+            for (draft, key) in [
+                ("/poll create", Key::Tab),
+                ("/poll create", Key::Enter),
+                ("/poll", Key::Tab),
+            ] {
+                listed(draft, &["poll create", "remind"], cx);
+                assert_eq!(apply(w, key, cx), Applied::Run, "{draft} {key:?}");
+                let s = super::super::picker_state(w, cx);
+                assert_eq!(s.picked.as_deref(), Some("poll create"));
+                assert_eq!(s.rows, None, "the list closed");
+            }
+            listed("/remind", &["remind"], cx);
+            assert_eq!(apply(w, Key::Tab, cx), Applied::Took);
+            assert_eq!(
+                super::super::picker_state(w, cx).picked.as_deref(),
+                Some("remind")
+            );
         });
     }
 

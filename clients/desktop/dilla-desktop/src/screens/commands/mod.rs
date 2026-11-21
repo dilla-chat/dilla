@@ -629,11 +629,14 @@ pub(crate) fn highlight_in(
 }
 
 /// A row of the list of the composer `owner` was clicked: that composer's state picks it (a composer with none picks
-/// nothing).
-pub(crate) fn pick_in(window: gpui::WindowId, owner: &gpui::FocusHandle, i: usize, cx: &mut App) {
-    if activate(window, owner, false, cx) {
-        keys::pick(window, i, cx);
-    }
+/// nothing). `true` when the picked command opens a form, which the composer then runs ([`keys::run_picked`]).
+pub(crate) fn pick_in(
+    window: gpui::WindowId,
+    owner: &gpui::FocusHandle,
+    i: usize,
+    cx: &mut App,
+) -> bool {
+    activate(window, owner, false, cx) && keys::pick(window, i, cx)
 }
 
 /// The command picker over the composer whose field is `owner` (`slots::composer_popup`).
@@ -703,7 +706,9 @@ pub fn picker(
     .on_pick({
         let owner = owner.clone();
         move |i, window, cx| {
-            pick_in(wid, &owner, i, cx);
+            if pick_in(wid, &owner, i, cx) {
+                keys::run_picked(&owner, window, cx);
+            }
             window.refresh();
         }
     });
@@ -1353,9 +1358,13 @@ mod tests {
             );
             draft_changed(b, "", cx);
             assert_eq!(picker_state(a, cx).draft, "/r", "B's send leaves A's draft");
-            assert!(!keys::apply(b, picker::Key::Down, cx), "B has no list open");
+            assert_eq!(
+                keys::apply(b, picker::Key::Down, cx),
+                keys::Applied::Pass,
+                "B has no list open"
+            );
             assert_eq!(picker_state(a, cx).selected, 0);
-            assert!(keys::apply(a, picker::Key::Down, cx));
+            assert_eq!(keys::apply(a, picker::Key::Down, cx), keys::Applied::Took);
             assert_eq!(picker_state(a, cx).selected, 1);
         });
     }

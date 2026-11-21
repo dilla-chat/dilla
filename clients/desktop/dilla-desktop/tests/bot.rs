@@ -664,10 +664,13 @@ fn a_poll_posted_from_the_form_shows_its_card() {
     app.wait_for("command-picker", Duration::from_secs(10));
     // The new device reads the Bot's catalog on its first ready; until its key checks, the command is greyed.
     app.wait_for("command-active-ready", Duration::from_secs(60));
+    // Picking it runs it (CommandPicker.tsx `enterCommand`, `opensForm`): the form opens with no chips to fill.
     app.press("tab");
-    app.wait_for("command-chips", Duration::from_secs(5));
-    app.press("enter");
     app.wait_for("poll-question", Duration::from_secs(10));
+    assert!(
+        app.element("command-chips").is_none(),
+        "poll create has no chips"
+    );
     assert!(
         app.element("bot-result-pending").is_none(),
         "the form is no row until Post"
