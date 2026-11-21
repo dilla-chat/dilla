@@ -195,18 +195,19 @@ pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> 
     out
 }
 
-/// Over the composer's field: a moderated removal's unsettled status line (9), the reply bar (11), then the attachment
-/// tray (12). The composer places it in normal flow, so a non-empty guest makes the composer taller and the log above it
-/// shorter.
+/// Inside the composer's box, over the field: a moderated removal's unsettled status line (9). The composer places it in
+/// normal flow, so a non-empty guest makes the composer taller and the log above it shorter.
 pub fn composer_leading(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
-    column([
-        messages::moderation_status(ctx, window, cx),
-        attachments::tray(ctx, window, cx),
-    ])
+    column([messages::moderation_status(ctx, window, cx)])
 }
 
-/// The reply bar over the composer's box (ComposerArea.tsx `top`, ReplyChip.css): it sits on the box, outside it, and the
-/// box's top corners square off to join it (Composer.css `[data-replying]`).
+/// The attachment tray (12) over the composer's box, outside it, after the reply bar: ComposerArea.tsx's `top` order.
+pub fn composer_tray(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    attachments::tray(ctx, window, cx)
+}
+
+/// The reply bar (11) over the composer's box (ComposerArea.tsx `top`, first; ReplyChip.css): it sits on the box, outside
+/// it, and the box's top corners square off to join it (Composer.css `[data-replying]`).
 pub fn composer_reply_bar(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     threads::reply_bar(ctx, window, cx)
 }

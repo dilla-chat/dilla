@@ -431,7 +431,7 @@ pub fn attachment_cards(
     Some(Extra { element, height })
 }
 
-/// The attachment tray over the composer (`slots::composer_leading`, after the reply bar).
+/// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar).
 pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let channel = ctx.channel?;
     let client = ctx.client.clone();

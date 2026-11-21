@@ -490,7 +490,7 @@ pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> 
     vec![reply, thread]
 }
 
-/// The "replying to" bar over the composer (`slots::composer_leading`, first).
+/// The "replying to" bar over the composer's box (`slots::composer_reply_bar`, first).
 pub fn reply_bar(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     remember(ctx, cx);
     let target = replying_of(ctx, cx).filter(|t| Some(t.channel) == ctx.channel)?;

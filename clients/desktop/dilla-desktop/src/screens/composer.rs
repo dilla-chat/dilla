@@ -879,7 +879,9 @@ impl Render for Composer {
         let value = self.input.read(cx).value();
         let empty = value.is_empty();
         let ctx = self.slots.clone();
+        // ComposerArea.tsx `top`: the reply bar, then the attachment tray, both above the box.
         let reply_bar = slots::composer_reply_bar(&ctx, window, cx);
+        let tray = slots::composer_tray(&ctx, window, cx);
         let leading = slots::composer_leading(&ctx, window, cx);
         let buttons = slots::composer_buttons(&ctx, window, cx);
         let field_focus = self.input.read(cx).focus_handle(cx);
@@ -1116,6 +1118,7 @@ impl Render for Composer {
         // reply bar above it squares its top corners off.
         let focused = self.box_focus.contains_focused(window, cx);
         let box_ = div()
+            .debug_selector(|| "composer-box".to_owned())
             .track_focus(&self.box_focus)
             .w_full()
             .bg(color::SURFACE)
@@ -1180,6 +1183,7 @@ impl Render for Composer {
                 ))
             }))
             .children(reply_bar)
+            .children(tray.map(|t| div().debug_selector(|| "composer-tray".to_owned()).child(t)))
             .child(box_)
             .children(reason.map(|r| {
                 div().mt(len(4.)).children(paragraph(
@@ -1288,6 +1292,48 @@ mod tests {
                 "a tool is in the box too"
             );
         });
+    }
+
+    /// ComposerArea.tsx `top`: the attachment tray is over the composer's box, outside it, as the reply bar is.
+    #[gpui::test]
+    fn the_attachment_tray_is_over_the_box_not_in_it(cx: &mut gpui::TestAppContext) {
+        use dilla_client::state::AppState;
+        use dilla_client::state::attachments::{TrayItem, TrayPhase};
+        cx.update(crate::install);
+        let a = ChannelId([1; 16]);
+        let mut state = AppState::default();
+        state.attachments.trays.insert(
+            a,
+            vec![TrayItem {
+                id: "t1".into(),
+                name: "loot.txt".into(),
+                size: 39,
+                mime: "text/plain".into(),
+                image: false,
+                phase: TrayPhase::Ready,
+                reason: String::new(),
+            }],
+        );
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(a),
+                state: std::sync::Arc::new(state),
+                ..SlotCx::default()
+            });
+        });
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let (tray, boxed) = (
+            vcx.debug_bounds("composer-tray"),
+            vcx.debug_bounds("composer-box"),
+        );
+        let (tray, boxed) = (tray.expect("the tray is drawn"), boxed.expect("the box"));
+        assert!(
+            tray.bottom() <= boxed.top(),
+            "the tray ends above the box: {tray:?} {boxed:?}"
+        );
     }
 
     #[test]
