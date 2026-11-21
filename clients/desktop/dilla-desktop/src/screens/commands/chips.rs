@@ -1398,7 +1398,7 @@ pub fn view(
     owner: &gpui::FocusHandle,
     window: &mut Window,
     cx: &mut App,
-) -> Option<AnyElement> {
+) -> Option<ChipsView> {
     let wid = window.window_handle().window_id();
     if !super::activate(wid, owner, false, cx) {
         return None;
@@ -1512,19 +1512,21 @@ pub fn view(
             field,
         ));
     }
-    Some(
-        crate::tracked_box(
+    Some(ChipsView {
+        bar: crate::tracked_box("command-bar-slot", bar).into_any_element(),
+        row: crate::tracked_box(
             "command-chips",
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(bar)
-                .child(row),
+            div().flex_1().min_w_0().flex().flex_col().child(row),
         )
         .into_any_element(),
-    )
+    })
+}
+
+/// A picked command's composer parts: the bar goes over the composer's box (CommandPicker.tsx `PickerFrame.top`, in
+/// ComposerArea.tsx's `top`), the chips take the place of its field (`PickerFrame.input`).
+pub struct ChipsView {
+    pub bar: AnyElement,
+    pub row: AnyElement,
 }
 
 #[cfg(test)]

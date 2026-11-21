@@ -691,7 +691,10 @@ impl Render for PaneView {
         // composer is the one that reported the draft. Only the command list is drawn here: the emoji grid of
         // `slots::composer_popup` belongs to the channel's composer.
         let popup = crate::screens::commands::picker(&ctx, &focus, window, cx);
-        let chips = crate::slots::composer_chips(&ctx, &focus, window, cx);
+        let (chips_bar, chips) = match crate::slots::composer_chips(&ctx, &focus, window, cx) {
+            Some(v) => (Some(v.bar), Some(v.row)),
+            None => (None, None),
+        };
         let field = div()
             .relative()
             .flex_1()
@@ -742,6 +745,8 @@ impl Render for PaneView {
             .px(px(thread_row::SIDE - 2.0))
             .pt(px(COMPOSER_TOP))
             .pb(px(COMPOSER_BOTTOM))
+            // The picked command's bar sits over the box, as in the channel's composer (ComposerArea.tsx `top`).
+            .children(chips_bar)
             .child(
                 div()
                     .flex()

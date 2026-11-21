@@ -892,7 +892,10 @@ impl Render for Composer {
         let field_focus = self.input.read(cx).focus_handle(cx);
         let popup = slots::composer_popup(&ctx, &field_focus, window, cx);
         // A picked command's chips in place of the field (Task 20's hook, Task 28 follow-up 14).
-        let chips = slots::composer_chips(&ctx, &field_focus, window, cx);
+        let (chips_bar, chips) = match slots::composer_chips(&ctx, &field_focus, window, cx) {
+            Some(v) => (Some(v.bar), Some(v.row)),
+            None => (None, None),
+        };
         let now_ms = ctx.clock.now() * 1000;
         let now_ms = match ctx.clock {
             crate::screens::shell::Clock::Local => std::time::SystemTime::now()
@@ -1187,6 +1190,8 @@ impl Render for Composer {
                     (width - 32.0).max(1.0),
                 ))
             }))
+            // ComposerArea.tsx `top`: the command's bar, then the reply bar and the tray.
+            .children(chips_bar)
             .children(reply_bar)
             .children(tray.map(|t| div().debug_selector(|| "composer-tray".to_owned()).child(t)))
             .child(box_)
@@ -1386,6 +1391,50 @@ mod tests {
                 "nothing of X in Y"
             );
         });
+    }
+
+    /// CommandPicker.tsx `PickerFrame.top`: a picked command's bar (its description and the keys' hint) is over the
+    /// composer's box, in ComposerArea.tsx's `top`, not inside the box with the chips.
+    #[gpui::test]
+    fn a_picked_commands_bar_is_over_the_box_not_in_it(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let x = ChannelId([1; 16]);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(x),
+                ..SlotCx::default()
+            });
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (w, field) = vcx.update(|window, cx| {
+            (
+                window.window_handle().window_id(),
+                composer.read(cx).input.read(cx).focus_handle(cx),
+            )
+        });
+        vcx.update(|_, cx| {
+            commands::set_composer(w, &field, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            commands::picker_state_mut(w, cx).chips = Some(picked);
+        });
+        draw(vcx);
+        draw(vcx);
+        let (bar, boxed) = (
+            vcx.debug_bounds("command-bar-slot"),
+            vcx.debug_bounds("composer-box"),
+        );
+        let (bar, boxed) = (bar.expect("the bar is drawn"), boxed.expect("the box"));
+        assert!(
+            bar.bottom() <= boxed.top(),
+            "the bar ends above the box: {bar:?} {boxed:?}"
+        );
     }
 
     /// Task 28 item 13 (Task 9's listing): a sign-out lets go of the composer's draft. The field it shows empties (the

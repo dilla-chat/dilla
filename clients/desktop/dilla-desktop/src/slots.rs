@@ -254,7 +254,7 @@ pub fn composer_chips(
     focus: &gpui::FocusHandle,
     window: &mut Window,
     cx: &mut App,
-) -> Option<AnyElement> {
+) -> Option<commands::chips::ChipsView> {
     commands::chips::view(ctx, focus, window, cx)
 }
 
