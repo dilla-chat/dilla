@@ -539,9 +539,9 @@ impl Composer {
         if raw.trim().is_empty() && !files {
             return;
         }
-        // Task 20: a draft without files is the bot area's to decide first: posted (`//x` as `/x`, a built-in's text),
-        // answered privately on this device, or kept (a command still lacking its arguments).
-        let raw = if files && !chipped {
+        // Task 20: a draft is the bot area's to decide first: posted (`//x` as `/x`, a built-in's text), answered
+        // privately on this device, or kept (a command still lacking its arguments). A plain text with files goes as it is.
+        let raw = if !bot_area_first(&raw, files, chipped) {
             raw
         } else {
             match crate::screens::commands::on_send_in(
@@ -1263,6 +1263,13 @@ impl Render for Composer {
     }
 }
 
+/// Whether a send goes through the bot area ([`crate::screens::commands::on_send_in`]) before it is posted.
+/// ComposerArea.tsx `send` routes any draft that starts with `/` (`//x` included, which it posts as `/x`) to the command
+/// host whatever the tray holds; a picked command (chips) does too. Only a plain text with files skips it.
+fn bot_area_first(raw: &str, files: bool, chipped: bool) -> bool {
+    !files || chipped || raw.starts_with('/')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1480,6 +1487,19 @@ mod tests {
         assert!(!send_is_lit("hello", false, false, true));
         // The field still holds the typed `/role add ` under the chips: the chips' draft is empty.
         assert!(!send_is_lit("/role add ", true, false, false));
+    }
+
+    /// ComposerArea.tsx:209-212: with a card in the tray, a typed `/ban bob spamming` runs the command (the command host
+    /// decides), never a post of the text with the file; `//x` goes there too and is posted as `/x`.
+    #[test]
+    fn a_typed_command_with_a_file_in_the_tray_runs_the_command() {
+        assert!(bot_area_first("/ban bob spamming", true, false));
+        assert!(bot_area_first("/me waves", true, false));
+        assert!(bot_area_first("//shrug", true, false));
+        assert!(!bot_area_first("look at this", true, false));
+        assert!(!bot_area_first("", true, false), "files alone are posted");
+        assert!(bot_area_first("look at this", false, false));
+        assert!(bot_area_first("look", true, true), "a picked command");
     }
 
     #[test]
