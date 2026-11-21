@@ -600,3 +600,35 @@ fn keyboard_reactions_message_grid_escape_restores_focus() {
         "the focus returns to the add button that opened it"
     );
 }
+
+/// A chip is the real button while it pops (Task 36c fix round 3): the web's scaled element is the button, so Tab reaches
+/// it, Enter and Space toggle it and the arrows roam, with motion on and the pop under way, one tab stop per chip. The
+/// hidden full-size copy that holds its place is inert (a hidden element is neither focused nor pressed).
+#[gpui::test]
+fn a_chip_is_keyboard_and_pointer_live_in_the_middle_of_its_pop(cx: &mut TestAppContext) {
+    let (host, cx) = bar_host(cx, true);
+    cx.update(|_, cx| assert!(!cx.reduce_motion(), "motion is on: the chips are popping"));
+    // Mid-pop: a little of the 300ms has passed.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(60));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("tab");
+    press(cx, "enter");
+    assert_eq!(host.read_with(cx, |h, _| h.toggled.clone()), ["👍"]);
+    // One tab stop per chip: the next Tab leaves the bar's roving stop, it does not land on a second element of the chip.
+    press(cx, "right");
+    press(cx, "space");
+    assert_eq!(host.read_with(cx, |h, _| h.toggled.clone()), ["👍", "🎉"]);
+    // The pointer presses the first chip, at its centre, while it is still scaling.
+    cx.simulate_click(
+        gpui::point(gpui::px(22.0), gpui::px(15.0)),
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        host.read_with(cx, |h, _| h.toggled.clone()),
+        ["👍", "🎉", "👍"],
+        "a press on a popping chip toggles it"
+    );
+}

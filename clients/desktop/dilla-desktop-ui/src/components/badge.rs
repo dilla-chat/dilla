@@ -147,13 +147,14 @@ impl RenderOnce for Badge {
             return pill(id, kind, label, in_row, 1.0).into_any_element();
         };
         let pop_id = (id.clone(), "pop");
-        crate::motion::pop_in(pop_id, pop.run, pop.curve, cx, move |scale| {
-            // The badge keeps its id; a scaled copy of it has its own.
-            let (id, scale) = match scale {
-                None => (id.clone(), 1.0),
-                Some(scale) => ((id.clone(), "scaled").into(), scale),
+        crate::motion::pop_in(pop_id, pop.run, pop.curve, cx, move |pop| {
+            // The badge is the full-size drawing at rest and the scaled one while it pops; the hidden copy that holds its place
+            // is inert and has an id of its own.
+            let id = match pop {
+                crate::motion::Pop::Rest | crate::motion::Pop::Scaled(_) => id.clone(),
+                crate::motion::Pop::Layout => (id.clone(), "layout").into(),
             };
-            pill(id, kind, label.clone(), in_row, scale).into_any_element()
+            pill(id, kind, label.clone(), in_row, pop.scale()).into_any_element()
         })
     }
 }

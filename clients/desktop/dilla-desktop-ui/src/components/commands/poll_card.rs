@@ -364,7 +364,7 @@ impl RenderOnce for PollCard {
                     let age = voter_ages[i][v];
                     crate::motion::pop_frame(
                         age.map(|a| crate::motion::poll_voter_pop_at(a, motion::STEP)),
-                        &|scale| voter_disc(i * 8 + v, name, scale),
+                        &|pop| voter_disc(i * 8 + v, name, pop),
                     )
                     .ml(px(-5.0))
                 }));
@@ -498,9 +498,9 @@ impl RenderOnce for PollCard {
 
 /// A voter's disc in its 2px `--surface` ring, `scale` times its size (a pop's frame, [`crate::motion::pop_frame`]); at
 /// full size it keeps its element id.
-fn voter_disc(n: usize, name: &str, scale: Option<f32>) -> gpui::AnyElement {
-    let s = scale.unwrap_or(1.0);
-    let disc = voter(("poll-voter", n), name, s);
+fn voter_disc(n: usize, name: &str, pop: crate::motion::Pop) -> gpui::AnyElement {
+    let s = pop.scale();
+    let disc = voter(("poll-voter", n), name, s, pop.live());
     div()
         .rounded(radius::PILL)
         .border(px(2.0 * s))
@@ -511,7 +511,7 @@ fn voter_disc(n: usize, name: &str, scale: Option<f32>) -> gpui::AnyElement {
 
 /// PollCard.css `.d-poll-card__voters .d-avatar`: an 18px disc with `--text-poll-voter` initials (no shared Avatar size
 /// has these, so the card draws its own).
-fn voter(id: impl Into<ElementId>, name: &str, scale: f32) -> gpui::AnyElement {
+fn voter(id: impl Into<ElementId>, name: &str, scale: f32, live: bool) -> gpui::AnyElement {
     let (h, s, l) = colour_of(name);
     let fill = gpui::hsla(
         f32::from(h) / 360.0,
@@ -535,8 +535,8 @@ fn voter(id: impl Into<ElementId>, name: &str, scale: f32) -> gpui::AnyElement {
             )
             .weight(font::WEIGHT_DISPLAY),
         );
-    // A copy drawn at another scale (a pop's frame) must not share the voter's element id.
-    if scale == 1.0 {
+    // Only the voter itself (at rest, or scaled while it pops) has the id; the hidden copy that holds its place has none.
+    if live {
         disc.id(id.into()).into_any_element()
     } else {
         disc.into_any_element()

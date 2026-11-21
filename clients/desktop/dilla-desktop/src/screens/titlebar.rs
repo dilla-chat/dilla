@@ -397,7 +397,7 @@ fn bell(
             dilla_desktop_ui::tokens::motion::POP,
             dilla_desktop_ui::motion::EASE,
             cx,
-            move |scale| badge::pill(count.clone(), scale.unwrap_or(1.0)),
+            move |pop| badge::pill(count.clone(), pop.scale()),
         );
         div()
             .absolute()

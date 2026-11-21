@@ -694,46 +694,83 @@ pub fn scrim_layer(id: impl Into<ElementId>, scrim: Hsla, cx: &App) -> AnyElemen
         .into_any_element()
 }
 
-/// A badge popping in with `d-pop` over `run` on `curve`, once per mount. `build(None)` draws the badge at its size and
-/// `build(Some(scale))` a copy of it with every length and its text multiplied by the scale (a copy must not share the
-/// badge's element id): GPUI cannot scale an element, so the pop redraws the badge at each scale, about its centre, over a
-/// hidden full-size one that keeps its place in the layout, as the CSS transform leaves the layout alone. A finished pop is
-/// the badge at full size and nothing else; with reduced motion it is drawn so at once.
+/// Which of a popping badge's drawings [`pop_in`] and [`pop_frame`] ask for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pop {
+    /// The badge at rest, full size: the only drawing when it is not popping.
+    Rest,
+    /// The full-size copy that keeps the badge's place in the layout while it pops. Hidden, and **inert**: no focus handle,
+    /// action, tab stop or id of the badge, because a hidden element is not painted and so is neither focused nor hit.
+    Layout,
+    /// The badge `scale` times its size, drawn about its centre: the **real** one while it pops, as the web's scaled element
+    /// is the real button (its focus handle, tab stop, actions and id).
+    Scaled(f32),
+}
+
+impl Pop {
+    /// What the drawing multiplies every length and its text by.
+    pub fn scale(self) -> f32 {
+        match self {
+            Self::Scaled(s) => s,
+            Self::Rest | Self::Layout => 1.0,
+        }
+    }
+
+    /// Whether the drawing is the badge itself (it takes the focus, the tab stop, the actions and the id), as opposed to the
+    /// hidden copy that only holds the layout.
+    pub fn live(self) -> bool {
+        self != Self::Layout
+    }
+}
+
+/// A badge `scale` times its size about its centre, over a hidden, inert full-size copy that keeps its place in the layout
+/// (the CSS transform leaves the layout alone): the frame of a pop whose clock the caller keeps. `build` draws the badge as
+/// [`Pop`] says. `None` is the badge at rest, and nothing else.
+pub fn pop_frame(scale: Option<f32>, build: &dyn Fn(Pop) -> AnyElement) -> gpui::Div {
+    let slot = div().relative().flex().flex_none();
+    match scale {
+        None => slot.child(build(Pop::Rest)),
+        Some(scale) => slot
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .invisible()
+                    .child(build(Pop::Layout)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(build(Pop::Scaled(scale))),
+            ),
+    }
+}
+
+/// A badge popping in with `d-pop` over `run` on `curve`, once per mount. `build` draws the badge as [`Pop`] says (at its
+/// size, as the hidden layout copy, or scaled: every length and its text multiplied by the scale about its centre, GPUI
+/// cannot scale an element). A finished pop is the badge at rest and nothing else; with reduced motion it is drawn so at once.
 pub fn pop_in(
     id: impl Into<ElementId>,
     run: Duration,
     curve: [f32; 4],
     cx: &App,
-    build: impl Fn(Option<f32>) -> AnyElement + 'static,
+    build: impl Fn(Pop) -> AnyElement + 'static,
 ) -> AnyElement {
-    let frame = move |scale: Option<f32>| {
-        let slot = div().relative().flex().flex_none();
-        match scale {
-            None => slot.child(build(None)),
-            Some(scale) => slot
-                .child(div().flex().flex_none().invisible().child(build(None)))
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(build(Some(scale))),
-                ),
-        }
-    };
     // The same slot holds the badge at rest, in motion and under reduced motion, so the stills exercise what runs. There is
     // no frame cap: a cap is a timer per badge, and N badges popping at once would notify their view N times a window.
     if cx.reduce_motion() {
-        return frame(None).into_any_element();
+        return pop_frame(None, &build).into_any_element();
     }
-    frame(Some(POP_FROM))
+    pop_frame(Some(POP_FROM), &build)
         .with_animation(id, Animation::new(run), move |_, delta| {
             if delta >= 1.0 {
-                frame(None)
+                pop_frame(None, &build)
             } else {
-                frame(Some(pop_at(run.mul_f32(delta), run, curve)))
+                pop_frame(Some(pop_at(run.mul_f32(delta), run, curve)), &build)
             }
         })
         .into_any_element()
@@ -960,28 +997,6 @@ pub fn scope(cx: &App) -> &'static str {
 /// them enter again with it, as the web's new DOM does. Another log's stay.
 pub fn remount_log(cx: &mut App, scope: &str) {
     cx.default_global::<Remembered>().clear_scope(scope);
-}
-
-/// A badge `scale` times its size about its centre, over a hidden full-size copy that keeps its place in the layout (the
-/// CSS transform leaves the layout alone): [`pop_in`]'s frame for a pop whose clock the caller keeps. `build(None)` draws the
-/// badge at its size and `build(Some(scale))` a copy with every length and its text multiplied by the scale (it must not
-/// share the badge's element id). `None` is the badge at rest, and nothing else.
-pub fn pop_frame(scale: Option<f32>, build: &dyn Fn(Option<f32>) -> AnyElement) -> gpui::Div {
-    let slot = div().relative().flex().flex_none();
-    match scale {
-        None => slot.child(build(None)),
-        Some(scale) => slot
-            .child(div().flex().flex_none().invisible().child(build(None)))
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(build(Some(scale))),
-            ),
-    }
 }
 
 /// `d-up` drawn on `el` by hand, `elapsed` into an entrance whose delay is `delay` (the entrances a list remembers per key,
@@ -1600,10 +1615,8 @@ mod tests {
     #[gpui::test]
     fn a_badge_pops_once_per_mount(cx: &mut gpui::TestAppContext) {
         runs_once(cx, 450, |cx| {
-            pop_in("pop", motion::BADGE, motion::EASE_OUT, cx, |scale| {
-                div()
-                    .size(px(16.0 * scale.unwrap_or(1.0)))
-                    .into_any_element()
+            pop_in("pop", motion::BADGE, motion::EASE_OUT, cx, |pop| {
+                div().size(px(16.0 * pop.scale())).into_any_element()
             })
         });
     }

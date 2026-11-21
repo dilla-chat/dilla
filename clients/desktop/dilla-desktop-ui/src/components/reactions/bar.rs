@@ -184,8 +184,9 @@ fn chip_view(
     handle: &gpui::FocusHandle,
     tab: bool,
     on_toggle: Option<OnToggle>,
-    scale: f32,
+    pop: crate::motion::Pop,
 ) -> gpui::AnyElement {
+    let scale = pop.scale();
     let (bg, edge, count) = if chip.mine {
         (color::ACCENT_CHIP, color::ACCENT, color::ACCENT_2)
     } else {
@@ -214,8 +215,9 @@ fn chip_view(
             )
             .weight(font::WEIGHT_LABEL),
         );
-    // A copy drawn at another scale (a pop's frame) is the picture of the chip alone: no id, focus or press.
-    if scale != 1.0 {
+    // The hidden copy that holds the chip's place while it pops is the picture alone: no id, focus, tab stop or press (a hidden
+    // element is not painted, so it could be neither focused nor pressed). The chip itself, at rest or scaled, is the button.
+    if !pop.live() {
         return body.into_any_element();
     }
     body.id(id)
@@ -266,14 +268,14 @@ impl RenderOnce for ReactionBar {
         // (A reaction taken down is a chip gone: the screen forgets its pop, so it pops again when it returns.)
         let pop_prefix = pop_prefix(self.scope, &self.id);
         for (i, chip) in self.chips.iter().enumerate() {
-            let build = |scale: Option<f32>| {
+            let build = |pop: crate::motion::Pop| {
                 chip_view(
                     (self.id.clone(), format!("chip-{i}")).into(),
                     chip,
                     &handles[i],
                     tab(i),
                     self.on_toggle.clone(),
-                    scale.unwrap_or(1.0),
+                    pop,
                 )
             };
             let age =
@@ -289,7 +291,7 @@ impl RenderOnce for ReactionBar {
                     &build,
                 )
                 .into_any_element(),
-                None => build(None),
+                None => build(crate::motion::Pop::Rest),
             };
             row = row.child(match &self.decorate {
                 Some(d) => d(Slot::Chip(i), &handles[i], view),
