@@ -1026,7 +1026,7 @@ fn a_dropped_call_releases_every_frame_transformer() {
 #[test]
 #[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
 fn a_call_dropped_before_its_runtime_shuts_down_still_closes_its_room() {
-    let _s = serial();
+    let _alone = alone();
     // A current-thread runtime runs nothing between its `block_on`s: the drop's close cannot have started before the
     // shutdown unless something awaits it (on a multi-thread runtime a worker usually starts it at once, which hid
     // the leak).
@@ -1061,7 +1061,7 @@ fn a_call_dropped_before_its_runtime_shuts_down_still_closes_its_room() {
 #[test]
 #[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
 fn two_runtimes_each_await_only_their_own_dropped_calls_rooms() {
-    let _s = serial();
+    let _alone = alone();
     let current = || {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
