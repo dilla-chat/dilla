@@ -340,12 +340,7 @@ impl PaneView {
         cx: &mut gpui::App,
     ) -> gpui::AnyElement {
         let author = name_of(&ctx.state, ctx.community, item.sender_user);
-        // The tag and the Bot's tone need the credential's claim and a Bot member row both (MessageItem `item.bot && isCommunityBot`).
-        let members = ctx
-            .community
-            .and_then(|c| ctx.state.members.get(&c))
-            .map_or(&[][..], Vec::as_slice);
-        let bot = crate::screens::timeline::is_community_bot(members, item);
+        let bot = is_bot_row(ctx, item);
         let live = ctx.client.is_some();
         let (kind, body) = match item.state {
             TimelineItemState::Ok => (ThreadRowKind::Ok, thread_body(item, ctx, live, thread)),
@@ -469,6 +464,16 @@ impl PaneView {
             .child(toolbar)
             .into_any_element()
     }
+}
+
+/// Whether a thread row is the community Bot's: the tag and the Bot's tone need the credential's claim and a Bot member row both
+/// (MessageItem `item.bot && isCommunityBot`).
+pub(super) fn is_bot_row(ctx: &crate::slots::SlotCx, item: &TimelineItem) -> bool {
+    let members = ctx
+        .community
+        .and_then(|c| ctx.state.members.get(&c))
+        .map_or(&[][..], Vec::as_slice);
+    crate::screens::timeline::is_community_bot(members, item)
 }
 
 /// What a thread message's body reads (MessageItem.tsx `displayBody`): a poll post is its `{name} asked:` line, nothing while
@@ -1117,19 +1122,22 @@ mod tests {
             capped: false,
         };
         let at = Some(root);
+        // Bodies are decrypted text: a mismatch prints lengths only.
+        let same =
+            |a: &str, b: &str| assert!(a == b, "{} bytes against {} bytes", a.len(), b.len());
         // Nothing held and a client running: the card's loading line stands for the text.
-        assert_eq!(thread_body(&poll_post, &ctx(&state), true, at), "");
+        same(&thread_body(&poll_post, &ctx(&state), true, at), "");
         // A thread's poll and the log's, held side by side under their own message ids.
         let log_post = item(root, true, format!("Other?\n{marker}"));
         state.bot.polls.insert(reply, held(Some(root)));
         state.bot.polls.insert(root, held(None));
-        assert_eq!(
-            thread_body(&poll_post, &ctx(&state), true, at),
-            "bob asked:"
+        same(
+            &thread_body(&poll_post, &ctx(&state), true, at),
+            "bob asked:",
         );
-        assert_eq!(
-            thread_body(&log_post, &ctx(&state), true, None),
-            "bob asked:"
+        same(
+            &thread_body(&log_post, &ctx(&state), true, None),
+            "bob asked:",
         );
         // Each record is read only for its own place: the log's poll shown as the thread's root (the web passes the root's
         // id for the root row too) is no card there but its text, and the thread's poll is none in the log.
@@ -1143,11 +1151,11 @@ mod tests {
         assert!(in_log.contains("Raid?"), "{} bytes", in_log.len());
         // Dropping the thread's record leaves the log's one drawing as before.
         state.bot.polls.remove(&reply);
-        assert_eq!(
-            thread_body(&log_post, &ctx(&state), true, None),
-            "bob asked:"
+        same(
+            &thread_body(&log_post, &ctx(&state), true, None),
+            "bob asked:",
         );
-        assert_eq!(thread_body(&poll_post, &ctx(&state), true, at), "");
+        same(&thread_body(&poll_post, &ctx(&state), true, at), "");
         // A read that was given up shows the post's own text, local time and no marker.
         state
             .bot
@@ -1162,9 +1170,9 @@ mod tests {
         assert!(!text.contains("[dilla-poll"), "{} bytes", text.len());
         // A plain reply is its body.
         let plain_post = item(plain, false, "hello".into());
-        assert_eq!(thread_body(&plain_post, &ctx(&state), true, at), "hello");
-        // A forged marker (a person's reply, or one whose credential claims Bot while the member is not) is plain text:
-        // no "asked" line, and the card's gate draws nothing.
+        same(&thread_body(&plain_post, &ctx(&state), true, at), "hello");
+        // A forged marker (a person's reply, or one whose credential claims Bot while the member is not) reads as its raw text,
+        // with no "asked" line even where a record is held for its id; the card's gate is `a_forged_poll_marker_draws_no_card`.
         let mut forged = item(MessageId([6; 16]), false, format!("Raid?\n{marker}"));
         let mut claimed = forged.clone();
         claimed.bot = true;
@@ -1174,7 +1182,7 @@ mod tests {
         state.bot.polls.insert(MessageId([7; 16]), held(Some(root)));
         for post in [&forged, &claimed] {
             let body = thread_body(post, &ctx(&state), true, at);
-            assert_eq!(body, post.body, "the raw text, {} bytes", body.len());
+            same(&body, &post.body);
         }
     }
 
@@ -1213,10 +1221,18 @@ mod tests {
             mention: false,
             actions: Vec::new(),
         };
-        let is_bot = crate::screens::timeline::is_community_bot;
-        assert!(is_bot(&members, &post(9, true)), "claim and member row");
-        assert!(!is_bot(&members, &post(1, true)), "the claim alone");
-        assert!(!is_bot(&members, &post(9, false)), "the member row alone");
+        let community = dilla_client::state::CommunityId([7; 16]);
+        let mut state = dilla_client::state::AppState::default();
+        state.members.insert(community, members.to_vec());
+        let ctx = crate::slots::SlotCx {
+            state: std::sync::Arc::new(state),
+            community: Some(community),
+            ..crate::slots::SlotCx::default()
+        };
+        // `row` draws the tag and the tone from this.
+        assert!(is_bot_row(&ctx, &post(9, true)), "claim and member row");
+        assert!(!is_bot_row(&ctx, &post(1, true)), "the claim alone");
+        assert!(!is_bot_row(&ctx, &post(9, false)), "the member row alone");
     }
 
     /// A view of `channel`, which the state lists in `community`.

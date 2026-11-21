@@ -408,6 +408,12 @@ fn poll_card_drawn(
         return None;
     }
     let message = item.msg_id?;
+    // A thread's root (the pane's first row) is a message of the channel, never a post of that thread: no card here, and no
+    // read, so the check the log's card for the same post keeps is never written from this place (PollCard keeps its state
+    // per card, with the thread in its scope).
+    if thread == Some(message) {
+        return None;
+    }
     let Some(poll) = ctx.state.bot.polls.get(&message) else {
         return match ctx.state.bot.poll_checks.get(&message) {
             Some(PollCheck::Pending) => Some(poll_loading()),
@@ -1314,6 +1320,82 @@ mod tests {
             !drawn(&thread_post, None, vcx),
             "a thread's poll in the log"
         );
+    }
+
+    /// The thread's root drawn in the pane is no card and starts no read: whatever the log's check for the same post holds
+    /// (nothing yet, being read, given up) stays as it was, and so does its card.
+    #[gpui::test]
+    fn a_thread_root_draws_no_card_and_leaves_the_logs_check_alone(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let post = bot_post(7);
+        let id = post.msg_id.unwrap();
+        let gave_up = PollCheck::GaveUp(ChannelId([4; 16]));
+        for check in [None, Some(PollCheck::Pending), Some(gave_up)] {
+            let mut bot = dilla_client::state::bot::BotState::default();
+            if let Some(c) = check {
+                bot.poll_checks.insert(id, c);
+            }
+            let ctx = SlotCx {
+                state: std::sync::Arc::new(dilla_client::state::AppState {
+                    bot,
+                    ..Default::default()
+                }),
+                ..SlotCx::default()
+            };
+            let card = |thread, vcx: &mut gpui::VisualTestContext| {
+                vcx.update(|window, cx| poll_card_in(&post, &ctx, thread, window, cx).is_some())
+            };
+            assert!(!card(Some(id), vcx), "no card for the root");
+            assert_eq!(
+                ctx.state.bot.poll_checks.get(&id).cloned(),
+                check,
+                "the log's check is as it was"
+            );
+            // The log's own card for the same post: the loading line while it is read, none otherwise.
+            assert_eq!(card(None, vcx), check == Some(PollCheck::Pending));
+        }
+        // A held record: the log's card stands, the pane's root has none.
+        let mut bot = dilla_client::state::bot::BotState::default();
+        bot.polls.insert(id, poll(vec![0], false, false, 60));
+        let ctx = SlotCx {
+            state: std::sync::Arc::new(dilla_client::state::AppState {
+                bot,
+                ..Default::default()
+            }),
+            ..SlotCx::default()
+        };
+        assert!(vcx.update(|w, cx| poll_card_in(&post, &ctx, None, w, cx).is_some()));
+        assert!(vcx.update(|w, cx| poll_card_in(&post, &ctx, Some(id), w, cx).is_none()));
+    }
+
+    /// A forged poll marker (a person's reply that no record can be held for, or the Bot's claim by a credential alone with
+    /// no record and no client to read it) draws no card.
+    #[gpui::test]
+    fn a_forged_poll_marker_draws_no_card(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
+        let root = dilla_client::state::MessageId([3; 16]);
+        let mut person = bot_post(9);
+        person.bot = false;
+        let claim = bot_post(10);
+        let mut bot = dilla_client::state::bot::BotState::default();
+        // Even a record held for the person's id is no card for a non-Bot post.
+        let mut held = poll(vec![0], false, false, 60);
+        held.thread = Some(root);
+        bot.polls.insert(person.msg_id.unwrap(), held);
+        let ctx = SlotCx {
+            state: std::sync::Arc::new(dilla_client::state::AppState {
+                bot,
+                ..Default::default()
+            }),
+            ..SlotCx::default()
+        };
+        for post in [&person, &claim] {
+            let drawn = vcx.update(|w, cx| {
+                poll_card_in_width(post, &ctx, Some(root), 276.0, w, cx)
+                    .is_some_and(|e| e.height > CONTAINER_MARGIN)
+            });
+            assert!(!drawn, "a forged marker draws no card");
+        }
     }
 
     /// PollCard.tsx: a poll being read says so (`poll.loading`), a held record is the card, a read that was given up

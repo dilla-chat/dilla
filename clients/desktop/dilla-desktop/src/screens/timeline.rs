@@ -533,6 +533,12 @@ pub fn poll_body_in(
         return PollBody::NoMarker;
     }
     let readable = !item.edited && item.state == TimelineItemState::Ok;
+    // A thread's root is a message of the channel, never a post of that thread: its text stands in the pane, decided here
+    // for this place alone (the web's card state is per card, with the thread in its scope), so nothing is read for it and
+    // the check the log's card keeps is not touched.
+    if thread.is_some() && thread == item.msg_id {
+        return PollBody::Fallback(poll_fallback(&item.body, zone));
+    }
     if readable && let Some(poll) = item.msg_id.and_then(|m| state.bot.polls.get(&m)) {
         if poll.thread != thread {
             return PollBody::Fallback(poll_fallback(&item.body, zone));
