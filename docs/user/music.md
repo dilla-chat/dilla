@@ -66,7 +66,9 @@ skip and stop, the volume and "Up next". When another track plays, the card turn
 ![The now-playing card under the Bot's message](screenshots/gpui-music-card.png)
 
 While you are in the voice channel with the bot, the same player sits in your
-voice panel and, in the desktop app, in a bar at the top of the voice stage. Its controls work for DJs, owners
+voice panel and, in the desktop app, in a bar at the top of the voice stage.
+
+![The voice stage with the now-playing bar](screenshots/gpui-music-stage.png) Its controls work for DJs, owners
 and administrators who are in that voice channel; anyone else sees a note saying
 why. Commands target the voice channel the requester joined. Playback changes
 require **Control music (DJ)** in that voice channel (owners and administrators have

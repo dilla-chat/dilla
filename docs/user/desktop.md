@@ -40,9 +40,11 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 ![The Bot's "started music" message with its now-playing card](screenshots/gpui-music-card.png)
 
+![The voice stage with the now-playing bar above the tiles](screenshots/gpui-music-stage.png)
+
 ![The poll form over #general: question, answers, how long it stays open](screenshots/gpui-poll-form.png)
 
-![Server settings, Welcome messages: the channel, the message and the placeholders](screenshots/gpui-welcome-settings.png)
+![Server settings, Welcome messages after Load: the channel, the default message and the placeholders, not yet saved](screenshots/gpui-welcome-settings.png)
 
 ### What the app does
 
@@ -50,17 +52,17 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 - The app moves the way the browser did: new messages, menus, dialogs, toasts, badges, the speaking meter, the typing
   indicator and the caret animate. Settings → Appearance → Motion and your system's reduced-motion setting turn it
-  down. Toasts (a copied link, a failed upload) now show.
+  down. Toasts (for example "Files over 25 MB can’t be sent") now show.
 - Author names take the colour of their highest coloured role. Names sort by your system's language (the DM picker, the
   member lists and the @-mention list).
 - The reply bar and the attachment tray sit over the message box. A direct message with something new has an unread dot.
-- **Load earlier** at the top of a channel, a direct message or a thread fetches older messages. A search result older
+- **Load earlier** at the top of a channel or a direct message fetches older messages (a long thread's pane has it too). A search result older
   than what is shown jumps to it.
-- A channel row's menu (right-click or Shift+F10) sets how it notifies you (all messages, mentions or nothing) and has
+- A channel row's menu (right-click or Shift+F10) sets how it notifies you (default, all messages, mentions or nothing) and has
   **Edit channel**.
 - The call dock shows the link quality (the ping and the data rate, coloured when it is poor).
-- Two banners explain a stopped state: "You are no longer in {server}" after you were removed, and "this instance is
-  older" when the server needs an update before the app can use it.
+- Two banners explain a stopped state: "You are no longer in {server}." after you were removed, and "This server needs an
+  update before this app can connect. Ask its admin." when the server is too old for the app.
 
 #### Polls and commands
 
