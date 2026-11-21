@@ -137,6 +137,7 @@ fn x11_client_pid(window: u32) -> Option<u32> {
 /// belong to `ApplicationFrameHost.exe`, which never plays, so they fall back to no application (documented, not
 /// worked around).
 #[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
 fn hwnd_pid(hwnd: u64) -> Option<u32> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
