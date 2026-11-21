@@ -15,6 +15,8 @@ use crate::tokens::{color, font, radius, text};
 
 /// A chip's height: 26px (`height: 1.625rem`) inside its 1px border.
 pub const CHIP: f32 = 26.0;
+/// `.d-cmd-field__input { padding: 0 0.4375rem }`: 7px each side.
+const INPUT_PAD: f32 = 7.0;
 
 /// `CommandChips`: the `/name` token, then the fields.
 #[derive(IntoElement)]
@@ -133,7 +135,9 @@ impl CommandField {
         self
     }
 
-    /// The input's width: `calc(max(len, placeholder, 4)ch + 1rem)`.
+    /// The input's width as the box is laid out here: `calc(max(len, placeholder, 4)ch + 1rem)` is the web's content width, and
+    /// `.d-cmd-field__input` is content-box (CommandPicker.css:5) with `padding: 0 7px`, so the padding comes on top; this
+    /// box is border-box, which holds the padding inside it.
     pub fn input_width(value: &str, placeholder: &str) -> f32 {
         let longest = value
             .split('\n')
@@ -141,7 +145,7 @@ impl CommandField {
             .max()
             .unwrap_or(0);
         let chars = longest.max(placeholder.chars().count()).max(4);
-        chars as f32 * f32::from(text::INPUT) * MONO_ADVANCE + 16.0
+        chars as f32 * f32::from(text::INPUT) * MONO_ADVANCE + 16.0 + 2.0 * INPUT_PAD
     }
 }
 
@@ -192,7 +196,7 @@ impl RenderOnce for CommandField {
                     .items_center()
                     .w(px(width))
                     .min_w_0()
-                    .px(px(7.0))
+                    .px(px(INPUT_PAD))
                     .child(value),
             );
         if self.active {
@@ -283,12 +287,12 @@ mod tests {
     #[test]
     fn an_input_is_as_wide_as_its_longest_text_and_at_least_four_characters() {
         let ch = f32::from(text::INPUT) * MONO_ADVANCE;
-        assert_eq!(CommandField::input_width("", ""), 4.0 * ch + 16.0);
-        assert_eq!(CommandField::input_width("in 1 hour", ""), 9.0 * ch + 16.0);
+        assert_eq!(CommandField::input_width("", ""), 4.0 * ch + 30.0);
+        assert_eq!(CommandField::input_width("in 1 hour", ""), 9.0 * ch + 30.0);
         assert_eq!(
             CommandField::input_width("", "bring two ropes"),
-            15.0 * ch + 16.0
+            15.0 * ch + 30.0
         );
-        assert_eq!(CommandField::input_width("ab\nabcdef", ""), 6.0 * ch + 16.0);
+        assert_eq!(CommandField::input_width("ab\nabcdef", ""), 6.0 * ch + 30.0);
     }
 }
