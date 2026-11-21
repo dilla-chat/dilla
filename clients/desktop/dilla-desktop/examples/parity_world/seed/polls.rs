@@ -172,7 +172,13 @@ pub(super) async fn post(
         })
         .await;
         utilities
-            .vote(community, message, choices.clone())
+            .vote(
+                community,
+                message,
+                (channel, thread),
+                choices.clone(),
+                dilla_client::features::bot_admin::new_request_id(),
+            )
             .await
             .unwrap_or_else(|e| panic!("poll {}: a vote ({e:?})", m.key));
     }
@@ -189,7 +195,12 @@ pub(super) async fn post(
         })
         .await;
         utilities
-            .close(community, message)
+            .close(
+                community,
+                message,
+                (channel, thread),
+                dilla_client::features::bot_admin::new_request_id(),
+            )
             .await
             .unwrap_or_else(|e| panic!("poll {}: closing it ({e:?})", m.key));
     }
