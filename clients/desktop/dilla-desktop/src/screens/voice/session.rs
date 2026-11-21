@@ -908,6 +908,13 @@ async fn in_call(
                     ctx.voice.set_notice(Some(notice_of(e)));
                 }
                 Some(kind) = async { match ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    // Client review M1: a replaced share's end can land after its replacement went live (its feeder
+                    // took it out of the call, then awaited the unpublish while the new one was published here). The
+                    // replacement is the call's share of the kind now: that end is stale, and the new share keeps its
+                    // UI and its sound.
+                    if !share_end_is_current(call.share_frames(kind)) {
+                        continue;
+                    }
                     if kind == ShareKind::Screen {
                         // The share's sound ends with it (the media ends only its video), and no lookup or choice
                         // reaches the ended share.
@@ -1088,6 +1095,13 @@ fn failed(
     }
     ctx.voice.set_notice(Some(VoiceNotice::MediaFailed));
     drop(ctx.voice.leave());
+}
+
+/// Whether a share's end (`Call::shares_ended`) is the call's current share of its kind going: `live` is what the call
+/// holds of that kind now (`Call::share_frames`). An ended share takes itself out of the call before it is reported,
+/// and this loop publishes shares in line, so a share still held when the end is read is a newer one that replaced it.
+fn share_end_is_current(live: Option<u64>) -> bool {
+    live.is_none()
 }
 
 fn set_kind(share: &mut LocalShare, kind: ShareKind, on: bool) {
@@ -1461,6 +1475,15 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Client review M1: the end of a share that a newer one replaced (the call holds a share of the kind when the end is
+    /// read) is stale: the new share's flag, UI and sound stay. With nothing held, the end is the share's going.
+    #[test]
+    fn a_replaced_share_s_late_end_is_ignored() {
+        assert!(!share_end_is_current(Some(0)), "a new share, no frame yet");
+        assert!(!share_end_is_current(Some(120)));
+        assert!(share_end_is_current(None));
+    }
 
     fn app(pid: u32, label: &str) -> dilla_media::app_audio::AppSource {
         dilla_media::app_audio::AppSource {
