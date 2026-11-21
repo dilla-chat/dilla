@@ -10,9 +10,7 @@
 //! [`section_header`] and [`group_heading`] draw the section rhythm the CSS gives a section's children; rows that touch
 //! (one group) go in their own column with no gap, as [`super::row::GroupPosition`] describes.
 
-use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
@@ -40,26 +38,37 @@ struct Memory {
     handoff: Option<bool>,
 }
 
-/// How recently the other settings frame must have drawn for this one to be its replacement (SettingsFrame.tsx `HANDOFF_MS`
-/// is 100 ms between the one's close and the other's open; a frame here draws at every change, so a little more room).
-const HANDOFF: Duration = Duration::from_millis(250);
-
-/// The settings frame each window drew last and when: a frame that arrives as the other leaves is a handoff.
+/// The windows whose next settings frame arrives as the other one's replacement (SettingsFrame.css:6 `data-handoff`).
 #[derive(Default)]
-struct LastFrame(HashMap<gpui::WindowId, (ElementId, Instant)>);
+struct Handoffs {
+    pending: std::collections::HashSet<gpui::WindowId>,
+    /// What the window's latest settings frame decided when it first drew (for tests).
+    last: std::collections::HashMap<gpui::WindowId, bool>,
+}
 
-impl gpui::Global for LastFrame {}
+impl gpui::Global for Handoffs {}
 
-/// Notes that `id` drew in `window` now, and whether a different frame drew there within [`HANDOFF`] before it.
-fn arrived_as_handoff(id: &ElementId, window: &Window, cx: &mut App) -> bool {
-    let last = &mut cx.default_global::<LastFrame>().0;
-    let key = window.window_handle().window_id();
-    let now = Instant::now();
-    let handoff = last
-        .get(&key)
-        .is_some_and(|(other, at)| other != id && now.duration_since(*at) < HANDOFF);
-    last.insert(key, (id.clone(), now));
-    handoff
+/// Marks that the settings frame `window` draws next replaces the one it draws now (the server settings handing over to the
+/// user settings or the other way): that frame has no entrance. Call it where the host opens the other frame.
+pub fn mark_handoff(window: &Window, cx: &mut App) {
+    cx.default_global::<Handoffs>()
+        .pending
+        .insert(window.window_handle().window_id());
+}
+
+/// Takes the mark of `window`: whether the frame drawing now is the arriving half of a handoff.
+fn take_handoff(window: &Window, cx: &mut App) -> bool {
+    cx.default_global::<Handoffs>()
+        .pending
+        .remove(&window.window_handle().window_id())
+}
+
+/// Whether the latest settings frame drawn in `window` arrived as a handoff (`None` before any), for tests.
+pub fn last_frame_was_handoff(window: &Window, cx: &App) -> Option<bool> {
+    cx.try_global::<Handoffs>()?
+        .last
+        .get(&window.window_handle().window_id())
+        .copied()
 }
 
 impl HasOpenFocus for Memory {
@@ -290,8 +299,14 @@ impl RenderOnce for SettingsFrame {
         if !self.open {
             return root.size_0().into_any_element();
         }
-        let handoff = arrived_as_handoff(&self.id, window, cx);
-        let handoff = memory.update(cx, |m, _| *m.handoff.get_or_insert(handoff));
+        // Decided once, when this frame first draws: the mark is read and cleared then, so it is no timing guess.
+        let first = memory.read(cx).handoff.is_none();
+        let marked = first && take_handoff(window, cx);
+        let handoff = memory.update(cx, |m, _| *m.handoff.get_or_insert(marked));
+        if first {
+            let key = window.window_handle().window_id();
+            cx.default_global::<Handoffs>().last.insert(key, handoff);
+        }
 
         let on_close = self.on_close;
         let close_with = move |window: &mut Window, cx: &mut App| {
@@ -485,32 +500,23 @@ mod tests {
         assert_eq!(section_width(true), 1024.0);
     }
 
-    /// SettingsFrame.css:6: a frame that draws as the other one leaves is a handoff, which has no entrance; one that opens on
-    /// its own, or long after the other, or again after itself, is not.
+    /// SettingsFrame.css:6: a frame opened as the other's replacement (marked) has no entrance and clears the mark; one opened
+    /// fresh has none to take.
     #[gpui::test]
-    fn a_frame_that_replaces_the_other_is_a_handoff(cx: &mut gpui::TestAppContext) {
+    fn the_mark_is_taken_once_by_the_arriving_frame(cx: &mut gpui::TestAppContext) {
         let window = cx.add_empty_window();
-        let user: ElementId = "user-settings".into();
-        let server: ElementId = "server-settings".into();
-        let mut arrive = |id: &ElementId, wait: Duration| {
-            std::thread::sleep(wait);
-            window.update(|window, cx| arrived_as_handoff(id, window, cx))
-        };
         assert!(
-            !arrive(&user, Duration::ZERO),
-            "the first frame opens on its own"
+            !window.update(|w, cx| take_handoff(w, cx)),
+            "a fresh open has no mark"
+        );
+        window.update(|w, cx| mark_handoff(w, cx));
+        assert!(
+            window.update(|w, cx| take_handoff(w, cx)),
+            "the arriving frame takes it"
         );
         assert!(
-            !arrive(&user, Duration::ZERO),
-            "a frame is no handoff from itself"
-        );
-        assert!(
-            arrive(&server, Duration::ZERO),
-            "the other frame replacing it is one"
-        );
-        assert!(
-            !arrive(&user, HANDOFF * 2),
-            "a frame long after the other is not"
+            !window.update(|w, cx| take_handoff(w, cx)),
+            "and it is gone"
         );
     }
 }

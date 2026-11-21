@@ -691,6 +691,8 @@ impl AppView {
                     this.focus_shell(&shell, window, cx);
                 }
                 if let ServerEvent::OpenUser(section) = e {
+                    // The user settings replace the server's: no entrance (SettingsFrame.css:6).
+                    dilla_desktop_ui::components::settings::frame::mark_handoff(window, cx);
                     this.open_route(&Route::Settings(Some(*section)), window, cx);
                 }
                 cx.notify();
@@ -745,6 +747,8 @@ impl AppView {
                 }
                 // A server section chosen in the nav opens that server's settings over the shell.
                 if matches!(route, Route::ServerSettings { .. }) {
+                    // The server settings replace the user's: no entrance (SettingsFrame.css:6).
+                    dilla_desktop_ui::components::settings::frame::mark_handoff(window, cx);
                     this.open_route(route, window, cx);
                 }
                 cx.notify();

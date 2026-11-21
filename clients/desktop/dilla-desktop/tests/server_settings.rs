@@ -924,3 +924,57 @@ fn permission_change_is_announced(cx: &mut gpui::TestAppContext) {
     assert_ne!(read(vcx).0, first, "a lost read says it too");
     assert!(said.borrow().is_empty(), "no toast");
 }
+
+/// SettingsFrame.css:6: the server settings and the user settings hand over to each other without the entrance, in both
+/// directions (a nav item of the other scope); opening settings fresh from the shell animates.
+#[cfg(feature = "automation")]
+#[gpui::test]
+fn a_settings_handoff_has_no_entrance_in_either_direction(cx: &mut gpui::TestAppContext) {
+    use dilla_desktop::app::{AppView, Launch};
+    use dilla_desktop_ui::components::settings::frame::last_frame_was_handoff;
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures/shell/channel-view.json");
+    let loaded = dilla_desktop::fixture::Fixture::load(&path, None).expect("the shell fixture");
+    cx.update(dilla_desktop::install);
+    let (app, vcx) =
+        cx.add_window_view(|window, cx| AppView::new(Launch::fixture(loaded), window, cx));
+    vcx.run_until_parked();
+    let click = |vcx: &mut gpui::VisualTestContext, selector: &'static str| {
+        let at = vcx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector} is drawn"));
+        vcx.simulate_click(at.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+    };
+    let handoff = |vcx: &mut gpui::VisualTestContext| {
+        vcx.update(|window, cx| last_frame_was_handoff(window, cx))
+    };
+    assert_eq!(handoff(vcx), None, "nothing drawn yet");
+    // Fresh from the shell: the server settings enter.
+    click(vcx, "server-settings-open");
+    click(vcx, "menu-item-settings");
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "server-settings"
+    );
+    assert_eq!(handoff(vcx), Some(false), "opened fresh");
+    // Server -> user.
+    click(vcx, "nav-item-profile");
+    assert_eq!(app.read_with(vcx, |a, _| a.screen_name()), "settings");
+    assert_eq!(
+        handoff(vcx),
+        Some(true),
+        "the user settings replace the server's"
+    );
+    // User -> server.
+    click(vcx, "nav-item-server:overview");
+    assert_eq!(
+        app.read_with(vcx, |a, _| a.screen_name()),
+        "server-settings"
+    );
+    assert_eq!(
+        handoff(vcx),
+        Some(true),
+        "the server settings replace the user's"
+    );
+}
