@@ -1140,7 +1140,11 @@ mod tests {
             "bob asked:",
         );
         // Each record is read only for its own place: the log's poll shown as the thread's root (the web passes the root's
-        // id for the root row too) is no card there but its text, and the thread's poll is none in the log.
+        // id for the root row too) reads on its own check, here given up, and the thread's poll is none in the log.
+        state
+            .bot
+            .root_poll_checks
+            .insert(root, PollCheck::GaveUp(channel));
         let in_pane = thread_body(&log_post, &ctx(&state), true, at);
         assert!(
             in_pane.contains("Other?") && !in_pane.contains("[dilla-poll"),
@@ -1183,6 +1187,153 @@ mod tests {
         for post in [&forged, &claimed] {
             let body = thread_body(post, &ctx(&state), true, at);
             same(&body, &post.body);
+        }
+    }
+
+    /// A message of the open thread as a `TimelineItem`: `bot` is the credential's claim.
+    fn post(sender: u8, bot: bool, msg: u8, body: &str) -> TimelineItem {
+        use dilla_client::state::UserId;
+        TimelineItem {
+            key: format!("k{msg}"),
+            state: TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: Some(UserId([sender; 16])),
+            sender_device: None,
+            own: false,
+            bot,
+            ts: 1,
+            body: body.into(),
+            msg_id: Some(MessageId([msg; 16])),
+            seq: Some(1),
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        }
+    }
+
+    fn member_of(user: u8, kind: u8) -> dilla_client::state::Member {
+        dilla_client::state::Member {
+            user_id: dilla_client::state::UserId([user; 16]),
+            username: format!("u{user}"),
+            display: String::new(),
+            kind,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        }
+    }
+
+    /// The root row of a poll post, with nothing held: while the pane's own read runs the body is blank (its loading card
+    /// stands for it), once that gave up (or a hint asks it again) it is the post's text, and the log's own checks of the same
+    /// post (given up there) decide nothing here. Reverting the root's own checks makes the log's GaveUp blank-or-text
+    /// decide, which fails the Pending and the log-independent cases.
+    #[test]
+    fn a_thread_roots_body_follows_its_own_checks() {
+        use dilla_client::state::bot::PollCheck;
+        use dilla_client::state::{CommunityId, UserId};
+        let (community, channel) = (CommunityId([7; 16]), ChannelId([8; 16]));
+        let root = MessageId([3; 16]);
+        let marker = format!("[dilla-poll:v1:{}]", "ab".repeat(16));
+        let post = post(9, true, 3, &format!("Raid?\n{marker}"));
+        let mut state = dilla_client::state::AppState::default();
+        state
+            .members
+            .insert(community, vec![member_of(1, 0), member_of(9, 1)]);
+        state.account.user_id = Some(UserId([1; 16]));
+        let ctx = |state: &dilla_client::state::AppState| crate::slots::SlotCx {
+            state: std::sync::Arc::new(state.clone()),
+            community: Some(community),
+            channel: Some(channel),
+            clock: crate::screens::threads::Clock::Fixed { now: 0, utc: true },
+            ..crate::slots::SlotCx::default()
+        };
+        let text = |state: &dilla_client::state::AppState, thread| {
+            thread_body(&post, &ctx(state), true, thread)
+        };
+        let is_text = |b: &str| b.contains("Raid?") && !b.contains("[dilla-poll");
+        // Nothing read yet: blank, as the log's loading post (the card then starts its read).
+        assert!(text(&state, Some(root)).is_empty(), "blank while loading");
+        state.bot.root_poll_checks.insert(root, PollCheck::Pending);
+        assert!(text(&state, Some(root)).is_empty(), "blank while read");
+        // Given up (or asked again after a hint, which stays given up until it succeeds): the post's text.
+        for gave_up in [PollCheck::GaveUp(channel), PollCheck::Retry(channel)] {
+            state.bot.root_poll_checks.insert(root, gave_up);
+            let body = text(&state, Some(root));
+            assert!(is_text(&body), "the fallback text, {} bytes", body.len());
+        }
+        // The log's check of the same post is its own: given up there, the pane's root still reads.
+        state.bot.root_poll_checks.clear();
+        state
+            .bot
+            .poll_checks
+            .insert(root, PollCheck::GaveUp(channel));
+        assert!(
+            text(&state, Some(root)).is_empty(),
+            "the log's check is not the pane's"
+        );
+        let in_log = text(&state, None);
+        assert!(
+            is_text(&in_log),
+            "the log's own fallback, {} bytes",
+            in_log.len()
+        );
+    }
+
+    /// The row of the thread pane draws the Bot's tag for a Bot's post only when the credential's claim and the member row
+    /// agree: a full pane is drawn with one reply, so reverting `row`'s call of the tag's decision fails this.
+    #[gpui::test]
+    fn the_panes_row_draws_the_bot_tag_only_for_a_real_bot(cx: &mut gpui::TestAppContext) {
+        use dilla_client::state::CommunityId;
+        cx.update(crate::install);
+        let (community, channel) = (CommunityId([7; 16]), ChannelId([8; 16]));
+        let root = MessageId([3; 16]);
+        let pane_of = |sender: u8, claim: bool| {
+            let mut state = dilla_client::state::AppState::default();
+            state.members.insert(
+                community,
+                vec![member_of(1, 0), member_of(2, 0), member_of(9, 1)],
+            );
+            state.threads.threads.insert(
+                root,
+                ThreadData {
+                    channel,
+                    root: Some(post(1, false, 3, "root")),
+                    replies: vec![post(sender, claim, 4, "reply")],
+                    has_earlier: false,
+                    count: 1,
+                },
+            );
+            view_of(
+                community,
+                channel,
+                crate::slots::SlotCx {
+                    state: std::sync::Arc::new(state),
+                    ..crate::slots::SlotCx::default()
+                },
+            )
+        };
+        let (host, vcx) = cx.add_window_view(|_, _| Host(pane_of(9, true)));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        vcx.update(|_, cx| super::super::open_thread(channel, root, &pane_of(9, true), cx));
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds("thread-bot-tag").is_some(),
+            "claim and member row"
+        );
+        for (sender, claim, why) in [
+            (2, true, "the claim alone"),
+            (9, false, "the member row alone"),
+        ] {
+            vcx.update(|_, cx| host.update(cx, |host, _| host.0 = pane_of(sender, claim)));
+            draw(vcx);
+            assert!(vcx.debug_bounds("thread-bot-tag").is_none(), "{why}");
         }
     }
 

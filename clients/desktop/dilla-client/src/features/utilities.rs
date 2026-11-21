@@ -60,25 +60,44 @@ impl Utilities {
         thread: Option<MessageId>,
         item: TimelineItem,
     ) {
+        self.verify(community, channel, thread, item, false);
+    }
+
+    /// [`Utilities::verify_poll`] for the card of a post drawn as its own thread's root in the pane: the read is scoped to
+    /// that thread (as the web passes `threadId = rootMsgId`), so it ends given up, and its checks are
+    /// [`BotState::root_poll_checks`], which the log's card never reads.
+    pub fn verify_root_poll(&self, community: CommunityId, channel: ChannelId, item: TimelineItem) {
+        let root = item.msg_id;
+        self.verify(community, channel, root, item, true);
+    }
+
+    fn verify(
+        &self,
+        community: CommunityId,
+        channel: ChannelId,
+        thread: Option<MessageId>,
+        item: TimelineItem,
+        root: bool,
+    ) {
         let Some(message) = item.msg_id else { return };
         let snapshot = self.inner.snapshot();
-        let again = match snapshot.bot.poll_checks.get(&message) {
+        let again = match snapshot.bot.checks(root).get(&message) {
             None => false,
             Some(PollCheck::Retry(_)) => true,
             Some(_) => return,
         };
-        if snapshot.bot.polls.contains_key(&message) {
+        if !root && snapshot.bot.polls.contains_key(&message) {
             return;
         }
         // The snapshot lags the publish below by a moment, and a view draws again in between: one read at a time per
         // message, which the guard frees when the read ends or its runtime stops.
-        let Some(guard) = ReadingGuard::enter(&self.inner, message) else {
+        let Some(guard) = ReadingGuard::enter(&self.inner, message, root) else {
             return;
         };
         if !again {
             self.inner.publish(move |s| {
                 s.bot
-                    .poll_checks
+                    .checks_mut(root)
                     .entry(message)
                     .or_insert(PollCheck::Pending);
             });
@@ -90,24 +109,22 @@ impl Utilities {
             let mut guard = guard;
             let mut failures = 0;
             loop {
-                let end = match this.read_poll(community, channel, thread, &item).await {
-                    Ok(_) => None,
-                    Err(e) if definitive(&e) || again => Some(PollCheck::GaveUp(channel)),
-                    Err(_) => match retry_after(failures) {
-                        Some(wait) => {
-                            failures += 1;
-                            tokio::time::sleep(wait).await;
-                            continue;
-                        }
-                        None => Some(PollCheck::GaveUp(channel)),
-                    },
+                let read = this.read_poll(community, channel, thread, &item).await;
+                let end = match verify_step(failures, again, read.as_ref().err()) {
+                    Step::Done => None,
+                    Step::GiveUp => Some(PollCheck::GaveUp(channel)),
+                    Step::Wait(wait) => {
+                        failures += 1;
+                        tokio::time::sleep(wait).await;
+                        continue;
+                    }
                 };
                 this.inner.publish(move |s| match end {
                     Some(check) => {
-                        s.bot.poll_checks.insert(message, check);
+                        s.bot.checks_mut(root).insert(message, check);
                     }
                     None => {
-                        s.bot.poll_checks.remove(&message);
+                        s.bot.checks_mut(root).remove(&message);
                     }
                 });
                 guard.finished = true;
@@ -240,7 +257,31 @@ pub fn definitive(e: &UtilityError) -> bool {
 /// its post turns into one read that leaves the card given up (nothing shows) until it succeeds. Other channels' are
 /// untouched.
 pub(crate) fn retry_gave_up_in(inner: &Arc<Inner>, channel: ChannelId) {
-    inner.publish(move |s| retry_checks_in(&mut s.bot.poll_checks, channel));
+    inner.publish(move |s| {
+        retry_checks_in(&mut s.bot.poll_checks, channel);
+        retry_checks_in(&mut s.bot.root_poll_checks, channel);
+    });
+}
+
+/// What a finished read of [`Utilities::verify_poll`] leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    /// The poll was read: the check goes.
+    Done,
+    /// No more reads: the card steps aside.
+    GiveUp,
+    /// Read again after this long (PollCard.tsx's 2/5/10 s).
+    Wait(Duration),
+}
+
+/// The step after a read that ended in `failure` (`None`: it succeeded), `failures` reads having failed before it; `again` is a
+/// quiet re-read of a given-up post, which gives up at its first failure.
+fn verify_step(failures: usize, again: bool, failure: Option<&UtilityError>) -> Step {
+    match failure {
+        None => Step::Done,
+        Some(e) if definitive(e) || again => Step::GiveUp,
+        Some(_) => retry_after(failures).map_or(Step::GiveUp, Step::Wait),
+    }
 }
 
 fn retry_checks_in(
@@ -256,7 +297,7 @@ fn retry_checks_in(
 
 /// The poll reads under way: one per client and message ([`Utilities::verify_poll`]). A client is told apart by its
 /// `Inner`'s address, as `HINTS` in bot.rs tells them apart.
-static READING: std::sync::Mutex<std::collections::BTreeSet<(usize, MessageId)>> =
+static READING: std::sync::Mutex<std::collections::BTreeSet<(usize, MessageId, bool)>> =
     std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 /// One message's read under way: it holds its place in [`READING`] and, when dropped before the read finished (the task
@@ -264,21 +305,26 @@ static READING: std::sync::Mutex<std::collections::BTreeSet<(usize, MessageId)>>
 struct ReadingGuard {
     inner: Arc<Inner>,
     message: MessageId,
+    /// Whether the read is of the pane's root card ([`BotState::root_poll_checks`]).
+    root: bool,
     finished: bool,
 }
 
 impl ReadingGuard {
-    fn key(inner: &Arc<Inner>, message: MessageId) -> (usize, MessageId) {
-        (Arc::as_ptr(inner) as usize, message)
+    fn key(inner: &Arc<Inner>, message: MessageId, root: bool) -> (usize, MessageId, bool) {
+        (Arc::as_ptr(inner) as usize, message, root)
     }
 
-    fn enter(inner: &Arc<Inner>, message: MessageId) -> Option<Self> {
+    fn enter(inner: &Arc<Inner>, message: MessageId, root: bool) -> Option<Self> {
         let mut reading = READING.lock().unwrap_or_else(|e| e.into_inner());
-        reading.insert(Self::key(inner, message)).then(|| Self {
-            inner: inner.clone(),
-            message,
-            finished: false,
-        })
+        reading
+            .insert(Self::key(inner, message, root))
+            .then(|| Self {
+                inner: inner.clone(),
+                message,
+                root,
+                finished: false,
+            })
     }
 }
 
@@ -287,17 +333,17 @@ impl Drop for ReadingGuard {
         READING
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&Self::key(&self.inner, self.message));
+            .remove(&Self::key(&self.inner, self.message, self.root));
         if !self.finished {
-            let message = self.message;
+            let (message, root) = (self.message, self.root);
             self.inner
-                .publish(move |s| match s.bot.poll_checks.get(&message) {
+                .publish(move |s| match s.bot.checks(root).get(&message) {
                     Some(PollCheck::Pending) => {
-                        s.bot.poll_checks.remove(&message);
+                        s.bot.checks_mut(root).remove(&message);
                     }
                     Some(&PollCheck::Retry(channel)) => {
                         s.bot
-                            .poll_checks
+                            .checks_mut(root)
                             .insert(message, PollCheck::GaveUp(channel));
                     }
                     _ => {}
@@ -645,6 +691,58 @@ mod tests {
             mention: false,
             actions: Vec::new(),
         }
+    }
+
+    /// The read loop's schedule, as a pure step (no clock): a failed read waits 2, 5 and 10 s and then gives up; a refusal, or
+    /// a quiet re-read of a given-up post, gives up at once; a success is done.
+    #[test]
+    fn the_read_loop_waits_2_5_10_then_gives_up() {
+        let bad = UtilityError::Status(3);
+        let waits: Vec<Step> = (0..4).map(|n| verify_step(n, false, Some(&bad))).collect();
+        assert_eq!(
+            waits,
+            vec![
+                Step::Wait(Duration::from_secs(2)),
+                Step::Wait(Duration::from_secs(5)),
+                Step::Wait(Duration::from_secs(10)),
+                Step::GiveUp
+            ]
+        );
+        assert_eq!(
+            verify_step(0, true, Some(&bad)),
+            Step::GiveUp,
+            "a quiet re-read"
+        );
+        assert_eq!(
+            verify_step(0, false, Some(&UtilityError::NotAPoll)),
+            Step::GiveUp
+        );
+        assert_eq!(verify_step(2, false, None), Step::Done);
+        // A channel's poll read for the pane's root is `Invalid` (the record is not in that thread): retried, then given up.
+        assert!(!definitive(&UtilityError::Invalid));
+    }
+
+    /// The pane's root card keeps its own checks: a hint releases the given-up ones of both, and neither map sees the other's.
+    #[test]
+    fn the_roots_checks_are_kept_apart_from_the_logs() {
+        let channel = ChannelId([1; 16]);
+        let id = MessageId([9; 16]);
+        let mut bot = crate::state::bot::BotState::default();
+        bot.checks_mut(true).insert(id, PollCheck::Pending);
+        assert!(
+            bot.poll_checks.is_empty(),
+            "the log's checks are not written"
+        );
+        assert_eq!(bot.checks(true).get(&id), Some(&PollCheck::Pending));
+        assert_eq!(bot.checks(false).get(&id), None);
+        bot.poll_checks.insert(id, PollCheck::GaveUp(channel));
+        bot.checks_mut(true).insert(id, PollCheck::GaveUp(channel));
+        retry_checks_in(&mut bot.poll_checks, channel);
+        assert_eq!(
+            bot.checks(true).get(&id),
+            Some(&PollCheck::GaveUp(channel)),
+            "only the log's map was passed"
+        );
     }
 
     /// PollCard.tsx `RETRY_DELAYS`: 2, 5 and 10 seconds, then no more.

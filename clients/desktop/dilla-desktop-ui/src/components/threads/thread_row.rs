@@ -261,6 +261,7 @@ impl RenderOnce for ThreadRow {
                 let (above, _, _) = head_base();
                 div()
                     .pt(px((above - tag_base).max(0.0)))
+                    .debug_selector(|| "thread-bot-tag".to_owned())
                     .child(Tag::new("thread-bot-tag", TagKind::Bot))
             }))
             .child(div().pt(px(time_dy)).child(line(

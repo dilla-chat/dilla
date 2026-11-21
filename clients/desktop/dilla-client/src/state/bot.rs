@@ -233,6 +233,26 @@ impl std::fmt::Debug for ReminderView {
     }
 }
 
+impl BotState {
+    /// The checks of a card in the log (`root == false`) or of the pane's root card (`true`).
+    pub fn checks(&self, root: bool) -> &BTreeMap<MessageId, PollCheck> {
+        if root {
+            &self.root_poll_checks
+        } else {
+            &self.poll_checks
+        }
+    }
+
+    /// [`BotState::checks`], to write.
+    pub fn checks_mut(&mut self, root: bool) -> &mut BTreeMap<MessageId, PollCheck> {
+        if root {
+            &mut self.root_poll_checks
+        } else {
+            &mut self.poll_checks
+        }
+    }
+}
+
 /// Where the read of a poll post's record stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PollCheck {
@@ -258,6 +278,11 @@ pub struct BotState {
     /// The polls being read from the Bot, by the message that claims each (PollCard.tsx's retry state). A message with
     /// neither a check nor a held poll has not been asked about yet; a successful read removes its check.
     pub poll_checks: BTreeMap<MessageId, PollCheck>,
+    /// The same state for a post drawn as its own thread's root in the thread pane (the web's `PollCard` keeps its state per
+    /// card, with the thread in its scope: ThreadView passes `threadId = rootMsgId` to the root row too). That card reads the
+    /// poll scoped to the thread, which a channel's poll is never in, so it ends given up; nothing of it is written to
+    /// [`BotState::poll_checks`], which the log's card of the same post reads.
+    pub root_poll_checks: BTreeMap<MessageId, PollCheck>,
     /// This member's reminders, by community, soonest first.
     pub reminders: BTreeMap<CommunityId, Vec<ReminderView>>,
     /// The scheduled announcements the Bot last listed, by community (Task 28; the chips' suggestions). A community with

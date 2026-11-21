@@ -408,14 +408,26 @@ fn poll_card_drawn(
         return None;
     }
     let message = item.msg_id?;
-    // A thread's root (the pane's first row) is a message of the channel, never a post of that thread: no card here, and no
-    // read, so the check the log's card for the same post keeps is never written from this place (PollCard keeps its state
-    // per card, with the thread in its scope).
-    if thread == Some(message) {
-        return None;
-    }
-    let Some(poll) = ctx.state.bot.polls.get(&message) else {
-        return match ctx.state.bot.poll_checks.get(&message) {
+    // The thread's root (the pane's first row) is a post of the channel, never of that thread. The web still mounts its card
+    // (ThreadView passes `threadId = rootMsgId` to the root row), which reads scoped to the thread, shows "Loading poll..", and
+    // gives up with its 2/5/10 s retries; its state is per card, so here it is the pane's own checks
+    // (`BotState::root_poll_checks`) and the log's record and checks of the same post are neither read nor written.
+    let root = thread == Some(message);
+    let held = if root {
+        None
+    } else {
+        ctx.state.bot.polls.get(&message)
+    };
+    let start = |client: &dilla_client::Client, community, channel| {
+        let utilities = client.utilities();
+        if root {
+            utilities.verify_root_poll(community, channel, item.clone());
+        } else {
+            utilities.verify_poll(community, channel, thread, item.clone());
+        }
+    };
+    let Some(poll) = held else {
+        return match ctx.state.bot.checks(root).get(&message) {
             Some(PollCheck::Pending) => Some(poll_loading()),
             // Given up: nothing shows. After a hint of the post's channel (`Retry`) the read runs again quietly, and the
             // card stays given up until it succeeds.
@@ -424,19 +436,16 @@ fn poll_card_drawn(
                 if let (Some(client), Some(community), Some(channel)) =
                     (&ctx.client, ctx.community, ctx.channel)
                 {
-                    client
-                        .utilities()
-                        .verify_poll(community, channel, thread, item.clone());
+                    start(client, community, channel);
                 }
                 None
             }
             None => {
                 let (client, community, channel) =
                     (ctx.client.as_ref()?, ctx.community?, ctx.channel?);
-                let utilities = client.utilities();
-                let pinned = utilities.bot_identity(community)?.user;
+                let pinned = client.utilities().bot_identity(community)?.user;
                 poll_claim(item, Some(pinned))?;
-                utilities.verify_poll(community, channel, thread, item.clone());
+                start(client, community, channel);
                 Some(poll_loading())
             }
         };
@@ -1322,50 +1331,71 @@ mod tests {
         );
     }
 
-    /// The thread's root drawn in the pane is no card and starts no read: whatever the log's check for the same post holds
-    /// (nothing yet, being read, given up) stays as it was, and so does its card.
+    /// The thread's root drawn in the pane has a card state of its own (the web's is per card, with the thread in its scope): the
+    /// loading card while its checks say `Pending`, nothing once they say `GaveUp` or `Retry`, whatever the log's checks of the
+    /// same post hold; and the log's card of that post is as it was. Without its own checks and no client, nothing starts.
     #[gpui::test]
-    fn a_thread_root_draws_no_card_and_leaves_the_logs_check_alone(cx: &mut gpui::TestAppContext) {
+    fn a_thread_root_draws_its_own_loading_card_apart_from_the_logs(cx: &mut gpui::TestAppContext) {
         let (_, vcx) = cx.add_window_view(|_, _| gpui::Empty);
         let post = bot_post(7);
         let id = post.msg_id.unwrap();
-        let gave_up = PollCheck::GaveUp(ChannelId([4; 16]));
-        for check in [None, Some(PollCheck::Pending), Some(gave_up)] {
+        let channel = ChannelId([4; 16]);
+        let world = |log: Option<PollCheck>, root: Option<PollCheck>| {
             let mut bot = dilla_client::state::bot::BotState::default();
-            if let Some(c) = check {
+            if let Some(c) = log {
                 bot.poll_checks.insert(id, c);
             }
-            let ctx = SlotCx {
+            if let Some(c) = root {
+                bot.root_poll_checks.insert(id, c);
+            }
+            SlotCx {
                 state: std::sync::Arc::new(dilla_client::state::AppState {
                     bot,
                     ..Default::default()
                 }),
                 ..SlotCx::default()
-            };
-            let card = |thread, vcx: &mut gpui::VisualTestContext| {
-                vcx.update(|window, cx| poll_card_in(&post, &ctx, thread, window, cx).is_some())
-            };
-            assert!(!card(Some(id), vcx), "no card for the root");
-            assert_eq!(
-                ctx.state.bot.poll_checks.get(&id).cloned(),
-                check,
-                "the log's check is as it was"
-            );
-            // The log's own card for the same post: the loading line while it is read, none otherwise.
-            assert_eq!(card(None, vcx), check == Some(PollCheck::Pending));
-        }
-        // A held record: the log's card stands, the pane's root has none.
-        let mut bot = dilla_client::state::bot::BotState::default();
-        bot.polls.insert(id, poll(vec![0], false, false, 60));
-        let ctx = SlotCx {
-            state: std::sync::Arc::new(dilla_client::state::AppState {
-                bot,
-                ..Default::default()
-            }),
-            ..SlotCx::default()
+            }
         };
-        assert!(vcx.update(|w, cx| poll_card_in(&post, &ctx, None, w, cx).is_some()));
-        assert!(vcx.update(|w, cx| poll_card_in(&post, &ctx, Some(id), w, cx).is_none()));
+        let card = |ctx: &SlotCx, thread, vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| poll_card_in(&post, ctx, thread, window, cx).is_some())
+        };
+        // The pane's own checks decide the pane's card.
+        for (root_check, shown) in [
+            (Some(PollCheck::Pending), true),
+            (Some(PollCheck::GaveUp(channel)), false),
+            (Some(PollCheck::Retry(channel)), false),
+            (None, false),
+        ] {
+            for log_check in [
+                None,
+                Some(PollCheck::Pending),
+                Some(PollCheck::GaveUp(channel)),
+            ] {
+                let ctx = world(log_check, root_check);
+                assert_eq!(
+                    card(&ctx, Some(id), vcx),
+                    shown,
+                    "root {root_check:?}, log {log_check:?}"
+                );
+                // And the log's card of the same post follows the log's checks alone.
+                assert_eq!(
+                    card(&ctx, None, vcx),
+                    log_check == Some(PollCheck::Pending),
+                    "log {log_check:?} with root {root_check:?}"
+                );
+                // Drawing neither changes the checks (the state here is the client's snapshot, read only).
+                assert_eq!(ctx.state.bot.poll_checks.get(&id).copied(), log_check);
+                assert_eq!(ctx.state.bot.root_poll_checks.get(&id).copied(), root_check);
+            }
+        }
+        // A record held for the log is the log's: its card stands, and the root's card still follows its own checks.
+        let mut ctx = world(None, Some(PollCheck::GaveUp(channel)));
+        std::sync::Arc::make_mut(&mut ctx.state)
+            .bot
+            .polls
+            .insert(id, poll(vec![0], false, false, 60));
+        assert!(card(&ctx, None, vcx));
+        assert!(!card(&ctx, Some(id), vcx));
     }
 
     /// A forged poll marker (a person's reply that no record can be held for, or the Bot's claim by a credential alone with

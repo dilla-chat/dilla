@@ -533,13 +533,14 @@ pub fn poll_body_in(
         return PollBody::NoMarker;
     }
     let readable = !item.edited && item.state == TimelineItemState::Ok;
-    // A thread's root is a message of the channel, never a post of that thread: its text stands in the pane, decided here
-    // for this place alone (the web's card state is per card, with the thread in its scope), so nothing is read for it and
-    // the check the log's card keeps is not touched.
-    if thread.is_some() && thread == item.msg_id {
-        return PollBody::Fallback(poll_fallback(&item.body, zone));
-    }
-    if readable && let Some(poll) = item.msg_id.and_then(|m| state.bot.polls.get(&m)) {
+    // The thread's root row has a card state of its own (the web's is per card, with the thread in its scope): its record is
+    // never the log's, and its checks are `root_poll_checks`, so it shows nothing while its read runs and the post's text once
+    // that gave up.
+    let root = thread.is_some() && thread == item.msg_id;
+    if !root
+        && readable
+        && let Some(poll) = item.msg_id.and_then(|m| state.bot.polls.get(&m))
+    {
         if poll.thread != thread {
             return PollBody::Fallback(poll_fallback(&item.body, zone));
         }
@@ -548,7 +549,7 @@ pub fn poll_body_in(
     // `Retry` is a given-up post being read again: it still shows as given up until the read succeeds.
     let gave_up = item
         .msg_id
-        .and_then(|m| state.bot.poll_checks.get(&m))
+        .and_then(|m| state.bot.checks(root).get(&m))
         .is_some_and(|c| matches!(c, PollCheck::GaveUp(_) | PollCheck::Retry(_)));
     if readable
         && live
