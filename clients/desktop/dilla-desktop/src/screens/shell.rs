@@ -321,6 +321,7 @@ impl ShellView {
             .channel
             .ok_or_else(|| "no channel is open".to_owned())?;
         let over = crate::screens::attachments::over_the_cap(bytes);
+        let in_tray = self.state.attachments.tray(channel).len();
         let mut state = (*self.state).clone();
         let tray = state.attachments.trays.entry(channel).or_default();
         let id = format!("fixture-{}", tray.len() + 1);
@@ -342,7 +343,7 @@ impl ShellView {
             },
         });
         self.set_state(Arc::new(state), cx);
-        if over {
+        if crate::screens::attachments::raises_over_cap_toast(&[bytes], in_tray) {
             dilla_desktop_ui::components::toast::show_toast_in(
                 Some(window),
                 crate::strings::t("shell.tray.overLimitToast"),

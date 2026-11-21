@@ -13,7 +13,7 @@ pub mod video;
 use std::rc::Rc;
 
 use dilla_client::features::attachments::{
-    ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, attachment_kind, safe_name,
+    ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, MAX_ATTACHMENTS, attachment_kind, safe_name,
 };
 use dilla_client::features::gifs::{GifScope, gif_scope};
 use dilla_client::state::{TimelineItem, attachments::TrayPhase};
@@ -445,6 +445,13 @@ pub fn attachment_cards(
 /// refuses its card ("Over 25 MB") and a toast says so.
 pub fn over_the_cap(size: u64) -> bool {
     size > ATTACHMENT_CAP
+}
+
+/// Attachments.tsx `attachFiles`: whether a pick of files of `sizes` raises the over-the-cap toast: one of them is over the
+/// cap and the batch still fits the tray (`in_tray` cards are there already; a batch that does not fit is refused by the
+/// tray itself, which says so).
+pub fn raises_over_cap_toast(sizes: &[u64], in_tray: usize) -> bool {
+    sizes.iter().any(|&s| over_the_cap(s)) && in_tray + sizes.len() <= MAX_ATTACHMENTS
 }
 
 /// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar).
@@ -1135,13 +1142,23 @@ pub fn tray_busy(ctx: &SlotCx) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn a_file_is_over_the_cap_only_past_25_mb() {
         assert!(!over_the_cap(25 * 1024 * 1024));
         assert!(over_the_cap(25 * 1024 * 1024 + 1));
     }
 
-    use super::*;
+    /// Attachments.tsx `attachFiles`: the toast needs a file over the cap and a batch the tray still takes.
+    #[test]
+    fn the_over_the_cap_toast_needs_a_batch_that_fits_the_tray() {
+        let big = ATTACHMENT_CAP + 1;
+        assert!(raises_over_cap_toast(&[big], 0));
+        assert!(!raises_over_cap_toast(&[1, 2], 0), "nothing over the cap");
+        assert!(!raises_over_cap_toast(&[big], MAX_ATTACHMENTS), "no room");
+        assert!(raises_over_cap_toast(&[big], MAX_ATTACHMENTS - 1));
+    }
 
     fn fixed(width: f32, height: f32) -> Card {
         Card {

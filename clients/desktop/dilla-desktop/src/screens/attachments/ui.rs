@@ -550,8 +550,8 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
     }
     let tray = tray_of(&client, channel, cx);
     let owner = owner_of(&client);
-    let over = files.iter().any(|f| f.size > ATTACHMENT_CAP);
-    if over && tray.entries().len() + files.len() <= MAX_ATTACHMENTS {
+    let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
+    if super::raises_over_cap_toast(&sizes, tray.entries().len()) {
         dilla_desktop_ui::components::toast::show_toast_in(
             shown_in,
             t("shell.tray.overLimitToast"),
