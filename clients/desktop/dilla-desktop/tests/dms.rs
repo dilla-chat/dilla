@@ -366,13 +366,29 @@ fn parity(name: &str) {
     );
 }
 
+/// A GPUI-only reference (`native/dms-<name>`): the web's live unread dots on the DM list are nondeterministic (a random one
+/// per shoot, as for `notify/unread-badge-b`), while the app marks every DM that got another person's message while the
+/// route showed another screen, with the dot and the bold name (Jonas 2026-11-21).
+fn native(name: &str) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/dms")
+        .join(format!("{name}.json"));
+    let report =
+        dilla_parity::screen::assert_native_screen(&fixture, &format!("dms-{name}"), |_| {})
+            .unwrap_or_else(|e| panic!("dms/{name} differs from its golden shot: {e}"));
+    println!(
+        "SCREEN native/dms-{name}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
 #[test]
 #[cfg_attr(
     not(any(target_os = "linux", target_os = "macos")),
     ignore = "references are Linux and macOS only"
 )]
 fn parity_dms_home() {
-    parity("home");
+    native("home");
 }
 
 #[test]
@@ -381,7 +397,7 @@ fn parity_dms_home() {
     ignore = "references are Linux and macOS only"
 )]
 fn parity_dms_home_b() {
-    parity("home-b");
+    native("home-b");
 }
 
 #[test]
