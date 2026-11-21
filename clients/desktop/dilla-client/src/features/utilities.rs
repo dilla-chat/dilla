@@ -543,11 +543,31 @@ impl Utilities {
         choices: Vec<usize>,
         request: [u8; 16],
     ) -> Result<PollView, UtilityError> {
+        self.vote_at(community, message, place, choices, request, None)
+            .await
+    }
+
+    /// [`Utilities::vote`] at `revision` when given: a retry of an uncertain vote sends the attempt's own revision, not the
+    /// re-read one, so the Bot's request fingerprint matches and a vote that landed is answered as a replay
+    /// (PollCard.tsx `immutable.revision`).
+    pub async fn vote_at(
+        &self,
+        community: CommunityId,
+        message: MessageId,
+        place: (ChannelId, Option<MessageId>),
+        choices: Vec<usize>,
+        request: [u8; 16],
+        revision: Option<u64>,
+    ) -> Result<PollView, UtilityError> {
         let poll = self
             .poll(message)
             .filter(|p| poll_in_place(p, place.0, place.1))
             .ok_or(UtilityError::NoPoll)?;
-        let next = vote_over(&self.operations(community), &poll, &choices, request).await?;
+        let sent = PollView {
+            revision: revision.unwrap_or(poll.revision),
+            ..poll
+        };
+        let next = vote_over(&self.operations(community), &sent, &choices, request).await?;
         self.hold_poll(message, next.clone());
         Ok(next)
     }
@@ -561,11 +581,28 @@ impl Utilities {
         place: (ChannelId, Option<MessageId>),
         request: [u8; 16],
     ) -> Result<PollView, UtilityError> {
+        self.close_at(community, message, place, request, None)
+            .await
+    }
+
+    /// [`Utilities::close`] at `revision` when given, as [`Utilities::vote_at`].
+    pub async fn close_at(
+        &self,
+        community: CommunityId,
+        message: MessageId,
+        place: (ChannelId, Option<MessageId>),
+        request: [u8; 16],
+        revision: Option<u64>,
+    ) -> Result<PollView, UtilityError> {
         let poll = self
             .poll(message)
             .filter(|p| poll_in_place(p, place.0, place.1))
             .ok_or(UtilityError::NoPoll)?;
-        let next = close_over(&self.operations(community), &poll, request).await?;
+        let sent = PollView {
+            revision: revision.unwrap_or(poll.revision),
+            ..poll
+        };
+        let next = close_over(&self.operations(community), &sent, request).await?;
         self.hold_poll(message, next.clone());
         Ok(next)
     }
