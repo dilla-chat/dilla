@@ -251,6 +251,59 @@ impl BotState {
             &mut self.poll_checks
         }
     }
+
+    /// A read of `message`'s card ended (`Utilities::verify_poll`'s loop): `end` is its check from now on, `None` removing
+    /// it (the poll was read). Only while the read's own check (`Pending`, or `Retry` for a re-read) is still there: a root
+    /// check the pane dropped on closing ([`BotState::forget_root_checks`]) is not brought back by a read that outlived it.
+    pub fn settle(&mut self, root: bool, message: MessageId, end: Option<PollCheck>) {
+        let checks = self.checks_mut(root);
+        if !checks.contains_key(&message) {
+            return;
+        }
+        match end {
+            Some(check) => {
+                checks.insert(message, check);
+            }
+            None => {
+                checks.remove(&message);
+            }
+        }
+    }
+
+    /// A read of `message`'s card stopped before it ended (its task panicked or the runtime shut down): a `Pending` check
+    /// goes, so the card is not left loading for good, and a `Retry` is given up again.
+    pub fn release_unfinished(&mut self, root: bool, message: MessageId) {
+        let checks = self.checks_mut(root);
+        match checks.get(&message) {
+            Some(PollCheck::Pending) => {
+                checks.remove(&message);
+            }
+            Some(&PollCheck::Retry(channel)) => {
+                checks.insert(message, PollCheck::GaveUp(channel));
+            }
+            _ => {}
+        }
+    }
+
+    /// PollCard.tsx: a pushed hint of `channel` reads its given-up polls again, the log's cards and the pane's root card
+    /// alike. Each becomes `Retry`, which the next draw of its post turns into one read that leaves the card given up
+    /// (nothing shows) until it succeeds. Other channels' are untouched, and a check still loading too.
+    pub fn retry_gave_up(&mut self, channel: ChannelId) {
+        for checks in [&mut self.poll_checks, &mut self.root_poll_checks] {
+            for check in checks.values_mut() {
+                if *check == PollCheck::GaveUp(channel) {
+                    *check = PollCheck::Retry(channel);
+                }
+            }
+        }
+    }
+
+    /// The thread pane stopped showing `root`'s thread (it closed, or another thread took its place): its root card's
+    /// checks go, as the web's per-card state goes with the card, so reopening it reads the poll again (loading, then 2, 5
+    /// and 10 s). The log's checks of the same post stay.
+    pub fn forget_root_checks(&mut self, root: MessageId) {
+        self.root_poll_checks.remove(&root);
+    }
 }
 
 /// Where the read of a poll post's record stands.
@@ -281,7 +334,8 @@ pub struct BotState {
     /// The same state for a post drawn as its own thread's root in the thread pane (the web's `PollCard` keeps its state per
     /// card, with the thread in its scope: ThreadView passes `threadId = rootMsgId` to the root row too). That card reads the
     /// poll scoped to the thread, which a channel's poll is never in, so it ends given up; nothing of it is written to
-    /// [`BotState::poll_checks`], which the log's card of the same post reads.
+    /// [`BotState::poll_checks`], which the log's card of the same post reads. A root's checks go when the pane stops showing
+    /// its thread ([`BotState::forget_root_checks`]), as the web's card state goes with the card.
     pub root_poll_checks: BTreeMap<MessageId, PollCheck>,
     /// This member's reminders, by community, soonest first.
     pub reminders: BTreeMap<CommunityId, Vec<ReminderView>>,

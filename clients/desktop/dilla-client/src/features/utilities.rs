@@ -119,14 +119,8 @@ impl Utilities {
                         continue;
                     }
                 };
-                this.inner.publish(move |s| match end {
-                    Some(check) => {
-                        s.bot.checks_mut(root).insert(message, check);
-                    }
-                    None => {
-                        s.bot.checks_mut(root).remove(&message);
-                    }
-                });
+                this.inner
+                    .publish(move |s| s.bot.settle(root, message, end));
                 guard.finished = true;
                 return Ok(());
             }
@@ -253,14 +247,11 @@ pub fn definitive(e: &UtilityError) -> bool {
     }
 }
 
-/// PollCard.tsx: a pushed hint of `channel` reads its given-up polls again. Each becomes `Retry`, which the next draw of
-/// its post turns into one read that leaves the card given up (nothing shows) until it succeeds. Other channels' are
-/// untouched.
+/// PollCard.tsx: a pushed hint of `channel` reads its given-up polls again ([`BotState::retry_gave_up`]).
+///
+/// [`BotState::retry_gave_up`]: crate::state::bot::BotState::retry_gave_up
 pub(crate) fn retry_gave_up_in(inner: &Arc<Inner>, channel: ChannelId) {
-    inner.publish(move |s| {
-        retry_checks_in(&mut s.bot.poll_checks, channel);
-        retry_checks_in(&mut s.bot.root_poll_checks, channel);
-    });
+    inner.publish(move |s| s.bot.retry_gave_up(channel));
 }
 
 /// What a finished read of [`Utilities::verify_poll`] leads to.
@@ -281,17 +272,6 @@ fn verify_step(failures: usize, again: bool, failure: Option<&UtilityError>) -> 
         None => Step::Done,
         Some(e) if definitive(e) || again => Step::GiveUp,
         Some(_) => retry_after(failures).map_or(Step::GiveUp, Step::Wait),
-    }
-}
-
-fn retry_checks_in(
-    checks: &mut std::collections::BTreeMap<MessageId, PollCheck>,
-    channel: ChannelId,
-) {
-    for check in checks.values_mut() {
-        if *check == PollCheck::GaveUp(channel) {
-            *check = PollCheck::Retry(channel);
-        }
     }
 }
 
@@ -337,17 +317,7 @@ impl Drop for ReadingGuard {
         if !self.finished {
             let (message, root) = (self.message, self.root);
             self.inner
-                .publish(move |s| match s.bot.checks(root).get(&message) {
-                    Some(PollCheck::Pending) => {
-                        s.bot.checks_mut(root).remove(&message);
-                    }
-                    Some(&PollCheck::Retry(channel)) => {
-                        s.bot
-                            .checks_mut(root)
-                            .insert(message, PollCheck::GaveUp(channel));
-                    }
-                    _ => {}
-                });
+                .publish(move |s| s.bot.release_unfinished(root, message));
         }
     }
 }
@@ -722,27 +692,78 @@ mod tests {
         assert!(!definitive(&UtilityError::Invalid));
     }
 
-    /// The pane's root card keeps its own checks: a hint releases the given-up ones of both, and neither map sees the other's.
+    /// The read loop's end ([`BotState::settle`], which the loop publishes) writes only its own card's checks: the pane's
+    /// root card's or the log's, never the other's, and nothing once the check it began with is gone (the pane closed).
     #[test]
-    fn the_roots_checks_are_kept_apart_from_the_logs() {
+    fn a_read_settles_only_its_own_cards_checks() {
+        let (channel, other) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let id = MessageId([9; 16]);
+        for root in [false, true] {
+            for theirs in [None, Some(PollCheck::GaveUp(other))] {
+                let mut bot = crate::state::bot::BotState::default();
+                if let Some(check) = theirs {
+                    bot.checks_mut(!root).insert(id, check);
+                }
+                bot.checks_mut(root).insert(id, PollCheck::Pending);
+                bot.settle(root, id, Some(PollCheck::GaveUp(channel)));
+                assert_eq!(
+                    bot.checks(root).get(&id),
+                    Some(&PollCheck::GaveUp(channel)),
+                    "root {root}: its own read gave up"
+                );
+                assert_eq!(bot.checks(!root).get(&id), theirs.as_ref(), "root {root}");
+                bot.checks_mut(root).insert(id, PollCheck::Retry(channel));
+                bot.settle(root, id, None);
+                assert_eq!(bot.checks(root).get(&id), None, "root {root}: read");
+                assert_eq!(bot.checks(!root).get(&id), theirs.as_ref(), "root {root}");
+                // The check went meanwhile (the pane dropped it): the read that outlived it writes nothing.
+                bot.settle(root, id, Some(PollCheck::GaveUp(channel)));
+                assert_eq!(bot.checks(root).get(&id), None, "root {root}: dropped");
+                assert_eq!(bot.checks(!root).get(&id), theirs.as_ref(), "root {root}");
+            }
+        }
+    }
+
+    /// The reading guard's release of a read that stopped unfinished ([`BotState::release_unfinished`], which its `Drop`
+    /// publishes): a `Pending` check goes and a `Retry` gives up again, in its own card's checks only.
+    #[test]
+    fn an_unfinished_read_releases_only_its_own_cards_checks() {
         let channel = ChannelId([1; 16]);
         let id = MessageId([9; 16]);
+        for root in [false, true] {
+            for theirs in [PollCheck::Pending, PollCheck::Retry(channel)] {
+                let mut bot = crate::state::bot::BotState::default();
+                bot.checks_mut(!root).insert(id, theirs);
+                bot.checks_mut(root).insert(id, PollCheck::Pending);
+                bot.release_unfinished(root, id);
+                assert_eq!(bot.checks(root).get(&id), None, "root {root}: Pending goes");
+                assert_eq!(bot.checks(!root).get(&id), Some(&theirs), "root {root}");
+                bot.checks_mut(root).insert(id, PollCheck::Retry(channel));
+                bot.release_unfinished(root, id);
+                assert_eq!(
+                    bot.checks(root).get(&id),
+                    Some(&PollCheck::GaveUp(channel)),
+                    "root {root}: Retry gives up again"
+                );
+                assert_eq!(bot.checks(!root).get(&id), Some(&theirs), "root {root}");
+            }
+        }
+    }
+
+    /// Closing the pane (or showing another thread in it) drops that root card's checks, as the web's card state goes
+    /// with the card: the log's checks of the same post, and other roots', stay.
+    #[test]
+    fn forgetting_a_root_drops_only_its_root_cards_checks() {
+        let channel = ChannelId([1; 16]);
+        let (id, other) = (MessageId([9; 16]), MessageId([8; 16]));
         let mut bot = crate::state::bot::BotState::default();
-        bot.checks_mut(true).insert(id, PollCheck::Pending);
-        assert!(
-            bot.poll_checks.is_empty(),
-            "the log's checks are not written"
-        );
-        assert_eq!(bot.checks(true).get(&id), Some(&PollCheck::Pending));
-        assert_eq!(bot.checks(false).get(&id), None);
         bot.poll_checks.insert(id, PollCheck::GaveUp(channel));
-        bot.checks_mut(true).insert(id, PollCheck::GaveUp(channel));
-        retry_checks_in(&mut bot.poll_checks, channel);
-        assert_eq!(
-            bot.checks(true).get(&id),
-            Some(&PollCheck::GaveUp(channel)),
-            "only the log's map was passed"
-        );
+        bot.root_poll_checks.insert(id, PollCheck::GaveUp(channel));
+        bot.root_poll_checks.insert(other, PollCheck::Pending);
+        bot.forget_root_checks(id);
+        assert_eq!(bot.root_poll_checks.get(&id), None);
+        assert_eq!(bot.root_poll_checks.get(&other), Some(&PollCheck::Pending));
+        assert_eq!(bot.poll_checks.get(&id), Some(&PollCheck::GaveUp(channel)));
     }
 
     /// PollCard.tsx `RETRY_DELAYS`: 2, 5 and 10 seconds, then no more.
@@ -776,21 +797,30 @@ mod tests {
         assert!(!definitive(&UtilityError::Unavailable("E_STOPPED".into())));
     }
 
-    /// PollCard.tsx: a hint of one channel reads that channel's given-up posts again, and only those: the others stay given
-    /// up, and a post still loading is not touched.
+    /// PollCard.tsx: a hint of one channel reads that channel's given-up posts again, and only those, in the log's checks
+    /// and the pane's root card's alike: the others stay given up, and a post still loading is not touched.
     #[test]
     fn a_hint_retries_only_its_channels_given_up_posts() {
         let (here, there) = (ChannelId([1; 16]), ChannelId([2; 16]));
         let id = |n: u8| MessageId([n; 16]);
-        let mut checks = std::collections::BTreeMap::from([
+        let checks = std::collections::BTreeMap::from([
             (id(1), PollCheck::GaveUp(here)),
             (id(2), PollCheck::GaveUp(there)),
             (id(3), PollCheck::Pending),
         ]);
-        retry_checks_in(&mut checks, here);
-        assert_eq!(checks[&id(1)], PollCheck::Retry(here));
-        assert_eq!(checks[&id(2)], PollCheck::GaveUp(there));
-        assert_eq!(checks[&id(3)], PollCheck::Pending);
+        let mut bot = crate::state::bot::BotState {
+            poll_checks: checks.clone(),
+            root_poll_checks: checks,
+            ..Default::default()
+        };
+        // `retry_gave_up_in` publishes this; the log's cards and the pane's root card alike.
+        bot.retry_gave_up(here);
+        for root in [false, true] {
+            let checks = bot.checks(root);
+            assert_eq!(checks[&id(1)], PollCheck::Retry(here), "root {root}");
+            assert_eq!(checks[&id(2)], PollCheck::GaveUp(there), "root {root}");
+            assert_eq!(checks[&id(3)], PollCheck::Pending, "root {root}");
+        }
     }
 
     /// An answer envelope the transport cannot decode is a plain failure in the web: retried. A read gets it as no
