@@ -50,6 +50,7 @@ pub struct DmList {
     items: Vec<DmItem>,
     on_select: Select,
     on_new: Click,
+    wrap_new: Option<fn(gpui::AnyElement) -> gpui::AnyElement>,
     on_menu: Option<Menu>,
     menu: Option<gpui::AnyElement>,
 }
@@ -75,6 +76,7 @@ impl DmList {
             items,
             on_select: Rc::new(|_, _, _| {}),
             on_new: Rc::new(|_, _, _| {}),
+            wrap_new: None,
             on_menu: None,
             menu: None,
         }
@@ -98,6 +100,12 @@ impl DmList {
         handler: impl Fn(usize, Point<Pixels>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_menu = Some(Rc::new(handler));
+        self
+    }
+
+    /// Wraps the head's "message someone" button (the screen's automation probe).
+    pub fn wrap_new(mut self, wrap: fn(gpui::AnyElement) -> gpui::AnyElement) -> Self {
+        self.wrap_new = Some(wrap);
         self
     }
 
@@ -136,11 +144,16 @@ impl RenderOnce for DmList {
                     .clip(),
                 ),
             )
-            .child(
-                IconButton::new("dm-new", IconName::SquarePen, self.new_label)
+            .child({
+                let new = IconButton::new("dm-new", IconName::SquarePen, self.new_label)
                     .size(IconButtonSize::S28)
-                    .on_click(move |e, w, cx| on_new(e, w, cx)),
-            )
+                    .on_click(move |e, w, cx| on_new(e, w, cx))
+                    .into_any_element();
+                match self.wrap_new {
+                    Some(wrap) => wrap(new),
+                    None => new,
+                }
+            })
             .children(self.menu);
         let meta = |s: SharedString| {
             line(

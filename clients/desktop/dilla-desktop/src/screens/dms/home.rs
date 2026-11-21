@@ -286,6 +286,7 @@ pub fn sidebar(
             }
         }
     })
+    .wrap_new(|new| crate::tracked_box("dm-new", new).into_any_element())
     .on_new(move |_, window, cx| {
         picker::open(
             window.window_handle().window_id(),

@@ -401,3 +401,22 @@ fn parity_dms_conversation() {
 fn parity_dms_conversation_b() {
     parity("conversation-b");
 }
+
+/// Task 42: the new-DM button opens "Message someone" over the DM list.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_picker() {
+    parity("picker");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_picker_b() {
+    parity("picker-b");
+}
