@@ -56,6 +56,10 @@ colour_max_pct = 0.74
 colour_max_pct = 0.77
 [macos_screens."voice/person-menu"]
 colour_max_pct = 0.66
+# Task 40's poll card: the same half-pixel row-top snap as on Linux (linux_screens."polls/card" below), chrome 0.586 % on
+# macos-15 (run 44883563855); the limit is twice that.
+[macos_screens."polls/card"]
+chrome_max_pct = 1.17
 
 # Per-screen Linux limits: twice the screen's honest Linux score (TOLERANCES.md "Linux per-screen"). The picture screens
 # scale a thumbnail bilinearly where Skia filters bicubically; the emoji screens draw the colour bitmap face scaled

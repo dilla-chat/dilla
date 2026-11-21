@@ -41,6 +41,8 @@ Measured on macos-15 (Metal) against the **Linux web references** (macOS CI plan
 | colour, 2 px radius, delta 2 | 0.087 % | 0.68 % (avatar and picture screens) | 0.3 % | hairline recoloured 0.58 / 0.60 %; surface recoloured 27.6 / 24.8 % |
 
 The eight avatar and picture screens get their own colour limit in `[macos_screens."<fixture>"]`, 2x their honest score.
+`polls/card` gets its own chrome limit too, 1.17 %: 2x its honest macOS score, 0.586 % (run 44883563855). That is the
+same half-pixel row-top snap Jonas accepted on Linux (Task 40, see "Linux per-screen").
 
 **Margins.** The plan asks every limit to sit at least 2x above the worst honest screen and 2x below the defect. Whole
 frame clears both (2.2x / 2.2x). Chrome is 2.16x above honest but 1.5–1.8x below the shift; colour is 1.9x below the
