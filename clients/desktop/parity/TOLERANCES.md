@@ -108,6 +108,15 @@ frames put every glyph in the same cell. So the advances match and the residue i
 
 macOS does not use these entries; the five tests stay `#[ignore]`d there until its own limits are measured.
 
+**`voice-settings/mic-test-running{,-b}`: the automatic threshold (Task 33, no limit raised).** The web's frame shows the line at
+-70 dB and "threshold -70 dB", GPUI's at -48 dB. The rule is the same on both sides (`packages/media/src/audio/sensitivity.ts`:
+start at -48 dB, then the room's noise floor plus 15 dB, held between -70 and -30 dB; the native gate's test is
+`automatic_starts_at_minus_48_then_follows_the_floor_plus_15`). The web fixture's microphone is silence (`silence.wav`), so by the
+shot its floor has fallen to the dead-silent end and the line sits on the -70 clamp; GPUI's headless test has measured no frame yet
+when it captures and shows the resting -48. It is the fixture's noise floor at capture time, not a drawing difference: the line is
+`left: ${threshold - MIN}%` of the meter's width on both sides (`SensitivityMeter::line_fraction`, `threshold_x_is_proportional`).
+The screens pass the shared gate (chrome 0.1638 / 0.0877).
+
 ## How screens supply the mask
 
 The automation interface reports text element bounds (`ElementInfo`); a screen test converts them to device pixels (logical x scale) and builds `TextMask::from_rects`. `TextMask::from_bright_pixels_fixture_only` must not be used by screen tests.

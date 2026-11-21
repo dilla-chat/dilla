@@ -787,6 +787,12 @@ pub fn section(
     }
     #[cfg(feature = "automation")]
     {
+        // The typed name's line box for the R13 text mask.
+        editor = editor.name_overlay(crate::screens::composer::typed_line(
+            div().size_full(),
+            &input.read(cx).value(),
+            dilla_desktop_ui::text::root_line_height(text::INPUT),
+        ));
         editor = editor.probe(Rc::new(|id: &str| {
             crate::automation::bounds_probe(super::probe_id(id)).into_any_element()
         }));

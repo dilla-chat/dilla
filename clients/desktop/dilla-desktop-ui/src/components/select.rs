@@ -342,6 +342,14 @@ fn _ring() -> Vec<gpui::BoxShadow> {
 mod tests {
     use super::*;
 
+    /// Chromium's `<select>` value: 4px in from the field's padding on a 17px line (12.5px JetBrains Mono's rounded
+    /// ascent 13 and descent 4), 1.1px lower in the 34px box than a line at 1.5.
+    #[test]
+    fn the_value_sits_four_in_on_a_seventeen_pixel_line() {
+        assert_eq!(SELECT_VALUE_INSET, 4.0);
+        assert_eq!(select_value_line(), 17.0);
+    }
+
     #[test]
     fn the_chosen_option_is_found_else_the_first() {
         assert_eq!(selected_index(&["a", "b"], "b"), 1);

@@ -34,6 +34,7 @@ pub struct Toggle {
     disabled: bool,
     show_label: bool,
     fit: Fit,
+    backdrop: gpui::Hsla,
     on_change: Option<ChangeHandler>,
 }
 
@@ -61,6 +62,7 @@ impl Toggle {
             disabled: false,
             show_label: false,
             fit: Fit::Target,
+            backdrop: color::BG,
             on_change: None,
         }
     }
@@ -81,6 +83,13 @@ impl Toggle {
         self
     }
 
+    /// The surface the switch sits on, which a disabled switch's dimmed colours are laid over (`--bg`, the page, unless the
+    /// host is a card or a dialog).
+    pub fn backdrop(mut self, surface: gpui::Hsla) -> Self {
+        self.backdrop = surface;
+        self
+    }
+
     /// How the switch sits in its host ([`Fit`]).
     pub fn fit(mut self, fit: Fit) -> Self {
         self.fit = fit;
@@ -98,11 +107,10 @@ impl RenderOnce for Toggle {
         let on = self.checked;
         // A disabled switch is dimmed as one group (`.d-toggle__switch[aria-disabled="true"] { opacity: var(--opacity-muted) }`):
         // the knob is 0.8 of white over the page, not over the track beneath it. GPUI's element opacity dims each quad on
-        // its own, so the colours are laid over the page here and drawn solid. (The page is `--bg`; a switch on another
-        // surface is a few levels off.)
+        // its own, so the colours are laid over the page here and drawn solid ([`Toggle::backdrop`]).
         let dimmed = |c: gpui::Hsla| {
             if self.disabled {
-                color::BG.blend(c.opacity(OPACITY_MUTED))
+                self.backdrop.blend(c.opacity(OPACITY_MUTED))
             } else {
                 c
             }

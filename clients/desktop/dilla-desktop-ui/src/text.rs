@@ -617,9 +617,23 @@ impl IntoElement for FlowParagraph {
     }
 }
 
+/// The width a flow paragraph breaks its lines at: of the widths the layout measured it at, the one nearest the painted
+/// (snapped) box, if the snap moved it by under a pixel; else the snapped box itself. Taffy measures a leaf more than once
+/// (a basis, a min-content probe, the flexed size) and in no promised order, so the choice goes by the box that is
+/// painted and not by which call came last.
+pub fn wrap_width(measured: &[f32], snapped: f32) -> f32 {
+    measured
+        .iter()
+        .copied()
+        .filter(|w| (w - snapped).abs() < 1.0)
+        .min_by(|a, b| (a - snapped).abs().total_cmp(&(b - snapped).abs()))
+        .unwrap_or(snapped)
+}
+
 impl gpui::Element for FlowParagraph {
-    /// The width the layout last sized the paragraph to when it was given one (the flexed size, before the layout snap).
-    type RequestLayoutState = std::rc::Rc<std::cell::Cell<Option<f32>>>;
+    /// Every width the layout was given to measure the paragraph at (the flexed sizes, before the layout snap), in the
+    /// order of the calls: [`wrap_width`] picks the one that belongs to the painted box.
+    type RequestLayoutState = std::rc::Rc<std::cell::RefCell<Vec<f32>>>;
     type PrepaintState = Option<AnyElement>;
 
     fn id(&self) -> Option<gpui::ElementId> {
@@ -638,13 +652,16 @@ impl gpui::Element for FlowParagraph {
         _cx: &mut gpui::App,
     ) -> (gpui::LayoutId, Self::RequestLayoutState) {
         let (text, size, lh) = (self.text.clone(), self.size, self.line_height);
-        let sized = std::rc::Rc::new(std::cell::Cell::new(None));
+        let sized = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sized_by_layout = sized.clone();
         let layout_id = window.request_measured_layout(
             gpui::Style::default(),
             move |known, available, _window, _cx| {
                 if let Some(w) = known.width {
-                    sized_by_layout.set(Some(f32::from(w)));
+                    let mut seen = sized_by_layout.borrow_mut();
+                    if !seen.contains(&f32::from(w)) {
+                        seen.push(f32::from(w));
+                    }
                 }
                 // CSS sizing of a block of text: its min-content width is its longest word, its max-content width its
                 // longest hard line, and in a definite space it fits: min(max-content, max(min-content, available)).
@@ -678,10 +695,7 @@ impl gpui::Element for FlowParagraph {
         // pixels can take most of a pixel off a width that was a column's worth exactly (a hint of 337.5px that is 45
         // columns wide, snapped to 337), and the paragraph would break one word early where the height it was measured at
         // (and the web, which keeps layout units) did not.
-        let wrap_at = match sized.get() {
-            Some(w) if (w - f32::from(bounds.size.width)).abs() <= 1.0 => w,
-            _ => f32::from(bounds.size.width),
-        };
+        let wrap_at = wrap_width(&sized.borrow(), f32::from(bounds.size.width));
         let lines = flow_lines(&self.text, self.size, Some(wrap_at));
         let mut block = div()
             .relative()
@@ -721,6 +735,25 @@ impl gpui::Element for FlowParagraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hint of 45 columns at 12.5px is 337.5px wide: laid out at that width it is one line, and the box the layout snap paints
+    /// (337px) must not break it, whichever order the measure calls came in.
+    #[test]
+    fn a_snapped_box_wraps_at_the_width_it_was_measured_at() {
+        let text = "The Bot joins this channel and can post here.";
+        assert_eq!(text.chars().count(), 45);
+        let lines = |w: f32| flow_lines(text, px(12.5), Some(w)).len();
+        assert_eq!(lines(337.0), 2);
+        assert_eq!(lines(wrap_width(&[337.5], 337.0)), 1);
+        // The final width first or last, with a min-content probe and the basis among them.
+        assert_eq!(wrap_width(&[337.5, 52.5, 340.0], 337.0), 337.5);
+        assert_eq!(wrap_width(&[52.5, 340.0, 337.5], 337.0), 337.5);
+        // Two widths within a pixel: the nearer to the painted box.
+        assert_eq!(wrap_width(&[337.9, 337.5], 338.0), 337.9);
+        // Nothing measured near the box, or nothing measured: the box.
+        assert_eq!(wrap_width(&[52.5], 337.0), 337.0);
+        assert_eq!(wrap_width(&[], 337.0), 337.0);
+    }
 
     /// A flow paragraph breaks where a fixed-width one would at the same width, and lays out on one line per hard line when
     /// it is not constrained.

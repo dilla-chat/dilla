@@ -10,9 +10,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, BoxShadow, ClickEvent, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, point, px, rgb,
+    App, ClickEvent, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
 use gpui_component::input::InputState;
 
@@ -139,6 +139,7 @@ pub struct RoleEditor {
     name: Entity<InputState>,
     name_read_only: bool,
     name_error: Option<SharedString>,
+    name_overlay: Option<gpui::AnyElement>,
     /// The swatches (value, name); none for @everyone, which has no colour.
     colors: Option<Vec<(u32, SharedString)>>,
     color: u32,
@@ -169,6 +170,7 @@ impl RoleEditor {
             name: name.clone(),
             name_read_only: false,
             name_error: None,
+            name_overlay: None,
             colors: None,
             color: 0,
             on_color: None,
@@ -209,6 +211,12 @@ impl RoleEditor {
 
     pub fn name_read_only(mut self, read_only: bool) -> Self {
         self.name_read_only = read_only;
+        self
+    }
+
+    /// An element laid over the name field's text (the automation build's typed-text probe).
+    pub fn name_overlay(mut self, overlay: impl IntoElement) -> Self {
+        self.name_overlay = Some(overlay.into_any_element());
         self
     }
 
@@ -258,19 +266,30 @@ impl RoleEditor {
 
 /// The chosen swatch's ring: its own colour outside, `--bg` between (the first CSS shadow is painted on top, GPUI paints
 /// them in order).
-fn ring(c: gpui::Hsla) -> Vec<BoxShadow> {
-    let spread = |color, s: f32| BoxShadow {
-        color,
-        offset: point(px(0.), px(0.)),
-        blur_radius: px(0.),
-        spread_radius: px(s),
-        inset: false,
+/// The chosen swatch's ring, `box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--d-swatch)`: a shadow's corners grow with
+/// its spread (the swatch's 6px radius is 8px at the `--bg` ring and 9.5px at the outer one), where GPUI's spread keeps
+/// the element's own radius. So the rings are two rounded squares behind the swatch.
+fn ringed(c: gpui::Hsla, swatch: impl IntoElement) -> impl IntoElement {
+    let layer = |inset: f32, fill: gpui::Hsla| {
+        div()
+            .absolute()
+            .top(px(-inset))
+            .left(px(-inset))
+            .size(SWATCH + px(2. * inset))
+            .rounded(radius::MD + px(inset))
+            .bg(fill)
     };
-    vec![spread(c, RING_OUTER), spread(color::BG, RING_INNER)]
+    div()
+        .relative()
+        .flex_none()
+        .size(SWATCH)
+        .child(layer(RING_OUTER, c))
+        .child(layer(RING_INNER, color::BG))
+        .child(swatch)
 }
 
 impl RenderOnce for RoleEditor {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(mut self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let id_text: SharedString = format!("{:?}", self.id).into();
         let rows_n = self.roles.len() + usize::from(self.on_new.is_some());
         let focus = Rc::new(self.focus);
@@ -444,6 +463,9 @@ impl RenderOnce for RoleEditor {
             &self.name,
         )
         .disabled(self.name_read_only);
+        if let Some(overlay) = self.name_overlay.take() {
+            field = field.text_overlay(overlay);
+        }
         if let Some(e) = self.name_error.clone() {
             field = field.error(e);
         }
@@ -474,9 +496,6 @@ impl RenderOnce for RoleEditor {
                     .tab_index(0)
                     .focus_visible(|s| s.shadow(focus_ring()))
                     .tooltip(crate::components::tooltip::tooltip(name.clone(), &[]));
-                if value == chosen {
-                    swatch = swatch.shadow(ring(c));
-                }
                 if let Some(f) = self.on_color.clone() {
                     swatch = swatch.on_click(move |_: &ClickEvent, window, cx| {
                         if value != chosen {
@@ -484,7 +503,11 @@ impl RenderOnce for RoleEditor {
                         }
                     });
                 }
-                group = group.child(swatch);
+                group = group.child(if value == chosen {
+                    ringed(c, swatch).into_any_element()
+                } else {
+                    swatch.into_any_element()
+                });
             }
             head = head.child(
                 div()
