@@ -1345,8 +1345,17 @@ fn draw_row(
     if focused_in {
         row = row.shadow(inset_ring());
     }
+    // MessageRow.css `data-replying` (after `data-mention` in the cascade): the row the composer's reply bar aims at.
+    let replying = is_replying(
+        item.msg_id,
+        crate::screens::threads::replying_of(ctx, cx)
+            .filter(|r| Some(r.channel) == ctx.channel)
+            .map(|r| r.msg_id),
+    );
     row = if flash {
         row.bg(color::ACCENT_FLASH)
+    } else if replying {
+        row.bg(color::ACCENT_FAINT)
     } else if item.mention {
         row.bg(color::WARN_SOFT)
     } else if focused_in {
@@ -1354,7 +1363,9 @@ fn draw_row(
     } else {
         row.hover(|s| s.bg(color::BG_3))
     };
-    let bar = if item.mention {
+    let bar = if replying {
+        Some(color::ACCENT)
+    } else if item.mention {
         Some(color::MENTION)
     } else {
         None
@@ -1391,6 +1402,14 @@ fn draw_row(
         row = row.child(bar);
     }
     row.children(placer.out).into_any_element()
+}
+
+/// Whether the row of message `msg` is the one the reply bar aims at (`target`).
+fn is_replying(
+    msg: Option<dilla_client::state::MessageId>,
+    target: Option<dilla_client::state::MessageId>,
+) -> bool {
+    msg.is_some() && msg == target
 }
 
 /// Where Up, Down, Home and End move from row `from` of `count` (Conversation.tsx `rowKey`: the arrows stop at the
@@ -1974,6 +1993,16 @@ mod tests {
         // The same day does not start one.
         let next = item(1, 1_794_441_600 + 3_000);
         assert!(!starts_day(Some(&early), &next, clock));
+    }
+
+    #[test]
+    fn only_the_row_the_reply_bar_aims_at_is_replying() {
+        use dilla_client::state::MessageId;
+        let (a, b) = (MessageId([1; 16]), MessageId([2; 16]));
+        assert!(is_replying(Some(a), Some(a)));
+        assert!(!is_replying(Some(a), Some(b)));
+        assert!(!is_replying(Some(a), None));
+        assert!(!is_replying(None, None), "a row with no id is never it");
     }
 
     #[test]
