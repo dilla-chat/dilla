@@ -145,6 +145,7 @@ from the web's animation, none visible in a reference:
 
 - `d-bar`'s first beat: CSS keeps the second and third bar at rest height until their delay (beat/4, beat/2) has passed;
   the desktop draws them at the phase they would have, once, at the start.
-- The "Reduced motion: Use system setting" choice animates on the desktop: GPUI reports no OS preference, so only "On"
-  reduces.
+- "Reduced motion: Use system setting" follows the OS (Windows animation setting, macOS Reduce motion, GNOME `enable-animations`
+  through the portal on Linux; other Linux desktops animate), read again at most every 10 s on a state change, not on the
+  OS's own notification.
 - The dock's compact row draws no equaliser, as the web's does not (the task brief named it by mistake).

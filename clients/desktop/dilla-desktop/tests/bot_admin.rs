@@ -70,10 +70,14 @@ struct Player {
     /// Card (the default) or the stage bar; `track` false draws the variant with no track playing.
     variant: NowPlayingVariant,
     track: bool,
+    /// The music is playing (the default), or paused.
+    playing: bool,
+    renders: usize,
 }
 
 impl Render for Player {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders += 1;
         let (toggle, skip, stop) = (self.log.clone(), self.log.clone(), self.log.clone());
         let this = cx.entity();
         let queue = self.log.clone();
@@ -97,7 +101,7 @@ impl Render for Player {
                         duration_s: 214.0,
                     }))
                     .position(37.0)
-                    .playing(true)
+                    .playing(self.playing)
                     .meta("YouTube · requested by Ada · harbour")
                     .volume("75%")
                     .can_control(self.can_control, "Join harbour to control playback")
@@ -139,6 +143,8 @@ fn player_of(
         queue_open: false,
         variant,
         track,
+        playing: true,
+        renders: 0,
     });
     let root = host.read_with(cx, |p, _| p.root.clone());
     cx.update(|window, cx| root.focus(window, cx));
@@ -210,6 +216,40 @@ fn the_stage_bar_names_its_up_next_count(cx: &mut TestAppContext) {
         .debug_bounds("now-playing-stage-up-next")
         .expect("the up next count");
     assert!(count.right() <= bar.right(), "{count:?} inside {bar:?}");
+}
+
+/// Task 36b: once its entrance has run, a paused player asks for no repaint at all, and a playing one repaints only for
+/// its equaliser (the stage bar draws it, at a capped rate, so a second of it is about 30 renders).
+#[gpui::test]
+fn a_paused_player_schedules_no_frames_and_a_playing_one_only_its_equaliser(
+    cx: &mut TestAppContext,
+) {
+    use std::time::Duration;
+    let renders_over_a_second = |cx: &mut VisualTestContext, host: &gpui::Entity<Player>| {
+        let before = host.read_with(cx, |p, _| p.renders);
+        for _ in 0..100 {
+            cx.executor().advance_clock(Duration::from_millis(10));
+            cx.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+        }
+        host.read_with(cx, |p, _| p.renders) - before
+    };
+    let (host, cx) = player_of(cx, true, NowPlayingVariant::Stage, true);
+    cx.update(|_, cx| cx.set_reduce_motion(false));
+    // Past the bar's 300ms entrance first.
+    host.update(cx, |_, cx| cx.notify());
+    renders_over_a_second(cx, &host);
+    let playing = renders_over_a_second(cx, &host);
+    assert!(
+        (20..=40).contains(&playing),
+        "{playing} renders while playing"
+    );
+    host.update(cx, |p, cx| {
+        p.playing = false;
+        cx.notify();
+    });
+    renders_over_a_second(cx, &host);
+    assert_eq!(renders_over_a_second(cx, &host), 0, "paused");
 }
 
 /// Task 36: a stage with no track draws nothing (NowPlaying.tsx returns null without one).
