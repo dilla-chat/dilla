@@ -262,6 +262,11 @@ pub struct VoiceUi {
     session: Option<Rc<MediaSession>>,
     /// The stage's focused stream (focus layout), `None`: the grid.
     pub focused: Option<TileKey>,
+    /// Task 36c: when each stage tile entered (`d-up`, CallStage.css:56-62) and when the focused tile's face did
+    /// (CallStage.css:82). Remembered by tile, because the focus layout draws the tiles under other parents and an element's
+    /// own state would be lost, where the web's tile keeps its DOM node.
+    tile_in: dilla_desktop_ui::motion::Entrances<TileKey>,
+    focus_in: dilla_desktop_ui::motion::Entrances<TileKey>,
     /// The tile the arrows move to.
     pub selected: usize,
     /// The selection came from a pointer press, not the keyboard: no selection edge is drawn (the web's tile button shows
@@ -643,6 +648,17 @@ fn stage_ctx(ui: &VoiceUi, channel: &Channel) -> crate::slots::SlotCx {
 /// or Come back). A server whose AFK snapshot is not read yet is asked for it (`Ring::load_afk` reads one at a time) and
 /// shows the ordinary stage meanwhile.
 fn afk_stage(channel: &Channel, w: WindowId, cx: &mut App) -> Option<AnyElement> {
+    // CallStage.css:131: `d-up` over `--duration-focus-in` (`ease`) on the AFK column when the page opens.
+    let enter = |column: Div, cx: &App| {
+        dilla_desktop_ui::motion::up_in(
+            column,
+            "voice-afk-enter",
+            std::time::Duration::ZERO,
+            dilla_desktop_ui::tokens::motion::FOCUS_IN,
+            dilla_desktop_ui::motion::EASE,
+            cx,
+        )
+    };
     let ui = ui_of(w, cx)?;
     let community = channel.community_id;
     let Some(snapshot) = ui.state.ring.afk.get(&community) else {
@@ -677,7 +693,7 @@ fn afk_stage(channel: &Channel, w: WindowId, cx: &mut App) -> Option<AnyElement>
         .child(div().flex_1().min_h_0().child(tracked(
             "voice-afk-page",
             // `.d-call-stage__afk` fills the stage and centres its column.
-            div().size_full().flex().flex_col().child(page),
+            enter(div().size_full().flex().flex_col().child(page), cx),
         )));
     Some(tracked("voice-stage-root", stage).into_any_element())
 }
@@ -1008,6 +1024,89 @@ pub fn simulate(
     }
     ui.state = ui.sim.over(ui.state.clone());
     Ok(())
+}
+
+/// CallStage.css:59-62: the n-th tile's `animation-delay` is 0, 1.5, 3, 4.5 then 6 times `--duration-stagger` (`nth-child`).
+pub fn tile_delay(n: usize) -> std::time::Duration {
+    const STEPS: [f32; 5] = [0.0, 1.5, 3.0, 4.5, 6.0];
+    dilla_desktop_ui::tokens::motion::STAGGER.mul_f32(STEPS[n.min(STEPS.len() - 1)])
+}
+
+/// What the stage's entrances ask of this frame.
+#[derive(Debug, Default, PartialEq)]
+pub struct StageEnter {
+    /// Each tile's time since it entered and its delay, `None` once over (or with reduced motion).
+    pub tiles: Vec<Option<(std::time::Duration, std::time::Duration)>>,
+    /// The focused tile's time since its face entered, `None` once over.
+    pub focus: Option<std::time::Duration>,
+    /// Something is still entering: another frame is wanted.
+    pub running: bool,
+}
+
+impl VoiceUi {
+    /// The stage is drawn at `now` with `keys` as its tiles (`shown`: the call's grid is on screen, else nothing enters and
+    /// what was remembered is forgotten) and `focused` the tile the focus layout shows large. A tile new to the stage enters
+    /// now, delayed by its place; a redraw, or the tiles moving under other parents, never enters one again.
+    pub fn enter_stage(
+        &mut self,
+        keys: &[TileKey],
+        focused: Option<&TileKey>,
+        shown: bool,
+        now: std::time::Instant,
+        reduced: bool,
+    ) -> StageEnter {
+        use dilla_desktop_ui::tokens::motion as token;
+        if !shown {
+            self.tile_in.clear();
+            self.focus_in.clear();
+            return StageEnter::default();
+        }
+        // Reduced motion draws every entrance over; the tiles are still taken in as long past, so that turning motion on
+        // later plays nothing back.
+        let seen = if reduced {
+            now.checked_sub(std::time::Duration::from_secs(3600))
+                .unwrap_or(now)
+        } else {
+            now
+        };
+        let tiles_running = self.tile_in.sync(
+            keys.iter()
+                .enumerate()
+                .map(|(n, k)| (k.clone(), tile_delay(n))),
+            seen,
+            token::ENTER,
+        );
+        let focus_running = self.focus_in.sync(
+            focused
+                .into_iter()
+                .map(|k| (k.clone(), std::time::Duration::ZERO)),
+            seen,
+            token::FOCUS_IN,
+        );
+        if reduced {
+            return StageEnter {
+                tiles: vec![None; keys.len()],
+                ..StageEnter::default()
+            };
+        }
+        let live = |age: std::time::Duration, delay: std::time::Duration| {
+            (age < delay + token::ENTER).then_some((age, delay))
+        };
+        StageEnter {
+            tiles: keys
+                .iter()
+                .map(|k| {
+                    let (age, delay) = self.tile_in.of(k, now)?;
+                    live(age, delay)
+                })
+                .collect(),
+            focus: focused
+                .and_then(|k| self.focus_in.of(k, now))
+                .map(|(age, _)| age)
+                .filter(|age| *age < token::FOCUS_IN),
+            running: tiles_running || focus_running,
+        }
+    }
 }
 
 /// One stage tile: a person (their camera when it is on), or a person's screen share.
@@ -2110,7 +2209,18 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         div()
             .flex()
             .flex_col()
-            .child(tracked_box("voice-dock", card))
+            // VoiceDock.css:3: the dock rises in (`d-up` over `--duration-dock`, `--ease-out`) when a call opens it.
+            .child(tracked_box(
+                "voice-dock",
+                dilla_desktop_ui::motion::up_in(
+                    card,
+                    "voice-dock-enter",
+                    std::time::Duration::ZERO,
+                    dilla_desktop_ui::tokens::motion::DOCK,
+                    dilla_desktop_ui::tokens::motion::EASE_OUT,
+                    cx,
+                ),
+            ))
             .child(div().h(px(m::DOCK_INSET)).bg(color::BG))
             .into_any_element(),
     )
@@ -2509,6 +2619,32 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .collect();
         settle_meters(w, speaking, window, cx)
     };
+    // Task 36c: which tiles are entering (CallStage.css:56-62, 82); the stage asks for frames while any is.
+    let enter = {
+        let now = cx.background_executor().now();
+        let reduced = cx.reduce_motion();
+        let (state, focused) = {
+            let u = ui_of(w, cx)?;
+            (u.state.clone(), u.focused.clone())
+        };
+        let keys = tiles(&state, channel.id);
+        let hidden = media_hidden(&state, channel.id);
+        let focused = focused
+            .filter(|k| !hidden && keys.contains(k))
+            .filter(|_| keys.len() > 1);
+        let in_call = state.voice.call.phase != CallPhase::Idle
+            && state.voice.call.channel == Some(channel.id);
+        ui_mut(w, cx).enter_stage(
+            &keys,
+            focused.as_ref(),
+            in_call && !keys.is_empty(),
+            now,
+            reduced,
+        )
+    };
+    if enter.running {
+        window.request_animation_frame();
+    }
     let ui = ui_of(w, cx)?;
     let bounds = ui.menu.bounds.clone();
     let state = ui.state.clone();
@@ -2582,7 +2718,7 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .into_any_element()
     });
     let body = if !in_call {
-        preview(&state, channel)
+        preview(&state, channel, cx)
     } else if keys.is_empty() {
         div()
             .flex_1()
@@ -2601,7 +2737,26 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         // (and its focused caption, face and tools).
         let at = keys.iter().position(|k| k == f).unwrap_or(0);
         let mut views = tile_views;
+        let mut ages = enter.tiles.clone();
         let main = views.remove(at);
+        ages.remove(at);
+        // CallStage.css:82: the focused tile's face rises in (`d-up` over `--duration-focus-in`) when it takes the focus; its
+        // wrapper has no entrance (`animation-name: none`), and the filmstrip's tiles keep theirs.
+        let main_box = div()
+            .h_full()
+            .aspect_ratio(16.0 / 9.0)
+            .max_w_full()
+            .child(main);
+        let main_box = match enter.focus {
+            Some(age) => dilla_desktop_ui::motion::rise_style(
+                main_box,
+                age,
+                std::time::Duration::ZERO,
+                dilla_desktop_ui::tokens::motion::FOCUS_IN,
+                dilla_desktop_ui::tokens::motion::EASE_OUT,
+            ),
+            None => main_box,
+        };
         div()
             .flex_1()
             .min_h_0()
@@ -2609,21 +2764,23 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .flex_col()
             .gap(px(m::TILE_GAP))
             .child(
-                div().flex_1().min_h_0().flex().justify_center().child(
-                    div()
-                        .h_full()
-                        .aspect_ratio(16.0 / 9.0)
-                        .max_w_full()
-                        .child(main),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .justify_center()
+                    .child(main_box),
             )
             .child(div().flex().justify_center().gap(px(m::TILE_GAP)).children(
-                views.into_iter().map(|v| {
-                    div()
-                        .flex_none()
-                        .w(px(m::FILM_TILE_W))
-                        .aspect_ratio(16.0 / 9.0)
-                        .child(v)
+                views.into_iter().zip(ages).map(|(v, age)| {
+                    stage_tile_enter(
+                        div()
+                            .flex_none()
+                            .w(px(m::FILM_TILE_W))
+                            .aspect_ratio(16.0 / 9.0)
+                            .child(v),
+                        age,
+                    )
                 }),
             ))
             .into_any_element()
@@ -2639,14 +2796,22 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
             .justify_center()
             .gap(px(m::TILE_GAP))
             .p(px(m::GRID_PAD))
-            .children(tile_views.into_iter().map(|v| {
-                div()
-                    .flex_none()
-                    .w(relative(share))
-                    .max_w(px(max))
-                    .aspect_ratio(16.0 / 9.0)
-                    .child(v)
-            }))
+            .children(
+                tile_views
+                    .into_iter()
+                    .zip(enter.tiles.clone())
+                    .map(|(v, age)| {
+                        stage_tile_enter(
+                            div()
+                                .flex_none()
+                                .w(relative(share))
+                                .max_w(px(max))
+                                .aspect_ratio(16.0 / 9.0)
+                                .child(v),
+                            age,
+                        )
+                    }),
+            )
             .into_any_element()
     };
     // Ruling Z: the voice header's topic is "{n} in voice" once joined, else "voice channel". Shell.tsx counts the
@@ -2715,6 +2880,20 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
         .children(profile_card)
         .children(full_view);
     Some(tracked("voice-stage-root", stage).into_any_element())
+}
+
+/// A stage tile's box entering with `d-up` over `--duration-enter` on `--ease-out` (CallStage.css:56), `age` into it.
+fn stage_tile_enter(tile: Div, age: Option<(std::time::Duration, std::time::Duration)>) -> Div {
+    match age {
+        Some((age, delay)) => dilla_desktop_ui::motion::rise_style(
+            tile,
+            age,
+            delay,
+            dilla_desktop_ui::tokens::motion::ENTER,
+            dilla_desktop_ui::tokens::motion::EASE_OUT,
+        ),
+        None => tile,
+    }
 }
 
 /// The stage's keys: the arrows move between tiles, Enter focuses the selected one, Escape leaves focus mode.
@@ -4040,7 +4219,7 @@ fn notice(state: &AppState) -> AnyElement {
 /// The not-joined preview (CallStage.tsx `preview`, Signal §5.6): the faces of who is inside (each 48px, 10px over the
 /// one before with a 3px `--bg` ring, a 5px `--ok` ring on whoever speaks), the room (16px 700), who is there (12px
 /// `--fg-2`) and the green Join voice. No join while a block holds it back (Flow 06, Task 18's `join_held`).
-fn preview(state: &AppState, channel: &Channel) -> AnyElement {
+fn preview(state: &AppState, channel: &Channel, cx: &App) -> AnyElement {
     let people = people(state, channel);
     let names: Vec<&str> = people.iter().map(|p| p.name.as_str()).collect();
     let who = match names.as_slice() {
@@ -4136,20 +4315,27 @@ fn preview(state: &AppState, channel: &Channel) -> AnyElement {
                 .on_click(move |_, window, cx| join(id, wid(window), cx)),
         )
     });
-    div()
-        .id("voice-preview")
-        .flex_1()
-        .min_h_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(px(m::PREVIEW_GAP))
-        .p(px(m::PREVIEW_PAD))
-        .child(faces)
-        .child(text_block)
-        .children(join_button)
-        .into_any_element()
+    // CallStage.css:109: the preview rises in (`d-up` over `--duration-focus-in`, `ease`) when the stage opens it.
+    dilla_desktop_ui::motion::up_in(
+        div()
+            .id("voice-preview")
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(m::PREVIEW_GAP))
+            .p(px(m::PREVIEW_PAD))
+            .child(faces)
+            .child(text_block)
+            .children(join_button),
+        "voice-preview-enter",
+        std::time::Duration::ZERO,
+        dilla_desktop_ui::tokens::motion::FOCUS_IN,
+        dilla_desktop_ui::motion::EASE,
+        cx,
+    )
 }
 
 /// The shortcut keycaps of the call bar's mute and deafen (shortcuts.ts `voiceKeycapText`).
@@ -5238,5 +5424,92 @@ mod tests {
         assert_eq!(band(2), (0.46, 560.0));
         assert_eq!(band(4), (0.46, 420.0));
         assert_eq!(band(12), (0.315, 340.0));
+    }
+}
+
+#[cfg(test)]
+mod entrance_tests {
+    use super::*;
+    use dilla_desktop_ui::tokens::motion as token;
+    use std::time::{Duration, Instant};
+
+    fn key(n: u8) -> TileKey {
+        TileKey {
+            user: UserId([n; 16]),
+            device: DeviceId([n; 16]),
+            screen: false,
+        }
+    }
+
+    /// CallStage.css:59-62: the tiles' delays are 0, 1.5, 3, 4.5, then 6 times `--duration-stagger`.
+    #[test]
+    fn the_tile_delays_follow_the_nth_child_rules() {
+        let ms = |n| tile_delay(n).as_millis();
+        assert_eq!(
+            [ms(0), ms(1), ms(2), ms(3), ms(4), ms(5), ms(9)],
+            [0, 60, 120, 180, 240, 240, 240]
+        );
+    }
+
+    /// A tile enters once, delayed by its place; a redraw, or the focus layout moving the tiles, enters none again; the
+    /// focused tile's face enters when it takes the focus; nothing is remembered once the call's grid is not shown; reduced
+    /// motion draws every tile over and plays nothing back when motion returns.
+    #[test]
+    fn stage_tiles_enter_once_and_the_focused_face_when_it_takes_the_focus() {
+        let mut ui = VoiceUi::default();
+        let keys = [key(1), key(2), key(3)];
+        let t0 = Instant::now();
+        let first = ui.enter_stage(&keys, None, true, t0, false);
+        assert!(first.running && first.focus.is_none());
+        assert_eq!(first.tiles[1], Some((Duration::ZERO, tile_delay(1))));
+        // 50ms later: the tiles run on, nothing re-enters.
+        let mid = ui.enter_stage(&keys, None, true, t0 + Duration::from_millis(50), false);
+        assert_eq!(mid.tiles[0].unwrap().0, Duration::from_millis(50));
+        // Focus one: its face enters, the tiles keep their clocks (the layout moved them under other parents).
+        let at = t0 + Duration::from_secs(5);
+        let calm = ui.enter_stage(&keys, None, true, at, false);
+        assert!(!calm.running && calm.tiles.iter().all(Option::is_none));
+        let focus = ui.enter_stage(&keys, Some(&keys[1]), true, at, false);
+        assert!(focus.running && focus.tiles.iter().all(Option::is_none));
+        assert_eq!(focus.focus, Some(Duration::ZERO));
+        let over = ui.enter_stage(&keys, Some(&keys[1]), true, at + token::FOCUS_IN, false);
+        assert_eq!(
+            over,
+            StageEnter {
+                tiles: vec![None; 3],
+                focus: None,
+                running: false
+            }
+        );
+        // A new tile joins: it enters now, delayed by its place.
+        let more = [key(1), key(2), key(3), key(4)];
+        let joined = ui.enter_stage(&more, None, true, at + token::FOCUS_IN, false);
+        assert_eq!(joined.tiles[3], Some((Duration::ZERO, tile_delay(3))));
+        assert!(joined.tiles[..3].iter().all(Option::is_none));
+        // The call's grid goes (leave, preview): everything is forgotten and enters again.
+        ui.enter_stage(&more, None, false, at, false);
+        assert!(ui.enter_stage(&more, None, true, at, false).tiles[0].is_some());
+        // Reduced motion.
+        let mut ui = VoiceUi::default();
+        let still = ui.enter_stage(&keys, Some(&keys[0]), true, t0, true);
+        assert_eq!(
+            still,
+            StageEnter {
+                tiles: vec![None; 3],
+                focus: None,
+                running: false
+            }
+        );
+        let on = ui.enter_stage(
+            &keys,
+            Some(&keys[0]),
+            true,
+            t0 + Duration::from_millis(10),
+            false,
+        );
+        assert!(
+            !on.running && on.tiles.iter().all(Option::is_none),
+            "{on:?}"
+        );
     }
 }

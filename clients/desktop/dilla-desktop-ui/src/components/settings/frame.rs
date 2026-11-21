@@ -10,7 +10,9 @@
 //! [`section_header`] and [`group_heading`] draw the section rhythm the CSS gives a section's children; rows that touch
 //! (one group) go in their own column with no gap, as [`super::row::GroupPosition`] describes.
 
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
@@ -33,6 +35,31 @@ type CloseHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 struct Memory {
     panel: FocusHandle,
     focus: OpenFocus,
+    /// Whether this frame arrived as a handoff from the other settings frame, decided when it first drew (SettingsFrame.css:6
+    /// `data-handoff`): its panel then has no entrance, for as long as this frame stays.
+    handoff: Option<bool>,
+}
+
+/// How recently the other settings frame must have drawn for this one to be its replacement (SettingsFrame.tsx `HANDOFF_MS`
+/// is 100 ms between the one's close and the other's open; a frame here draws at every change, so a little more room).
+const HANDOFF: Duration = Duration::from_millis(250);
+
+/// The settings frame each window drew last and when: a frame that arrives as the other leaves is a handoff.
+#[derive(Default)]
+struct LastFrame(HashMap<gpui::WindowId, (ElementId, Instant)>);
+
+impl gpui::Global for LastFrame {}
+
+/// Notes that `id` drew in `window` now, and whether a different frame drew there within [`HANDOFF`] before it.
+fn arrived_as_handoff(id: &ElementId, window: &Window, cx: &mut App) -> bool {
+    let last = &mut cx.default_global::<LastFrame>().0;
+    let key = window.window_handle().window_id();
+    let now = Instant::now();
+    let handoff = last
+        .get(&key)
+        .is_some_and(|(other, at)| other != id && now.duration_since(*at) < HANDOFF);
+    last.insert(key, (id.clone(), now));
+    handoff
 }
 
 impl HasOpenFocus for Memory {
@@ -255,6 +282,7 @@ impl RenderOnce for SettingsFrame {
         let memory = window.use_keyed_state((self.id.clone(), "frame"), cx, |_, cx| Memory {
             panel: cx.focus_handle().tab_stop(true),
             focus: OpenFocus::default(),
+            handoff: None,
         });
         let panel = memory.read(cx).panel.clone();
         sync_open_focus(&memory, self.open, &panel, panel.clone(), window, cx);
@@ -262,6 +290,8 @@ impl RenderOnce for SettingsFrame {
         if !self.open {
             return root.size_0().into_any_element();
         }
+        let handoff = arrived_as_handoff(&self.id, window, cx);
+        let handoff = memory.update(cx, |m, _| *m.handoff.get_or_insert(handoff));
 
         let on_close = self.on_close;
         let close_with = move |window: &mut Window, cx: &mut App| {
@@ -328,7 +358,9 @@ impl RenderOnce for SettingsFrame {
                 .px(px(40.0))
                 .pt(px(36.0))
                 .pb(px(60.0))
-                .child(
+                // SettingsFrame.css:30: the section rises in (`d-up` over `--duration-slow`) each time a section opens, not
+                // when its own content redraws: the entrance is keyed to the section's title.
+                .child(crate::motion::up_in(
                     div()
                         .flex()
                         .flex_col()
@@ -336,7 +368,15 @@ impl RenderOnce for SettingsFrame {
                         .w_full()
                         .max_w(px(section_width(self.wide)))
                         .children(self.body),
-                ),
+                    ElementId::from(SharedString::from(format!(
+                        "settings-section-{}",
+                        self.title
+                    ))),
+                    std::time::Duration::ZERO,
+                    motion::SLOW,
+                    motion::EASE_OUT,
+                    cx,
+                )),
         );
         if let Some(footer) = self.footer {
             pane = pane.child(
@@ -399,7 +439,7 @@ impl RenderOnce for SettingsFrame {
             .justify_center()
             .bg(color::BG)
             .occlude()
-            .child(crate::motion::modal_in(
+            .child(crate::motion::modal_in_unless(
                 div()
                     .id((self.id.clone(), "panel"))
                     .modal_dialog(self.title.clone())
@@ -425,9 +465,10 @@ impl RenderOnce for SettingsFrame {
                     .child(side)
                     .child(pane)
                     .child(close),
-                // SettingsFrame.css:5: the panel's `d-modal` over `--duration-modal`.
+                // SettingsFrame.css:5: the panel's `d-modal` over `--duration-modal`; none for a handoff (css:6).
                 (self.id.clone(), "panel-enter"),
                 motion::MODAL,
+                handoff,
                 cx,
             ));
         deferred(frame).with_priority(8).into_any_element()
@@ -442,5 +483,34 @@ mod tests {
     fn the_content_column_is_720_or_1024_wide() {
         assert_eq!(section_width(false), 720.0);
         assert_eq!(section_width(true), 1024.0);
+    }
+
+    /// SettingsFrame.css:6: a frame that draws as the other one leaves is a handoff, which has no entrance; one that opens on
+    /// its own, or long after the other, or again after itself, is not.
+    #[gpui::test]
+    fn a_frame_that_replaces_the_other_is_a_handoff(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        let user: ElementId = "user-settings".into();
+        let server: ElementId = "server-settings".into();
+        let mut arrive = |id: &ElementId, wait: Duration| {
+            std::thread::sleep(wait);
+            window.update(|window, cx| arrived_as_handoff(id, window, cx))
+        };
+        assert!(
+            !arrive(&user, Duration::ZERO),
+            "the first frame opens on its own"
+        );
+        assert!(
+            !arrive(&user, Duration::ZERO),
+            "a frame is no handoff from itself"
+        );
+        assert!(
+            arrive(&server, Duration::ZERO),
+            "the other frame replacing it is one"
+        );
+        assert!(
+            !arrive(&user, HANDOFF * 2),
+            "a frame long after the other is not"
+        );
     }
 }

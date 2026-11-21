@@ -195,4 +195,7 @@ visible in a reference:
   above it entering by itself, as the web's `::backdrop` and `<dialog>` do.
 - The share picker is a `Dialog` here (the web's is a popover above the Share button), so its panel enters with the
   popover's `--duration-popover` but a scrim fades in behind it.
-- Overlays repaint at the display's frame rate while they enter (at most 450 ms); the badge pop at 30 frames a second.
+- The video player's ⋮ menu is the app's `ActionMenu`, so it enters with `d-modal` over 160 ms; the web reference's is
+  Chromium's native overflow menu, which has none. The shot is taken still (every shot through the automation driver and the
+  video-player test sets reduced motion), so it compares the end state.
+- Overlays repaint at the display's frame rate while they enter (at most 450 ms).

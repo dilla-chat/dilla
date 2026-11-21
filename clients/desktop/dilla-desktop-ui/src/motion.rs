@@ -605,12 +605,14 @@ where
         return el.into_any_element();
     }
     el.with_animation(id, Animation::new(run), move |el, delta| {
-        // The finished entrance is the element itself, with nothing laid over it.
+        // Always positioned, so what is inside it is laid out the same during the run and after it; the finished entrance
+        // has nothing else laid over it.
+        let el = el.relative();
         if delta >= 1.0 {
             return el;
         }
         let now = at(run.mul_f32(delta), run, motion::EASE_OUT);
-        el.relative().top(px(now.offset_y)).opacity(now.opacity)
+        el.top(px(now.offset_y)).opacity(now.opacity)
     })
     .into_any_element()
 }
@@ -692,9 +694,6 @@ pub fn scrim_layer(id: impl Into<ElementId>, scrim: Hsla, cx: &App) -> AnyElemen
         .into_any_element()
 }
 
-/// How often a popping badge repaints: its 450ms pop reads as smooth at 30 frames a second, like the other indicators.
-const POP_FPS: f32 = INDICATOR_FPS;
-
 /// A badge popping in with `d-pop` over `run` on `curve`, once per mount. `build(None)` draws the badge at its size and
 /// `build(Some(scale))` a copy of it with every length and its text multiplied by the scale (a copy must not share the
 /// badge's element id): GPUI cannot scale an element, so the pop redraws the badge at each scale, about its centre, over a
@@ -707,9 +706,6 @@ pub fn pop_in(
     cx: &App,
     build: impl Fn(Option<f32>) -> AnyElement + 'static,
 ) -> AnyElement {
-    if cx.reduce_motion() {
-        return build(None);
-    }
     let frame = move |scale: Option<f32>| {
         let slot = div().relative().flex().flex_none();
         match scale {
@@ -727,18 +723,19 @@ pub fn pop_in(
                 ),
         }
     };
+    // The same slot holds the badge at rest, in motion and under reduced motion, so the stills exercise what runs. There is
+    // no frame cap: a cap is a timer per badge, and N badges popping at once would notify their view N times a window.
+    if cx.reduce_motion() {
+        return frame(None).into_any_element();
+    }
     frame(Some(POP_FROM))
-        .with_animation(
-            id,
-            Animation::new(run).with_max_fps(POP_FPS),
-            move |_, delta| {
-                if delta >= 1.0 {
-                    frame(None)
-                } else {
-                    frame(Some(pop_at(run.mul_f32(delta), run, curve)))
-                }
-            },
-        )
+        .with_animation(id, Animation::new(run), move |_, delta| {
+            if delta >= 1.0 {
+                frame(None)
+            } else {
+                frame(Some(pop_at(run.mul_f32(delta), run, curve)))
+            }
+        })
         .into_any_element()
 }
 
@@ -850,6 +847,23 @@ where
         }
     })
     .into_any_element()
+}
+
+/// `d-up` drawn on `el` by hand, `elapsed` into an entrance whose delay is `delay` (the entrances a list remembers per key,
+/// [`Entrances`], where an element's own state would be lost): `el` is in the flow of its parent, and is returned as it is
+/// once the entrance is over.
+pub fn rise_style<E: Styled>(
+    el: E,
+    elapsed: Duration,
+    delay: Duration,
+    run: Duration,
+    curve: [f32; 4],
+) -> E {
+    if elapsed >= delay + run {
+        return el;
+    }
+    let (opacity, offset) = rise_after_at(elapsed, delay, run, curve);
+    el.relative().top(px(offset)).opacity(opacity)
 }
 
 /// `el` entering with `d-invite-up` over `run` on `curve` (see [`up_in`], whose keyframe it shares).
@@ -1447,6 +1461,15 @@ mod tests {
                     .into_any_element()
             })
         });
+    }
+
+    /// An entrance the web switches off (a settings handoff) asks for no frames, as one that runs asks for some.
+    #[gpui::test]
+    fn a_still_modal_asks_for_no_frames(cx: &mut gpui::TestAppContext) {
+        let run =
+            |still: bool| move |cx: &App| modal_in_unless(div(), "m", motion::MODAL, still, cx);
+        assert!(renders_over(cx, false, 400, run(false)) > 3);
+        assert_eq!(renders_over(cx, false, 400, run(true)), 0);
     }
 
     /// An overlay that is not drawn (a closed menu, a hidden tooltip) schedules no frames at all.
