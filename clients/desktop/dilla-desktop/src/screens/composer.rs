@@ -1198,19 +1198,23 @@ impl Render for Composer {
             .bg(color::BG)
             .px(len(16.))
             .pb(len(14.))
-            .children(notice.map(|n| {
-                div().mb(len(4.)).children(paragraph(
-                    &n,
-                    text::SM,
-                    dilla_desktop_ui::text::root_line_height(text::SM),
-                    color::FG_2,
-                    (width - 32.0).max(1.0),
-                ))
-            }))
             // ComposerArea.tsx `top`: the command's bar, then the reply bar and the tray.
             .children(chips_bar)
             .children(reply_bar)
             .children(tray.map(|t| div().debug_selector(|| "composer-tray".to_owned()).child(t)))
+            // Composer.tsx: the notice comes after `top`, just above the box (Composer.css `d-composer__notice`).
+            .children(notice.map(|n| {
+                div()
+                    .debug_selector(|| "composer-notice".to_owned())
+                    .mb(len(4.))
+                    .children(paragraph(
+                        &n,
+                        text::SM,
+                        dilla_desktop_ui::text::root_line_height(text::SM),
+                        color::FG_2,
+                        (width - 32.0).max(1.0),
+                    ))
+            }))
             .child(box_)
             .children(reason.map(|r| {
                 div().mt(len(4.)).children(paragraph(
@@ -1385,6 +1389,86 @@ mod tests {
         assert!(
             tray.bottom() <= boxed.top(),
             "the tray ends above the box: {tray:?} {boxed:?}"
+        );
+    }
+
+    /// Composer.tsx: the slow-mode notice comes after `top` (the reply bar and the tray), just above the box.
+    #[gpui::test]
+    fn the_slow_mode_notice_is_under_the_tray_and_over_the_box(cx: &mut gpui::TestAppContext) {
+        use dilla_client::state::attachments::{TrayItem, TrayPhase};
+        use dilla_client::state::messages::{Timeline, TimelineItem, TimelineItemState};
+        use dilla_client::state::{ChannelGroupState, MessageId};
+        cx.update(crate::install);
+        let now = 1_000_000_u64;
+        let (mut state, channel, _) = world(0, false);
+        state.channels[0].slowmode = 30;
+        state.timelines.insert(
+            channel,
+            Timeline {
+                channel_id: channel,
+                group: ChannelGroupState::Active,
+                items: vec![TimelineItem {
+                    key: "s1".into(),
+                    state: TimelineItemState::Ok,
+                    reason: String::new(),
+                    sender_user: state.account.user_id,
+                    sender_device: None,
+                    own: true,
+                    bot: false,
+                    ts: now - 10,
+                    body: "x".into(),
+                    msg_id: Some(MessageId([1; 16])),
+                    seq: Some(1),
+                    edited: false,
+                    reply: None,
+                    reactions: Vec::new(),
+                    pinned: false,
+                    attachments: Vec::new(),
+                    mention: false,
+                    actions: Vec::new(),
+                }],
+                has_earlier: false,
+            },
+        );
+        state.attachments.trays.insert(
+            channel,
+            vec![TrayItem {
+                id: "t1".into(),
+                name: "loot.txt".into(),
+                size: 39,
+                mime: "text/plain".into(),
+                image: false,
+                phase: TrayPhase::Ready,
+                reason: String::new(),
+            }],
+        );
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.opened_s = Some(now - 60);
+            c.set_slots(SlotCx {
+                channel: Some(channel),
+                state: std::sync::Arc::new(state),
+                clock: crate::screens::shell::Clock::Fixed { now, utc: true },
+                ..SlotCx::default()
+            });
+        });
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let tray = vcx
+            .debug_bounds("composer-tray")
+            .expect("the tray is drawn");
+        let notice = vcx
+            .debug_bounds("composer-notice")
+            .expect("the slow-mode notice is drawn");
+        let boxed = vcx.debug_bounds("composer-box").expect("the box");
+        assert!(
+            tray.bottom() <= notice.top(),
+            "the notice is under the tray: {tray:?} {notice:?}"
+        );
+        assert!(
+            notice.bottom() <= boxed.top(),
+            "the notice is over the box: {notice:?} {boxed:?}"
         );
     }
 
