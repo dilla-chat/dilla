@@ -10,8 +10,12 @@
 //! on a thread of its own, one at a time, brings the next, which is applied (and the windows redrawn) when it arrives. A
 //! read that cannot answer keeps the value already known. The OS is asked again when the account's state moves, at most
 //! every [`OS_REREAD`], not on the OS's own change notification.
+//!
+//! The cache is the app's (a GPUI global), not the process's, and the read goes through an [`OsReader`]: the shipping app
+//! reads on a thread of its own ([`ThreadReader`]); an app on GPUI's test scheduler never asks the OS (its reads answer
+//! nothing), and a test gives the cache a reader it answers itself, on the test's thread.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dilla_client::state::AppState;
@@ -39,9 +43,39 @@ struct Shared {
     setting: MotionSetting,
 }
 
-/// The OS's answer, kept. [`Self::follow`] applies the answer it has and asks for a fresh one on a thread of its own.
-#[derive(Clone, Default)]
-pub struct OsMotionCache(Arc<Mutex<Shared>>);
+/// How a read of the OS runs: [`Self::start`] returns at once and the answer (`None`: it could not say) is sent on
+/// `answer` when it comes; a dropped `answer` is no answer.
+pub trait OsReader: Send + Sync + 'static {
+    fn start(&self, answer: tokio::sync::oneshot::Sender<Option<bool>>);
+}
+
+/// The shipping read: the OS asked on a thread of its own, so a portal that is slow or never answers holds no window and
+/// no executor thread.
+pub struct ThreadReader;
+
+impl OsReader for ThreadReader {
+    fn start(&self, answer: tokio::sync::oneshot::Sender<Option<bool>>) {
+        std::thread::spawn(move || {
+            let _ = answer.send(os_reduces());
+        });
+    }
+}
+
+/// The read of an app on GPUI's test scheduler: the OS is not asked (no thread, no portal), so nothing answers.
+struct NoOs;
+
+impl OsReader for NoOs {
+    fn start(&self, _answer: tokio::sync::oneshot::Sender<Option<bool>>) {}
+}
+
+/// The OS's answer, kept, and how it is read. [`Self::follow`] applies the answer it has and starts a fresh read.
+#[derive(Clone)]
+pub struct OsMotionCache {
+    shared: Arc<Mutex<Shared>>,
+    reader: Arc<dyn OsReader>,
+}
+
+impl gpui::Global for OsMotionCache {}
 
 impl OsMotion for OsMotionCache {
     fn reduces(&self) -> bool {
@@ -50,14 +84,29 @@ impl OsMotion for OsMotionCache {
 }
 
 impl OsMotionCache {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    /// A cache that reads the OS with `reader`, knowing nothing yet.
+    pub fn new(reader: impl OsReader) -> Self {
+        Self {
+            shared: Arc::default(),
+            reader: Arc::new(reader),
+        }
     }
 
-    /// The app's cache of the real OS.
-    pub fn global() -> &'static Self {
-        static OS: OnceLock<OsMotionCache> = OnceLock::new();
-        OS.get_or_init(Self::default)
+    fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The app's cache: the real OS read on a thread of its own, or, for an app on GPUI's test scheduler, no read.
+    pub fn of(cx: &mut App) -> Self {
+        if !cx.has_global::<Self>() {
+            let cache = if cx.is_test() {
+                Self::new(NoOs)
+            } else {
+                Self::new(ThreadReader)
+            };
+            cx.set_global(cache);
+        }
+        cx.global::<Self>().clone()
     }
 
     /// Whether a read should start now: none under way and the last answer older than [`OS_REREAD`]. Starting one marks it.
@@ -85,22 +134,15 @@ impl OsMotionCache {
         (changed, shared.setting)
     }
 
-    /// Applies `setting` with what is known of the OS, and starts a read of the OS (`read`, on a thread of its own) when
-    /// one is due; its answer is applied when it arrives, with the choice the latest call brought.
-    pub fn follow(
-        &self,
-        setting: MotionSetting,
-        read: impl FnOnce() -> Option<bool> + Send + 'static,
-        cx: &mut App,
-    ) {
+    /// Applies `setting` with what is known of the OS, and starts a read of the OS (the cache's [`OsReader`], which does
+    /// not wait for it) when one is due; its answer is applied when it arrives, with the choice the latest call brought.
+    pub fn follow(&self, setting: MotionSetting, cx: &mut App) {
         cx.set_reduce_motion(reduces(setting, self));
         if !self.begin(setting) {
             return;
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(read());
-        });
+        self.reader.start(tx);
         let cache = self.clone();
         cx.spawn(async move |cx| {
             let answer = rx.await.ok().flatten();
@@ -124,7 +166,7 @@ pub fn reduces(setting: MotionSetting, os: &impl OsMotion) -> bool {
 
 /// The account's state moved: the app takes the motion it saved.
 pub fn follow(state: &AppState, cx: &mut App) {
-    OsMotionCache::global().follow(state.profile.reduce_motion, os_reduces, cx);
+    OsMotionCache::of(cx).follow(state.profile.reduce_motion, cx);
 }
 
 /// The `enable-animations` answer of the portal's `Read` (a bool, wrapped in a variant once or twice by the portal's
@@ -139,7 +181,7 @@ fn animations_off(value: &zbus::zvariant::Value<'_>) -> Option<bool> {
     }
 }
 
-/// Asks the OS, on the thread [`OsMotionCache::follow`] gives it (`None` when it cannot say).
+/// Asks the OS, on the thread [`ThreadReader`] gives it (`None` when it cannot say).
 #[cfg(target_os = "linux")]
 fn os_reduces() -> Option<bool> {
     let conn = zbus::blocking::Connection::session().ok()?;
@@ -200,7 +242,6 @@ fn os_reduces() -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Fake(bool);
     impl OsMotion for Fake {
@@ -231,26 +272,62 @@ mod tests {
         assert_eq!(animations_off(&Value::U32(1)), None);
     }
 
-    /// The saved choice reaches the app at once ("On" and "Off", which do not ask the OS).
+    /// A reader the test answers itself, on its own thread: it keeps the answer channel of each read under way.
+    #[derive(Clone, Default)]
+    struct Scripted(Arc<Mutex<Vec<tokio::sync::oneshot::Sender<Option<bool>>>>>);
+
+    impl OsReader for Scripted {
+        fn start(&self, answer: tokio::sync::oneshot::Sender<Option<bool>>) {
+            self.0.lock().unwrap().push(answer);
+        }
+    }
+
+    impl Scripted {
+        fn pending(&self) -> usize {
+            self.0.lock().unwrap().len()
+        }
+
+        fn answer(&self, value: Option<bool>) {
+            let tx = self.0.lock().unwrap().pop().expect("a read under way");
+            tx.send(value).unwrap();
+        }
+    }
+
+    /// The saved choice reaches the app at once ("On" and "Off", which do not wait for the OS).
     #[gpui::test]
     fn the_saved_choice_sets_the_apps_reduced_motion(cx: &mut gpui::TestAppContext) {
+        let cache = OsMotionCache::new(Scripted::default());
         cx.update(|cx| {
-            let cache = OsMotionCache::default();
-            let mut state = AppState::default();
-            state.profile.reduce_motion = MotionSetting::On;
-            cache.follow(state.profile.reduce_motion, || None, cx);
+            cache.follow(MotionSetting::On, cx);
             assert!(cx.reduce_motion());
-            state.profile.reduce_motion = MotionSetting::Off;
-            cache.follow(state.profile.reduce_motion, || None, cx);
+            cache.follow(MotionSetting::Off, cx);
             assert!(!cx.reduce_motion());
         });
+    }
+
+    /// An app on the test scheduler has its own cache, which never asks the real OS: a read answers nothing, and the app
+    /// animates.
+    #[gpui::test]
+    fn an_app_under_test_never_asks_the_os(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut state = AppState::default();
+            state.profile.reduce_motion = MotionSetting::System;
+            follow(&state, cx);
+            assert!(!cx.reduce_motion());
+        });
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| cx.reduce_motion()));
+        assert!(
+            cx.update(|cx| OsMotionCache::of(cx).lock().read_at.is_some()),
+            "the read ended"
+        );
     }
 
     /// An answer that cannot be given (a timeout, a missing portal) keeps the value known, and a read that is under way
     /// holds off every other.
     #[test]
     fn a_read_without_an_answer_keeps_the_known_value_and_one_read_runs_at_a_time() {
-        let cache = OsMotionCache::default();
+        let cache = OsMotionCache::new(Scripted::default());
         assert!(cache.begin(MotionSetting::System));
         assert!(!cache.begin(MotionSetting::System), "one in flight");
         assert_eq!(cache.finish(Some(true)), (true, MotionSetting::System));
@@ -267,40 +344,20 @@ mod tests {
     /// read however often the state moves, and the answer, when it comes, is applied.
     #[gpui::test]
     fn a_slow_portal_blocks_nothing_and_is_asked_once(cx: &mut gpui::TestAppContext) {
-        let cache = OsMotionCache::default();
-        let reads = Arc::new(AtomicUsize::new(0));
-        let (release, wait) = std::sync::mpsc::channel::<Option<bool>>();
-        let wait = Arc::new(Mutex::new(Some(wait)));
-        cx.executor().allow_parking();
+        let reader = Scripted::default();
+        let cache = OsMotionCache::new(reader.clone());
         for _ in 0..3 {
-            let (reads, wait) = (reads.clone(), wait.clone());
             cx.update(|cx| {
-                cache.follow(
-                    MotionSetting::System,
-                    move || {
-                        reads.fetch_add(1, Ordering::SeqCst);
-                        let wait = wait.lock().unwrap().take().expect("one read");
-                        wait.recv().ok().flatten()
-                    },
-                    cx,
-                );
+                cache.follow(MotionSetting::System, cx);
                 assert!(!cx.reduce_motion(), "animates until the OS has answered");
             });
-        }
-        // The thread has started its one read, which is still waiting.
-        while reads.load(Ordering::SeqCst) == 0 {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(reads.load(Ordering::SeqCst), 1);
-        release.send(Some(true)).unwrap();
-        for _ in 0..200 {
             cx.run_until_parked();
-            if cx.update(|cx| cx.reduce_motion()) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
         }
+        assert_eq!(reader.pending(), 1, "one read under way");
+        assert!(!cx.update(|cx| cx.reduce_motion()), "still waiting");
+        reader.answer(Some(true));
+        cx.run_until_parked();
         assert!(cx.update(|cx| cx.reduce_motion()), "the answer is applied");
-        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.pending(), 0);
     }
 }
