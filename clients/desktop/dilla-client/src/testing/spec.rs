@@ -1429,7 +1429,7 @@ mod tests {
         );
     }
 
-    /// Task 34: the `offline` step parses with no fields.
+    /// Task 42: the `attach` step parses and is validated (a name of one word, a size).
     #[test]
     fn the_attach_step_parses_and_is_validated() {
         let with = |step: &str| {
@@ -1460,6 +1460,7 @@ mod tests {
         }
     }
 
+    /// Task 34: the `offline` step parses with no fields.
     #[test]
     fn the_offline_step_parses() {
         let with = MINIMAL.replace(
