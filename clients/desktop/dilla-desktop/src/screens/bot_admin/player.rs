@@ -42,6 +42,21 @@ pub struct MusicFeed {
     pub bot: String,
     /// The device clock (unix ms) the playhead runs on: the shell's frozen clock in a fixture.
     pub now_ms: u64,
+    /// The playhead runs on the device clock read at each draw (a running client's feed); `false` keeps it at
+    /// [`Self::now_ms`] (a fixture's frozen clock).
+    pub clock_runs: bool,
+}
+
+impl MusicFeed {
+    /// The clock the playhead is drawn at now: the device clock for a running feed (as the card reads it, so the dock,
+    /// the stage bar and the card agree), else the frozen one.
+    pub fn draw_now_ms(&self) -> u64 {
+        if self.clock_runs {
+            device_now_ms()
+        } else {
+            self.now_ms
+        }
+    }
 }
 
 /// One window's player (final review C1: per window, as the voice area's state is): its feed and its track-end read.
@@ -63,6 +78,7 @@ pub fn feed_of(
     client: Option<std::rc::Weak<Client>>,
     now_ms: u64,
 ) -> Option<MusicFeed> {
+    let clock_runs = client.is_some();
     let call = &state.voice.call;
     if call.phase != dilla_client::calls::CallPhase::In {
         return None;
@@ -78,6 +94,7 @@ pub fn feed_of(
         room: room.name.clone(),
         bot: member_name(state, community, bot_user),
         now_ms,
+        clock_runs,
     })
 }
 
@@ -118,7 +135,17 @@ struct TrackEnd {
     _timer: Option<gpui::Task<()>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's device clock (unix ms), when it sets one.
+    static TEST_NOW_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 fn device_now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = TEST_NOW_MS.with(std::cell::Cell::get) {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -394,7 +421,7 @@ fn element(
         &feed.bot,
         &name_of,
         true,
-        feed.now_ms,
+        feed.draw_now_ms(),
     );
     let paused = !view.playing;
     let mut player = NowPlaying::new(id, variant, labels(up_next(&view.queue)))
@@ -436,6 +463,11 @@ fn element(
 /// or while its music state is unavailable.
 pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let feed = feed(window.window_handle().window_id(), cx)?;
+    playhead_tick(
+        feed.clock_runs && playhead_runs(feed.state.bot_admin.music.get(&feed.channel)),
+        window,
+        cx,
+    );
     element(
         &feed,
         NowPlayingVariant::Compact,
@@ -464,6 +496,11 @@ pub fn stage_bar(channel: ChannelId, window: &mut Window, cx: &mut App) -> Optio
     if !stage_shows(Some(&feed), channel, has_track) {
         return None;
     }
+    playhead_tick(
+        feed.clock_runs && playhead_runs(feed.state.bot_admin.music.get(&feed.channel)),
+        window,
+        cx,
+    );
     element(
         &feed,
         NowPlayingVariant::Stage,
@@ -471,6 +508,60 @@ pub fn stage_bar(channel: ChannelId, window: &mut Window, cx: &mut App) -> Optio
         false,
         None,
     )
+}
+
+/// music.tsx `useChannelPlayer`'s `running`: a playing track with the Bot's stamp, the playhead that moves on its own.
+pub fn playhead_runs(state: Option<&MusicState>) -> bool {
+    matches!(state, Some(MusicState::Available(s)) if s.track.is_some() && !s.paused && s.clock.is_some())
+}
+
+/// What keeps one window's playhead clock: whether a running playhead was drawn since the last tick, and whether the
+/// clock runs.
+#[derive(Default)]
+struct PlayheadTick {
+    drawn: bool,
+    running: bool,
+}
+
+/// music.tsx `usePlayheadNow` (Ruling AI): a 1 s clock while a playhead runs. Each draw of a running playhead (the dock,
+/// the stage bar, a live card) marks the window; one timer per window repaints it a second later, and stops at the first
+/// tick with no such draw since the last (the track paused or ended, the bar or the card went, the window was released
+/// or is not drawn). The playhead itself is read from the device clock at the draw, so every view in the window shows
+/// the same time.
+fn playhead_tick(running: bool, window: &mut Window, cx: &mut App) {
+    if !running {
+        return;
+    }
+    let id = window.window_handle().window_id();
+    let tick = crate::per_window::get_mut::<PlayheadTick>(id, cx);
+    tick.drawn = true;
+    if std::mem::replace(&mut tick.running, true) {
+        return;
+    }
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(1))
+                .await;
+            let go = cx.update(|cx| {
+                // A closed window's state is gone (`per_window::window_closed`): its clock stops.
+                if crate::per_window::get::<PlayheadTick>(id, cx).is_none() {
+                    return false;
+                }
+                let tick = crate::per_window::get_mut::<PlayheadTick>(id, cx);
+                let go = std::mem::replace(&mut tick.drawn, false);
+                if !go {
+                    tick.running = false;
+                }
+                go
+            });
+            if !go || handle.update(cx, |_, window, _| window.refresh()).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
 }
 
 /// What the card shows of one player, as `useMusicCard` tells them apart.
@@ -601,6 +692,14 @@ pub fn music_card(
         &name_of,
         in_call,
         now_ms,
+    );
+    // A live card's playhead moves on the 1 s clock too (a fixture's frozen clock never runs).
+    playhead_tick(
+        phase == CardPhase::Live
+            && matches!(ctx.clock, crate::screens::shell::Clock::Local)
+            && playhead_runs(state.bot_admin.music.get(&channel)),
+        window,
+        cx,
     );
     let key = SharedString::from(item.key.clone());
     let open = window.use_keyed_state(
@@ -975,6 +1074,104 @@ mod tests {
             vec![a_channel, b_channel],
             "one read per call start"
         );
+    }
+
+    /// Screens-b review I1 (music.tsx `usePlayheadNow`, Ruling AI): while a track plays with the Bot's stamp, the dock
+    /// repaints once a second and draws the playhead at the device clock of that draw, the clock the card reads too; a
+    /// paused track stops the clock.
+    #[gpui::test]
+    fn the_playhead_ticks_each_second_while_a_track_plays(cx: &mut gpui::TestAppContext) {
+        use dilla_client::calls::CallPhase;
+        use gpui::{Context, Render};
+
+        #[derive(Default)]
+        struct Host {
+            renders: usize,
+            shown: Option<f64>,
+        }
+        impl Render for Host {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.renders += 1;
+                let w = window.window_handle().window_id();
+                self.shown =
+                    feed(w, cx).and_then(|f| match f.state.bot_admin.music.get(&f.channel) {
+                        Some(MusicState::Available(s)) => Some(
+                            view_of(
+                                Some(s),
+                                &f.room,
+                                &f.bot,
+                                &|_| String::new(),
+                                true,
+                                f.draw_now_ms(),
+                            )
+                            .position_s,
+                        ),
+                        _ => None,
+                    });
+                div().children(dock(window, cx))
+            }
+        }
+
+        cx.update(crate::install);
+        cx.update(|cx| cx.set_reduce_motion(true));
+        TEST_NOW_MS.with(|n| n.set(Some(10_000)));
+        let (host, vcx) = cx.add_window_view(|_, _| Host::default());
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        let publish = |vcx: &mut gpui::VisualTestContext, snapshot: MusicSnapshot| {
+            let (mut s, channel) = in_call(true, CallPhase::In);
+            s.bot_admin
+                .music
+                .insert(channel, MusicState::Available(snapshot));
+            vcx.update(|_, cx| {
+                follow_in(w, &Arc::new(s), None, 10_000, &mut |_, _| {}, cx);
+                // A running client's feed (the unit test has none to pass).
+                crate::per_window::get_mut::<WindowMusic>(w, cx)
+                    .feed
+                    .as_mut()
+                    .expect("a feed")
+                    .clock_runs = true;
+            });
+            host.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+        };
+        let run = |vcx: &mut gpui::VisualTestContext, ms: u64| {
+            for _ in 0..ms / 100 {
+                vcx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                vcx.run_until_parked();
+                vcx.update(|window, cx| window.simulate_next_frame(cx));
+                vcx.run_until_parked();
+            }
+        };
+        publish(vcx, snapshot());
+        assert_eq!(host.read_with(vcx, |h, _| h.shown), Some(38.0));
+        let before = host.read_with(vcx, |h, _| h.renders);
+        TEST_NOW_MS.with(|n| n.set(Some(12_000)));
+        run(vcx, 2_000);
+        let ticked = host.read_with(vcx, |h, _| h.renders) - before;
+        assert_eq!(ticked, 2, "one repaint a second");
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.shown),
+            Some(40.0),
+            "37 s + the Bot's 1 s + 2 s of device time"
+        );
+        assert_eq!(
+            clock_ms(crate::screens::shell::Clock::Local),
+            feed(w, &vcx.app.borrow()).unwrap().draw_now_ms(),
+            "the card's clock is the dock's"
+        );
+        // Paused: the clock stops (at most the tick already armed lands).
+        let mut paused = snapshot();
+        paused.paused = true;
+        paused.revision = 4;
+        publish(vcx, paused);
+        let before = host.read_with(vcx, |h, _| h.renders);
+        run(vcx, 3_000);
+        assert!(
+            host.read_with(vcx, |h, _| h.renders) - before <= 1,
+            "no clock while paused"
+        );
+        TEST_NOW_MS.with(|n| n.set(None));
     }
 
     /// Integration 3, step 5: the player is read again a second after the playing track should end (music.tsx), never
