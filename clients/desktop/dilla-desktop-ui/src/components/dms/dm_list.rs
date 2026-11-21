@@ -119,6 +119,16 @@ impl DmList {
     }
 }
 
+/// The space over a row's cell: a person row carries its own 1px margins (`.d-chrow[data-person] { margin: 1px 0 }` in a
+/// flow-root `li`, so rows step 44px), and the list starts one `--list-gap` under the section label.
+fn cell_top(index: usize) -> gpui::Pixels {
+    if index == 0 {
+        layout::LIST_GAP
+    } else {
+        px(0.0)
+    }
+}
+
 impl RenderOnce for DmList {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let density = Density::of(window, cx);
@@ -233,7 +243,7 @@ impl RenderOnce for DmList {
                     let select = self.on_select.clone();
                     let mut cell = div()
                         .debug_selector(move || format!("dm-row-{i}"))
-                        .mt(layout::LIST_GAP);
+                        .mt(cell_top(i));
                     if let Some(menu) = self.on_menu.clone() {
                         cell = cell.on_mouse_down(
                             MouseButton::Right,
@@ -271,5 +281,19 @@ impl RenderOnce for DmList {
                     .flex_col()
                     .children(rows),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn person_rows_step_by_their_own_44px() {
+        // 42px row + its two 1px margins; no extra gap between the cells.
+        assert_eq!(cell_top(1), px(0.0));
+        assert_eq!(cell_top(5), px(0.0));
+        // the first row sits one list gap under the section label.
+        assert_eq!(cell_top(0), layout::LIST_GAP);
     }
 }
