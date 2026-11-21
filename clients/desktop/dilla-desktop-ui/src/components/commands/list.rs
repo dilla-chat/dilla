@@ -119,7 +119,9 @@ impl CommandList {
     pub fn height(rows: usize) -> f32 {
         let head = 2.0 * 8.0 + crate::text::root_line_height(text::MICRO) + 1.0;
         let body = if rows == 0 {
-            2.0 * 10.0 + 28.0
+            // The no-match line sits in the scroll's 4px padding too: 10 + the 28px button's content box with its 1px
+            // edges (`.d-cmd-list__send` is content-box) + 10.
+            2.0 * SCROLL_PAD + 2.0 * 10.0 + 28.0 + 2.0
         } else {
             (rows as f32 * ROW_HEIGHT).min(LIST_MAX) + 2.0 * SCROLL_PAD
         };
@@ -284,7 +286,8 @@ impl RenderOnce for CommandList {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .h(px(28.0))
+                        // `.d-cmd-list__send`: content-box, 28px high inside its 1px edges.
+                        .h(px(30.0))
                         .px(px(10.0))
                         .border_1()
                         .border_color(color::CONTROL_EDGE)
@@ -317,20 +320,10 @@ impl RenderOnce for CommandList {
                     .id("command-list-scroll")
                     .max_h(px(LIST_MAX + 2.0 * SCROLL_PAD))
                     .overflow_y_scroll()
-                    .when_some_rows(!rows.is_empty(), SCROLL_PAD)
+                    .p(px(SCROLL_PAD))
                     .children(rows)
                     .children(none),
             )
-    }
-}
-
-trait PadWhen {
-    fn when_some_rows(self, rows: bool, pad: f32) -> Self;
-}
-
-impl PadWhen for gpui::Stateful<gpui::Div> {
-    fn when_some_rows(self, rows: bool, pad: f32) -> Self {
-        if rows { self.p(px(pad)) } else { self }
     }
 }
 
@@ -343,6 +336,7 @@ mod tests {
         // Header: 8 + 15 + 8 + 1 border; rows 48 each to 260, plus 4+4 padding; plus the 1px borders.
         assert_eq!(CommandList::height(1), 2.0 + 32.0 + 48.0 + 8.0);
         assert_eq!(CommandList::height(10), 2.0 + 32.0 + 260.0 + 8.0);
-        assert_eq!(CommandList::height(0), 2.0 + 32.0 + 48.0);
+        // The no-match line: the scroll's 4px padding, 10 + a 30px button + 10.
+        assert_eq!(CommandList::height(0), 2.0 + 32.0 + 8.0 + 50.0);
     }
 }
