@@ -164,7 +164,7 @@ impl Answer {
     /// The row's outcome and what the editor does, from the client's answer. A timeout and an answer that cannot be read
     /// are uncertain (R30; the client maps `OpError::Unreadable` to [`PanelError::Uncertain`]); `E_FORBIDDEN` is the
     /// permission's own words; any other refusal is `Command was refused ({code}).`.
-    pub fn of(result: Result<(), PanelError>) -> (Self, Outcome) {
+    pub fn of(result: Result<(), PanelError>, channel: &str) -> (Self, Outcome) {
         match result {
             Ok(()) => (Self::Accepted, Outcome::Success(PUBLISHED.to_owned())),
             Err(PanelError::Uncertain { .. }) => (
@@ -177,6 +177,17 @@ impl Answer {
             // never succeed): Jonas decided (2026-11-21, Task 29 fix round 2) it is a refusal that drops the attempt,
             // unlocks the fields and makes the next Publish a fresh request (R29). It keeps the web's "not confirmed"
             // copy, the web having no hint of its own for these codes. A failure after the post stays uncertain.
+            // Status 5 (unavailable) is what the Bot answers for a destination nobody has opened yet, which has no text group.
+            // Jonas 2026-11-21 ("Desktop retry + hint"; the Bot stays unchanged): the row names what to do, with the
+            // destination's name (`botCommand.rolepanel.openChannel`, native desktop only), and the editor is free for a fresh
+            // retry.
+            Err(PanelError::Status(code)) if code == "E_UNAVAILABLE" => (
+                Self::Refused(code),
+                Outcome::Failure(tf(
+                    "botCommand.rolepanel.openChannel",
+                    &[("channel", channel)],
+                )),
+            ),
             Err(PanelError::Status(code)) => (
                 Self::Refused(code),
                 Outcome::Failure(NOT_CONFIRMED.to_owned()),
@@ -849,7 +860,7 @@ fn send(job: Job, channel: ChannelId, options: Vec<PanelOption>, cx: &mut App) {
             .publish_job(job.community, channel, options, job.attempt.request);
     cx.spawn(async move |cx| {
         let result = publish.await;
-        cx.update(|cx| answered(&job, result, cx));
+        cx.update(|cx| answered(&job, channel, result, cx));
     })
     .detach();
     cx.refresh_windows();
@@ -857,8 +868,16 @@ fn send(job: Job, channel: ChannelId, options: Vec<PanelOption>, cx: &mut App) {
 
 /// The Bot answered: the row's end and the command memory's attempt (kept while the answer may have taken effect), and the
 /// editor's, which is only touched while it is still the one that sent the request.
-fn answered(job: &Job, result: Result<(), PanelError>, cx: &mut App) {
-    let (answer, outcome) = Answer::of(result);
+fn answered(job: &Job, channel: ChannelId, result: Result<(), PanelError>, cx: &mut App) {
+    let name = job
+        .client
+        .state()
+        .borrow()
+        .channels
+        .iter()
+        .find(|c| c.id == channel)
+        .map_or_else(String::new, |c| c.name.clone());
+    let (answer, outcome) = Answer::of(result, &name);
     if answer != Answer::Uncertain {
         with_memory(&job.client, |m| {
             m.drop_role_panel((job.attempt.request, job.community));
@@ -1569,16 +1588,19 @@ mod tests {
     /// The Bot's answers as the row and the editor read them (bot-handlers.ts:503-509).
     #[test]
     fn the_answers_read_as_the_webs_rows() {
-        let (answer, outcome) = Answer::of(Ok(()));
+        let (answer, outcome) = Answer::of(Ok(()), "news");
         assert_eq!(answer, Answer::Accepted);
         assert_eq!(
             outcome,
             Outcome::Success("Role panel published and registered.".into())
         );
         // A timeout and an answer that cannot be read (R30) may have taken effect.
-        let (answer, outcome) = Answer::of(Err(PanelError::Uncertain {
-            request_id: [1; 16],
-        }));
+        let (answer, outcome) = Answer::of(
+            Err(PanelError::Uncertain {
+                request_id: [1; 16],
+            }),
+            "news",
+        );
         assert_eq!(answer, Answer::Uncertain);
         assert_eq!(
             outcome,
@@ -1587,16 +1609,24 @@ mod tests {
                     .into()
             )
         );
-        let (answer, outcome) = Answer::of(Err(PanelError::Refused("E_FORBIDDEN".into())));
+        let (answer, outcome) = Answer::of(Err(PanelError::Refused("E_FORBIDDEN".into())), "news");
         assert!(matches!(answer, Answer::Refused(_)));
         assert_eq!(
             outcome,
             Outcome::Failure("Manage Roles permission is required.".into())
         );
         // A Bot status other than accepted or forbidden came before any post: a refusal (Jonas's decision, see
-        // `Answer::of`), with the web's "not confirmed" copy.
-        let (answer, outcome) = Answer::of(Err(PanelError::Status("E_UNAVAILABLE".into())));
+        // `Answer::of`). Status 5 names the destination to open (Jonas 2026-11-21); any other keeps the web's "not
+        // confirmed" copy.
+        let (answer, outcome) = Answer::of(Err(PanelError::Status("E_UNAVAILABLE".into())), "news");
         assert_eq!(answer, Answer::Refused("E_UNAVAILABLE".into()));
+        assert_eq!(
+            outcome,
+            Outcome::Failure("Open #news once, then try again.".into()),
+            "the row says to open the destination once"
+        );
+        let (answer, outcome) = Answer::of(Err(PanelError::Status("E_BUSY".into())), "news");
+        assert_eq!(answer, Answer::Refused("E_BUSY".into()));
         assert_eq!(
             outcome,
             Outcome::Failure(
@@ -1605,12 +1635,12 @@ mod tests {
             )
         );
         // A refusal of the request itself (the transport's code) is a refusal.
-        let (_, outcome) = Answer::of(Err(PanelError::Refused("E_ROUTE_INPUT".into())));
+        let (_, outcome) = Answer::of(Err(PanelError::Refused("E_ROUTE_INPUT".into())), "news");
         assert_eq!(
             outcome,
             Outcome::Failure("Command was refused (E_ROUTE_INPUT).".into())
         );
-        let (answer, outcome) = Answer::of(Err(PanelError::Invalid));
+        let (answer, outcome) = Answer::of(Err(PanelError::Invalid), "news");
         assert!(matches!(answer, Answer::Refused(_)));
         assert_eq!(
             outcome,
@@ -1627,7 +1657,7 @@ mod tests {
         let mut form = form(cx);
         hold_sent(&form);
         assert_eq!(form.begin_publish(), Some([9; 16]));
-        let (answer, _) = Answer::of(Err(PanelError::Status("E_UNAVAILABLE".into())));
+        let (answer, _) = Answer::of(Err(PanelError::Status("E_UNAVAILABLE".into())), "news");
         assert!(
             matches!(answer, Answer::Refused(_)),
             "a refusal, not uncertain"
@@ -1649,9 +1679,12 @@ mod tests {
         hold_sent(&form);
         assert_eq!(form.begin_publish(), Some([9; 16]));
         // What `answered` does with the client's post-publication answer.
-        let (answer, _) = Answer::of(Err(PanelError::Uncertain {
-            request_id: [9; 16],
-        }));
+        let (answer, _) = Answer::of(
+            Err(PanelError::Uncertain {
+                request_id: [9; 16],
+            }),
+            "news",
+        );
         assert_eq!(answer, Answer::Uncertain, "never a refusal");
         form.end_publish(true);
         assert!(form.locked(), "the attempt is still held");

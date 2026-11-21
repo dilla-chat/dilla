@@ -28,4 +28,7 @@ export const botCommand = {
   'botCommand.rolepanel.roles': 'Approved self-service roles',
   'botCommand.rolepanel.emojiFor': 'Reaction for {role}',
   'botCommand.rolepanel.invalid': 'Choose a channel, at least one approved role, and a unique emoji for each role.',
+  // Native desktop only (Jonas 2026-11-21): the Bot answers status 5 to a panel for a channel nobody has opened yet (it has
+  // no text group); the web has no hint for it.
+  'botCommand.rolepanel.openChannel': 'Open #{channel} once, then try again.',
 } as const;

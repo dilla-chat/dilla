@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2221] = [
+pub static STRINGS: [(&str, &str); 2222] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -415,6 +415,7 @@ pub static STRINGS: [(&str, &str); 2221] = [
     ("botCommand.dialog.invalid", "Check the required fields and limits, then try again."),
     ("botCommand.rolepanel.emojiFor", "Reaction for {role}"),
     ("botCommand.rolepanel.invalid", "Choose a channel, at least one approved role, and a unique emoji for each role."),
+    ("botCommand.rolepanel.openChannel", "Open #{channel} once, then try again."),
     ("botCommand.rolepanel.publish", "Publish panel"),
     ("botCommand.rolepanel.roles", "Approved self-service roles"),
     ("botCommand.rolepanel.title", "Create a role panel"),
