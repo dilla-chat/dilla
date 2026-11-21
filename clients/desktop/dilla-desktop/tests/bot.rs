@@ -48,17 +48,29 @@ fn poll_card_b_wraps_and_grows_with_its_answers() {
 }
 
 #[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_polls_card() {
     dilla_parity::screen::assert_screen(&fixture("polls/card.json")).unwrap();
 }
 
 #[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_polls_card_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/card-b.json")).unwrap();
 }
 
 /// `/poll create` typed and run: the poll dialog over the channel (Task 26), shot with the server's Bot installed.
 #[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_polls_dialog() {
     dilla_parity::screen::assert_screen(&fixture("polls/dialog.json")).unwrap();
 }
@@ -85,11 +97,19 @@ fn an_unverified_poll_post_shows_its_text_and_no_card() {
 }
 
 #[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_polls_fallback() {
     dilla_parity::screen::assert_screen(&fixture("polls/fallback.json")).unwrap();
 }
 
 #[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
 fn parity_polls_fallback_b() {
     dilla_parity::screen::assert_screen(&fixture("polls/fallback-b.json")).unwrap();
 }
