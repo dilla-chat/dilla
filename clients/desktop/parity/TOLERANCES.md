@@ -136,3 +136,15 @@ divider. macOS: see "macOS" above; Windows is a placeholder (PENDING-CI).
 
 The Task 3 evidence images in `tests/fixtures/` are cropped to the bottom 1000 rows (y 600..1600) of the 2560x1600 renders:
 the margins above were measured on the full frames, and the tests still hold on the crop.
+
+## Motion (Task 36b)
+
+The references are shot with reduced motion, so the parity fixtures run the app with GPUI's `reduce_motion` set: no entrance
+(`d-up`) and the equaliser bars at full height, as the web's zeroed `--duration-*` tokens leave them. Accepted differences
+from the web's animation, none visible in a reference:
+
+- `d-bar`'s first beat: CSS keeps the second and third bar at rest height until their delay (beat/4, beat/2) has passed;
+  the desktop draws them at the phase they would have, once, at the start.
+- The "Reduced motion: Use system setting" choice animates on the desktop: GPUI reports no OS preference, so only "On"
+  reduces.
+- The dock's compact row draws no equaliser, as the web's does not (the task brief named it by mistake).

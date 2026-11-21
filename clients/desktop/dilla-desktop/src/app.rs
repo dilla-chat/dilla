@@ -262,6 +262,8 @@ impl AppView {
         }
         #[cfg(feature = "automation")]
         if let Some(fixture) = this.launch.fixture.clone() {
+            // Task 36b: the web shoots its references with reduced motion, so a fixture draws still: no entrance, full bars.
+            cx.set_reduce_motion(true);
             // Task 19b: a fixture draws at its own density (`"density"`), regular when it names none.
             crate::density::set(
                 window,
@@ -1390,6 +1392,7 @@ impl AppView {
         let mut states = client.state();
         let first = states.borrow_and_update().clone();
         crate::density::follow(window, &first, cx);
+        crate::motion::follow(&first, cx);
         let controls = self.launch.shipping;
         let shell = cx.new(|cx| {
             ShellView::new(first, Some(client.clone()), None, Clock::Local, window, cx)
@@ -1420,7 +1423,8 @@ impl AppView {
                 }
                 // Task 19b: the window takes the density the account saved, at once (App.tsx:105).
                 let _ = this.update_in(cx, |_, window, cx| {
-                    crate::density::follow(window, &next, cx)
+                    crate::density::follow(window, &next, cx);
+                    crate::motion::follow(&next, cx);
                 });
                 // The settings host over the shell draws its sections with the same state (Task 1b).
                 let _ = this.update(cx, |this, cx| {

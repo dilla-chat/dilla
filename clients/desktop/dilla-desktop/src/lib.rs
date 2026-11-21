@@ -13,6 +13,7 @@ pub mod fullscreen;
 pub mod keys;
 pub mod layout;
 pub mod logging;
+pub mod motion;
 pub mod native;
 pub mod per_window;
 pub mod print;

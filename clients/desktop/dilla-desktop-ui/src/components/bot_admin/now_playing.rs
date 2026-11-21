@@ -4,9 +4,10 @@
 //! dur", play/pause and skip, a 3px bar, under a 0.15 `--ok` hairline).
 //!
 //! The controls are Tab stops and activate with Enter or Space as any button does. When the card itself is focused, Space
-//! plays and pauses. Without control a press says why in a toast ([`show_toast`]) and does nothing else. Nothing animates
-//! (the references are shot with reduced motion); the playing state shows as its `--ok` colour and the equaliser bars at
-//! rest height.
+//! plays and pauses. Without control a press says why in a toast ([`show_toast`]) and does nothing else. The playing state
+//! shows as its `--ok` colour and the equaliser bars beside it, which bounce; the card, its queue, the dock row and the
+//! stage bar rise in once (`d-up`, [`crate::motion`]). With reduced motion (the references are shot with it) the bars
+//! stand at full height and nothing rises.
 
 use std::rc::Rc;
 
@@ -21,8 +22,9 @@ use crate::components::toast::show_toast_in;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
+use crate::motion::{EASE, equaliser, rise_in};
 use crate::text::{line, line_height, root_line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// What the player shows of the track playing.
 #[derive(Clone, Debug, PartialEq)]
@@ -303,7 +305,7 @@ impl NowPlaying {
             .into_any_element()
     }
 
-    fn compact(self) -> AnyElement {
+    fn compact(self, cx: &App) -> AnyElement {
         let Some(track) = self.track.clone() else {
             return div().into_any_element();
         };
@@ -370,7 +372,7 @@ impl NowPlaying {
             self.on_skip.clone(),
             false,
         );
-        div()
+        let dock_row = div()
             .id(self.id.clone())
             .flex()
             .flex_col()
@@ -379,14 +381,20 @@ impl NowPlaying {
             .border_t_1()
             .border_color(color::OK_DIVIDER)
             .child(row.child(text_col).child(toggle).child(skip))
-            .child(self.bar(3.0))
-            .into_any_element()
+            .child(self.bar(3.0));
+        rise_in(
+            dock_row,
+            (self.id.clone(), "rise"),
+            motion::PLAYER_ROW,
+            EASE,
+            cx,
+        )
     }
 
     /// The stage bar (NowPlaying.css `.d-np--stage`, NowPlaying.tsx's `stage` branch): 48px, the Bot's 28px square, the
     /// equaliser bars while playing, the title and meta over a 3px bar with `pos / dur`, play/pause, skip, stop and "n up
     /// next". Not drawn without a track. The phone's layout (no meta, no count) is not the desktop's.
-    fn stage(self) -> AnyElement {
+    fn stage(self, cx: &App) -> AnyElement {
         let Some(track) = self.track.clone() else {
             return div().into_any_element();
         };
@@ -462,23 +470,15 @@ impl NowPlaying {
             );
         }
         if self.playing {
-            // Three 2px bars, 1.5px apart, at rest height (nothing animates in the references).
-            row = row.child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_end()
-                    .gap(px(1.5))
-                    .h(px(11.0))
-                    .children((0..3).map(|_| div().w(px(2.0)).h_full().bg(color::OK))),
-            );
+            row = row.child(equaliser((self.id.clone(), "bars"), 11.0, cx));
         }
         let toggle_icon = if self.playing {
             IconName::Pause
         } else {
             IconName::Play
         };
-        row.child(text_col)
+        let stage_bar = row
+            .child(text_col)
             .child(self.control(
                 (self.id.clone(), "toggle").into(),
                 toggle_icon,
@@ -514,8 +514,15 @@ impl NowPlaying {
                         root_line_height(text::META),
                         color::FG_3,
                     )),
-            )
-            .into_any_element()
+            );
+        // The stage bar's entrance runs on `--ease-out`, the others' on `ease`.
+        rise_in(
+            stage_bar,
+            (self.id.clone(), "rise"),
+            motion::PLAYER_BAR,
+            motion::EASE_OUT,
+            cx,
+        )
     }
 
     /// The height the card variant takes in a row (NowPlaying.css), in layout px: the 1px edge twice; the head (12px above
@@ -558,6 +565,11 @@ impl NowPlaying {
             .rounded(radius::SEG)
             .bg(color::HOVER)
             .child(Icon::new(IconName::Music).size(px(18.0)).color(color::FG_4));
+        // The state line: the 9px equaliser (while it plays) before the label, 6px apart.
+        let mut state_line = div().flex().items_center().gap(px(6.0));
+        if live {
+            state_line = state_line.child(equaliser((self.id.clone(), "bars"), 9.0, cx));
+        }
         let mut text_col = div()
             .flex()
             .flex_col()
@@ -566,14 +578,16 @@ impl NowPlaying {
             .gap(px(2.0))
             .justify_center()
             .child(
-                line(
-                    self.state_label().to_uppercase(),
-                    text::CHIP,
-                    line_height(text::CHIP, 1.4),
-                    state_colour,
-                )
-                .weight(font::WEIGHT_LABEL)
-                .tracking(0.12),
+                state_line.child(
+                    line(
+                        self.state_label().to_uppercase(),
+                        text::CHIP,
+                        line_height(text::CHIP, 1.4),
+                        state_colour,
+                    )
+                    .weight(font::WEIGHT_LABEL)
+                    .tracking(0.12),
+                ),
             );
         text_col = text_col.child(
             line(title, text::INPUT, line_height(text::INPUT, 1.4), color::FG)
@@ -812,28 +826,33 @@ impl NowPlaying {
                 }
                 row
             });
-            card = card.child(
-                div()
-                    .id((self.id.clone(), "queue"))
-                    .flex()
-                    .flex_col()
-                    .px(px(6.0))
-                    .pt(px(4.0))
-                    .pb(px(6.0))
-                    .border_t_1()
-                    .border_color(color::HAIRLINE)
-                    .children(rows),
-            );
+            let list = div()
+                .id((self.id.clone(), "queue"))
+                .flex()
+                .flex_col()
+                .px(px(6.0))
+                .pt(px(4.0))
+                .pb(px(6.0))
+                .border_t_1()
+                .border_color(color::HAIRLINE)
+                .children(rows);
+            card = card.child(rise_in(
+                list,
+                (self.id.clone(), "queue-rise"),
+                motion::QUEUE,
+                EASE,
+                cx,
+            ));
         }
-        card.into_any_element()
+        rise_in(card, (self.id.clone(), "rise"), motion::PLAYER, EASE, cx)
     }
 }
 
 impl RenderOnce for NowPlaying {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         match self.variant {
-            NowPlayingVariant::Compact => self.compact(),
-            NowPlayingVariant::Stage => self.stage(),
+            NowPlayingVariant::Compact => self.compact(cx),
+            NowPlayingVariant::Stage => self.stage(cx),
             NowPlayingVariant::Card => self.card(window, cx),
         }
     }

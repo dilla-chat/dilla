@@ -374,6 +374,8 @@ pub mod motion {
     pub const TURN: Duration = Duration::from_millis(200);
     /// `--duration-aside`: 280ms
     pub const ASIDE: Duration = Duration::from_millis(280);
+    /// `--ease-out`: cubic-bezier(0.16, 1, 0.3, 1)
+    pub const EASE_OUT: [f32; 4] = [0.16, 1.0, 0.3, 1.0];
     /// `--duration-toast`: 220ms
     pub const TOAST: Duration = Duration::from_millis(220);
     /// `--duration-pulse`: 2s
