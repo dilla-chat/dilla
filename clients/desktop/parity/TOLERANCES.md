@@ -83,9 +83,9 @@ Windows parity is measured with a real window later.
 
 ## Linux per-screen
 
-Six screens carry their own Linux limits in `[linux_screens."<fixture>"]` (Jonas 2026-11-19: "fix crop, tolerate emoji"; for
-`user-settings/appearance-compact` Jonas 2026-11-20: "design, not pixels", a limit just over its score),
-each 2x its honest score, the way the macOS ones are. Scores are the `DILLA_PARITY_MEASURE` lines of the Linux run.
+Nine screens carry their own Linux limits in `[linux_screens."<fixture>"]` (Jonas 2026-11-19: "fix crop, tolerate emoji"),
+each 2x its honest score, the way the macOS ones are, except `user-settings/appearance-compact` (Jonas 2026-11-20:
+"design, not pixels"), whose limit is just over its score. Scores are the `DILLA_PARITY_MEASURE` lines of the Linux run.
 
 | screen | gate | before the crop fix | after | limit | reason |
 |---|---|---|---|---|---|
@@ -175,6 +175,8 @@ that stays on, the plain 2px `--ok` ring, and MessageRow.css's own reduced form 
 - The speaking meter and the typing sweep fade as the web's `opacity` transitions do (`--duration-fast`, `--duration-turn`,
   `ease`); one difference: the fade-out of the sweep is drawn at rest, centred, as the web's (its animation is removed when
   typing stops), and the meter's keeps bouncing while it fades.
+- Typing again while the sweep fades out starts its fade-in from 0 (a new transition, a one-frame dip); the web's `opacity`
+  transition reverses from where it is. Brief, and not in a reference (Task 36e).
 - `d-row-flash`'s tint is a layer in the row, under its content, standing in for the row's background (the row has no fill of
   its own and no hover style while it flashes, as a CSS animation beats both). A focused flashing row under reduced motion
   loses its focus ring to the flash's edge, as the CSS's `box-shadow` replaces the other shadows.
