@@ -242,8 +242,8 @@ Remove this copy when upstream makes the handle public or the webrtc-sys hook is
 
 Upstream: <https://github.com/livekit/rust-sdks> (`livekit/`; `.cargo_vcs_info.json` has the commit).
 Apache-2.0. The published copy is the first commit that adds it (`vendor: livekit 0.11.0 as
-published`), so the diff of that commit's successor shows the whole patch. Patched into the root
-workspace (`[patch.crates-io]`, 2026-11-22).
+published`): the published crate minus its `Cargo.lock`, so the diff of that commit's successor
+shows the whole patch. Patched into the root workspace (`[patch.crates-io]`, 2026-11-22).
 
 The one change (`src/rtc_engine/rtc_session.rs`, `DILLA PATCH`): a closed session's fast-publish
 negotiation stops. dillad's SFU asks for fast publish, and `execute_negotiation_with_retry` sends the
