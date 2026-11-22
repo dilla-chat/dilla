@@ -510,6 +510,7 @@ fn refusal(e: &HttpError, creating: bool) -> SignupError {
             status,
             code,
             retry_after_ms,
+            ..
         } => match (code.as_deref(), *status) {
             (Some("E_INVITE_INVALID"), _) => SignupError::InviteInvalid,
             (Some("E_INVALID_REQUEST"), 409) => SignupError::UsernameTaken,
@@ -1790,6 +1791,7 @@ mod tests {
             status,
             code: Some(code.into()),
             retry_after_ms: None,
+            rule: None,
         };
         assert_eq!(
             refusal(&st(404, "E_INVITE_INVALID"), true),
@@ -1815,6 +1817,7 @@ mod tests {
                     status: 429,
                     code: Some("E_RATE_LIMITED".into()),
                     retry_after_ms: Some(2500),
+                    rule: None,
                 },
                 true
             ),

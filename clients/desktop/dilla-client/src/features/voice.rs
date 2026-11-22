@@ -105,6 +105,13 @@ struct Runtime {
     joining: Option<oneshot::Sender<()>>,
     /// Closes once the join in flight has answered, its teardown done (controller.ts `joining.done`).
     join_done: Option<oneshot::Receiver<()>>,
+    /// Closes once the latest leave has finished: its self-Remove (built again after a catch-up when refused for its
+    /// epoch) and the group's forget. A join waits for it: both work on the call group by id, so a rejoin of the same
+    /// call landing meanwhile would get a self-Remove of its new leaf and lose the group to the forget.
+    leave_done: Option<watch::Receiver<()>>,
+    /// A test's hold on the next leave with a call: it says when it got there, then waits to be let go.
+    #[cfg(feature = "testing")]
+    leave_hold: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     live: Option<Live>,
     link: watch::Sender<Option<Arc<MediaLink>>>,
     /// The last `voice_self` sent: `(call, flags)`.
@@ -125,6 +132,9 @@ impl Default for Runtime {
             generation: 0,
             joining: None,
             join_done: None,
+            leave_done: None,
+            #[cfg(feature = "testing")]
+            leave_hold: None,
             live: None,
             link: watch::channel(None).0,
             last_self: None,
@@ -556,7 +566,7 @@ impl Voice {
             self.leave_inner().await?;
         }
         let rt = self.rt();
-        let (abort_tx, abort_rx) = oneshot::channel::<()>();
+        let (abort_tx, mut abort_rx) = oneshot::channel::<()>();
         // `done_rx` closes once this join has answered (its sender is held by the spawned task until the answer is sent:
         // [`Inner::spawn_holding`]): a leave meanwhile waits for it (controller.ts `joining.done`), so the cancelled
         // join's answer is in before the leave's.
@@ -576,6 +586,15 @@ impl Voice {
                 ..OwnCall::default()
             };
         });
+        // An earlier leave still in flight finishes first (its self-Remove and forget work on the group by id: see
+        // `Runtime::leave_done`). A leave or a newer join meanwhile cancels this join as it would later.
+        let leaving = lock(&rt).leave_done.clone();
+        if let Some(mut leaving) = leaving {
+            tokio::select! {
+                _ = leaving.changed() => {}
+                _ = &mut abort_rx => return Err(ClientError::Sync("E_CANCELLED".into())),
+            }
+        }
         let refusal = |inner: Arc<Inner>| -> OnRefused {
             let rt = rt.clone();
             Box::new(move |code: &str| {
@@ -914,6 +933,17 @@ impl Voice {
         })
     }
 
+    /// Holds the next leave of a call after it has left the call here (media cut, Idle published) and before its
+    /// self-Remove: the first receiver fires when it gets there, and it goes on once the sender is used or dropped.
+    /// Never in a shipping build.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_leave(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached) = oneshot::channel();
+        let (release, release_rx) = oneshot::channel();
+        lock(&self.rt()).leave_hold = Some((reached_tx, release_rx));
+        (reached, release)
+    }
+
     /// [`Voice::leave`] for a caller that moves on whatever the instance answered (a join's own leave, a trust block,
     /// a lost room).
     async fn leave_inner(&self) -> Result<(), ClientError> {
@@ -923,8 +953,11 @@ impl Voice {
     /// The leave; answers whether the instance acknowledged it (no call to leave: yes).
     async fn leave_acknowledged(&self) -> Result<bool, ClientError> {
         let rt = self.rt();
+        // Dropped when this leave returns, however it returns: a join waiting on `leave_done` goes on then.
+        let (_leaving, leave_done) = watch::channel(());
         let (live, joining) = {
             let mut r = lock(&rt);
+            r.leave_done = Some(leave_done);
             r.generation += 1;
             r.link.send_replace(None);
             r.last_self = None;
@@ -956,6 +989,14 @@ impl Voice {
         let Some(live) = live else {
             return Ok(true);
         };
+        #[cfg(feature = "testing")]
+        {
+            let hold = lock(&rt).leave_hold.take();
+            if let Some((reached, release)) = hold {
+                let _ = reached.send(());
+                let _ = release.await;
+            }
+        }
         let alone = own.is_some_and(|d| {
             snap.voice
                 .participants(live.channel)

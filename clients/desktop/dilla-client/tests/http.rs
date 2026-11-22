@@ -410,6 +410,7 @@ async fn http_error_carries_the_retry_after() {
                 status: 429,
                 code,
                 retry_after_ms,
+                ..
             } => {
                 assert_eq!(code.as_deref(), Some("E_RATE_LIMITED"));
                 assert_eq!(*retry_after_ms, want);

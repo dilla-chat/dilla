@@ -60,6 +60,8 @@ struct FakeCore {
     /// The next leave proposal is followed by another member's commit, applied by the sync engine while the proposal is
     /// in flight (the call group's epoch moves by one).
     commit_after_leave_proposal: bool,
+    /// `groups()` fails (a busy store).
+    groups_fail: bool,
 }
 
 impl CallCore for FakeCore {
@@ -140,6 +142,9 @@ impl CallCore for FakeCore {
         Ok(())
     }
     fn groups(&self) -> Result<Vec<GroupSummary>, CoreRefusal> {
+        if self.groups_fail {
+            return Err(refusal("E_STORE_BUSY"));
+        }
         Ok(self.groups.clone())
     }
 }
@@ -229,6 +234,7 @@ fn err(status: u16, code: &str) -> RouteError {
         status: Some(status),
         code: Some(code.into()),
         retry_after_ms: None,
+        rule: None,
         detail: String::new(),
     }
 }
@@ -680,6 +686,25 @@ struct AppliesCommits<'a> {
     core: &'a Mutex<FakeCore>,
     commits: u64,
     runs: std::sync::atomic::AtomicU32,
+    /// The applied commit removed this device's own leaf (the row goes to state 4).
+    removes_own_leaf: bool,
+}
+
+fn applies(core: &Mutex<FakeCore>, commits: u64) -> AppliesCommits<'_> {
+    AppliesCommits {
+        core,
+        commits,
+        runs: Default::default(),
+        removes_own_leaf: false,
+    }
+}
+
+/// The instance's refusal of a proposal built for an epoch the group has left (rule `epoch`).
+fn epoch_refused() -> RouteError {
+    RouteError {
+        rule: Some("epoch".into()),
+        ..err(422, "E_COMMIT_INVALID")
+    }
 }
 
 #[async_trait::async_trait]
@@ -689,6 +714,9 @@ impl CallCatchUp for AppliesCommits<'_> {
         let mut core = self.core.lock().unwrap();
         for row in core.groups.iter_mut().filter(|r| r.group_id == *group) {
             row.epoch += self.commits;
+            if self.removes_own_leaf {
+                row.state = 4;
+            }
         }
     }
 }
@@ -708,12 +736,8 @@ async fn a_self_remove_refused_for_its_epoch_is_built_again_after_a_catch_up() {
         .proposal
         .lock()
         .unwrap()
-        .push_back(Err(err(422, "E_COMMIT_INVALID")));
-    let catch_up = AppliesCommits {
-        core: &core,
-        commits: 1,
-        runs: Default::default(),
-    };
+        .push_back(Err(epoch_refused()));
+    let catch_up = applies(&core, 1);
     let left = leave_call_caught_up(&core, &routes, Some(&catch_up), &GROUP, &CHANNEL, false).await;
     assert!(left.proposed && !left.ended);
     assert_eq!(catch_up.runs.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -742,12 +766,8 @@ async fn a_self_remove_is_built_again_when_the_engine_applied_the_commit_during_
         .proposal
         .lock()
         .unwrap()
-        .push_back(Err(err(422, "E_COMMIT_INVALID")));
-    let nothing_new = AppliesCommits {
-        core: &core,
-        commits: 0,
-        runs: Default::default(),
-    };
+        .push_back(Err(epoch_refused()));
+    let nothing_new = applies(&core, 0);
     let left =
         leave_call_caught_up(&core, &routes, Some(&nothing_new), &GROUP, &CHANNEL, false).await;
     assert!(left.proposed);
@@ -767,7 +787,7 @@ async fn a_self_remove_refusal_the_catch_up_does_not_explain_is_final() {
             .proposal
             .lock()
             .unwrap()
-            .extend((0..n).map(|_| Err(err(422, "E_COMMIT_INVALID"))));
+            .extend((0..n).map(|_| Err(epoch_refused())));
     };
 
     // The epoch stays: one catch-up, no second post.
@@ -777,11 +797,7 @@ async fn a_self_remove_refusal_the_catch_up_does_not_explain_is_final() {
     });
     let routes = FakeRoutes::default();
     refused(&routes, 1);
-    let still = AppliesCommits {
-        core: &core,
-        commits: 0,
-        runs: Default::default(),
-    };
+    let still = applies(&core, 0);
     let left = leave_call_caught_up(&core, &routes, Some(&still), &GROUP, &CHANNEL, false).await;
     assert!(!left.proposed);
     assert_eq!(still.runs.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -794,11 +810,7 @@ async fn a_self_remove_refusal_the_catch_up_does_not_explain_is_final() {
     });
     let routes = FakeRoutes::default();
     refused(&routes, LEAVE_REBUILDS + 5);
-    let moving = AppliesCommits {
-        core: &core,
-        commits: 1,
-        runs: Default::default(),
-    };
+    let moving = applies(&core, 1);
     let left = leave_call_caught_up(&core, &routes, Some(&moving), &GROUP, &CHANNEL, false).await;
     assert!(!left.proposed);
     assert_eq!(routes.posted().len(), 1 + LEAVE_REBUILDS as usize);
@@ -814,6 +826,100 @@ async fn a_self_remove_refusal_the_catch_up_does_not_explain_is_final() {
     let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
     assert!(!left.proposed);
     assert_eq!(routes.posted(), ["post_proposal remove"]);
+}
+
+/// Round 1 (M2): only the `epoch` rule is the stale-epoch case; any other 422 judges the proposal itself, so nothing is
+/// caught up or built again.
+#[tokio::test]
+async fn a_self_remove_refused_by_another_rule_is_not_built_again() {
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    routes.proposal.lock().unwrap().push_back(Err(RouteError {
+        rule: Some("structural".into()),
+        ..err(422, "E_COMMIT_INVALID")
+    }));
+    let catch_up = applies(&core, 1);
+    let left = leave_call_caught_up(&core, &routes, Some(&catch_up), &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed);
+    assert_eq!(catch_up.runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(routes.posted(), ["post_proposal remove"]);
+}
+
+/// Round 1 (M3): a catch-up that applies another member's commit of this leaf's Remove (the instance's own, from the
+/// SFU's leave report) shows the leave done: it is acknowledged, not `E_LEAVE_UNACKNOWLEDGED`.
+#[tokio::test]
+async fn a_catch_up_showing_the_leaf_removed_is_an_acknowledged_leave() {
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(epoch_refused()));
+    let catch_up = AppliesCommits {
+        removes_own_leaf: true,
+        ..applies(&core, 1)
+    };
+    let left = leave_call_caught_up(&core, &routes, Some(&catch_up), &GROUP, &CHANNEL, false).await;
+    assert!(left.proposed);
+    assert_eq!(
+        routes.posted(),
+        ["post_proposal remove"],
+        "nothing built again"
+    );
+    assert_eq!(core.lock().unwrap().log.last().unwrap(), "forget 44");
+}
+
+/// Round 1 (M1): an unreadable group row rules out a rebuild only; the self-Remove still goes out.
+#[tokio::test]
+async fn an_unreadable_group_row_still_posts_the_self_remove() {
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        groups_fail: true,
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    let catch_up = applies(&core, 1);
+    let left = leave_call_caught_up(&core, &routes, Some(&catch_up), &GROUP, &CHANNEL, false).await;
+    assert!(left.proposed);
+    assert_eq!(routes.posted(), ["post_proposal remove"]);
+}
+
+/// A catch-up that never ends (an instance that stopped answering mid-page).
+struct Hangs;
+
+#[async_trait::async_trait]
+impl CallCatchUp for Hangs {
+    async fn catch_up(&self, _group: &[u8; 16]) {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Round 1 (M5): the catch-up is bounded by LEAVE_CATCH_UP; past it the refusal is final and the group is forgotten.
+#[tokio::test(start_paused = true)]
+async fn a_hanging_catch_up_ends_the_leave_within_its_bound() {
+    use dilla_client::calls::controller::LEAVE_CATCH_UP;
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(epoch_refused()));
+    let began = tokio::time::Instant::now();
+    let left = leave_call_caught_up(&core, &routes, Some(&Hangs), &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed);
+    assert!(began.elapsed() <= LEAVE_CATCH_UP + Duration::from_millis(50));
+    assert_eq!(core.lock().unwrap().log.last().unwrap(), "forget 44");
 }
 
 #[tokio::test]
@@ -847,6 +953,7 @@ fn outcome_unknown() -> RouteError {
         status: None,
         code: Some("E_OUTCOME_UNKNOWN".into()),
         retry_after_ms: None,
+        rule: None,
         detail: "the request was written and its answer was lost".into(),
     }
 }
@@ -1292,6 +1399,7 @@ async fn a_second_e_group_closed_fails_the_join() {
 fn frozen(retry_after_ms: Option<u64>) -> RouteError {
     RouteError {
         retry_after_ms,
+        rule: None,
         ..err(425, "E_COMMIT_REQUIRED")
     }
 }

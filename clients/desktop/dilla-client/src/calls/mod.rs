@@ -93,6 +93,8 @@ pub struct RouteError {
     /// The instance's `retry_after_ms` hint (a 425 `E_COMMIT_REQUIRED`'s commit deadline, a 429's
     /// wait), when the refusal carries one.
     pub retry_after_ms: Option<u64>,
+    /// The refusal's rule, when it names one (`E_COMMIT_INVALID`'s `"epoch"`: built for an epoch the group has left).
+    pub rule: Option<String>,
 }
 
 impl RouteError {
@@ -106,6 +108,7 @@ impl RouteError {
             code: Some("E_CBOR_SHAPE".into()),
             detail: detail.into(),
             retry_after_ms: None,
+            rule: None,
         }
     }
 }
@@ -117,30 +120,34 @@ impl From<HttpError> for RouteError {
                 status,
                 code,
                 retry_after_ms,
-                ..
+                rule,
             } => Self {
                 status: Some(status),
                 detail: format!("status {status}"),
                 code,
                 retry_after_ms,
+                rule,
             },
             HttpError::Transport(t) => Self {
                 status: None,
                 code: None,
                 detail: t,
                 retry_after_ms: None,
+                rule: None,
             },
             HttpError::Decode(d) => Self {
                 status: None,
                 code: Some("E_CBOR_SHAPE".into()),
                 detail: d,
                 retry_after_ms: None,
+                rule: None,
             },
             HttpError::Unanswered { code, detail } => Self {
                 status: None,
                 code: Some(code),
                 detail,
                 retry_after_ms: None,
+                rule: None,
             },
         }
     }

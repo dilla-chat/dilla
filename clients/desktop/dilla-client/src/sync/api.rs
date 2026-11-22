@@ -158,6 +158,7 @@ impl ApiError {
                 status,
                 code,
                 retry_after_ms,
+                ..
             } => {
                 let mut e = Self::local(*status, code.as_deref().unwrap_or("E_HTTP"), "");
                 e.retry_after_ms = *retry_after_ms;

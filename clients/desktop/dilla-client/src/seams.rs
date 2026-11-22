@@ -41,12 +41,14 @@ pub enum HttpError {
     /// A status the route does not accept. `code` is the instance's `E_*` code from the refusal's body
     /// (`[code, detail, delay|null, ...extra]`, internal/server/errors.go, read as http/errors.ts `decodeErrorBody`
     /// reads it); `None` when the body is not a dilla error (errors.ts names that `E_HTTP`). `retry_after_ms` is the
-    /// body's delay (errors.ts `retryAfterMs`), when it names one.
+    /// body's delay (errors.ts `retryAfterMs`), when it names one. `rule` is the body's first extra element when it is
+    /// a text (the delivery service's rule: `E_COMMIT_INVALID`'s `"epoch"` is the one a client may rebuild for).
     #[error("the server answered with status {status} ({})", code.as_deref().unwrap_or("E_HTTP"))]
     Status {
         status: u16,
         code: Option<String>,
         retry_after_ms: Option<u64>,
+        rule: Option<String>,
     },
     #[error("transport failure: {0}")]
     Transport(String),
