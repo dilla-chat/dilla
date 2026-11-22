@@ -1482,7 +1482,10 @@ pub type VoiceAnswer = tokio::sync::oneshot::Receiver<Result<(), dilla_client::C
 
 /// Leaves the call of every other instance window, then joins through `voice` once each leave has answered. A join
 /// started while another instance's leave is still committing races it in the call group (`E_COMMIT_INVALID`), so the
-/// join waits, for [`HANDOVER_WAIT`] at most. `start` starts the join (`Voice::join`, `Voice::join_dm`).
+/// join waits, for [`HANDOVER_WAIT`] at most. It also waits, within the same bound, for the other windows' call media
+/// to end ([`handover_after_media`]): this process routes one call's media at a time, and a join whose media starts
+/// while another window's is still live fails with `E_CALL_BUSY`. `start` starts the join (`Voice::join`,
+/// `Voice::join_dm`).
 pub fn after_leaving_other_calls(
     window: WindowId,
     voice: dilla_client::features::voice::Voice,
@@ -1504,15 +1507,35 @@ fn after_leaving_other_calls_then(
         .into_iter()
         .map(|c| c.voice().leave())
         .collect();
+    let sessions = other_sessions(window, cx);
     let undo = voice.clone();
     handover_then(
         window,
         leaves,
+        Box::new(move || sessions.iter().any(|s| s.media_live())),
         move || start(&voice),
         move || drop(undo.leave()),
         done,
         cx,
     );
+}
+
+/// The media sessions of the other instance windows (not `window`'s, nor one of its client's): the process's media
+/// router takes one call at a time, so a join in `window` waits until none of them has live media.
+fn other_sessions(window: WindowId, cx: &App) -> Vec<Rc<MediaSession>> {
+    let own = client_of(window, cx);
+    cx.try_global::<VoiceAreas>()
+        .map(|a| {
+            a.windows
+                .iter()
+                .filter(|(w, u)| {
+                    **w != window
+                        && !matches!((&own, &u.client), (Some(o), Some(c)) if Rc::ptr_eq(o, c))
+                })
+                .filter_map(|(_, u)| u.session.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The handover of [`after_leaving_other_calls`]: waits for `leaves` (each answers on its client's runtime; the wait
@@ -1530,7 +1553,22 @@ pub fn handover(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
-    handover_then(window, leaves, start, undo, None, cx);
+    handover_then(window, leaves, Box::new(|| false), start, undo, None, cx);
+}
+
+/// [`handover`] that also waits, within the same [`HANDOVER_WAIT`], until `media_live` answers false: the left calls'
+/// media has ended (their windows' [`MediaSession::media_live`]). A leave answers once the instance acknowledged it,
+/// but the left call's media ends on its own session's runtime; the process's media router takes one call at a time,
+/// so a join whose media started before that would fail (`E_CALL_BUSY`, the `voice.failed` notice).
+pub fn handover_after_media(
+    window: WindowId,
+    leaves: Vec<VoiceAnswer>,
+    media_live: impl Fn() -> bool + 'static,
+    start: impl FnOnce() -> VoiceAnswer + 'static,
+    undo: impl FnOnce() + 'static,
+    cx: &mut App,
+) {
+    handover_then(window, leaves, Box::new(media_live), start, undo, None, cx);
 }
 
 /// What a join's caller does with its end ([`join_then`]).
@@ -1543,6 +1581,7 @@ pub type JoinDone = Box<dyn FnOnce(Result<(), dilla_client::ClientError>, &mut A
 fn handover_then(
     window: WindowId,
     mut leaves: Vec<VoiceAnswer>,
+    media_live: Box<dyn Fn() -> bool>,
     start: impl FnOnce() -> VoiceAnswer + 'static,
     undo: impl FnOnce() + 'static,
     done: Option<JoinDone>,
@@ -1570,16 +1609,24 @@ fn handover_then(
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty)
                 )
             });
-            if leaves.is_empty() {
+            // The left calls' media must have ended too, not only their leaves answered: the media router is the
+            // process's, and the old call's media ends on its own session's runtime, after its link went.
+            if leaves.is_empty() && !media_live() {
                 break;
             }
             if !cx.update(|cx| newest(cx)) {
                 return cx.update(|cx| tell(cancelled(), cx));
             }
             if waited >= HANDOVER_WAIT {
-                log::warn!(
-                    "voice: another instance's call did not answer its leave; the join is dropped"
-                );
+                if leaves.is_empty() {
+                    log::warn!(
+                        "voice: another instance's call media did not end; the join is dropped"
+                    );
+                } else {
+                    log::warn!(
+                        "voice: another instance's call did not answer its leave; the join is dropped"
+                    );
+                }
                 return cx.update(|cx| {
                     join_failed(window, cx);
                     tell(

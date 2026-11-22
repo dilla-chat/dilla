@@ -1974,6 +1974,61 @@ fn a_join_error_after_the_handover_is_shown(cx: &mut TestAppContext) {
     assert!(!did.undone.get());
 }
 
+/// The router-busy flake of `a_join_in_another_window_leaves_this_window_s_call`: the other window's leave answered,
+/// but its call's media (here a join still connecting) holds the process's media router until its own session's
+/// runtime drops it. The join waits for that media to end; started before, its media failed with `E_CALL_BUSY`.
+#[gpui::test]
+fn the_handover_waits_for_the_left_call_s_media_to_end(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (leave_tx, leave_rx) = answer_pair();
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    let live = Rc::new(std::cell::Cell::new(true));
+    let media = live.clone();
+    cx.update(|cx| {
+        voice::handover_after_media(id, vec![leave_rx], move || media.get(), start, undo, cx)
+    });
+    leave_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "the leave answered, but the left call's media is still live: no join yet"
+    );
+    live.set(false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get(), "the join starts once that media ended");
+    assert_eq!(toast_in(cx, id), None);
+}
+
+/// A left call's media that never ends holds the join for [`voice::HANDOVER_WAIT`] only, as a leave that never
+/// answers does: the join is dropped and the window says it could not join.
+#[gpui::test]
+fn media_that_never_ends_drops_the_join_after_the_handover_wait(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover_after_media(id, Vec::new(), || true, start, undo, cx));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(voice::HANDOVER_WAIT + std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "no join while the other call's media is live"
+    );
+    assert_eq!(
+        toast_in(cx, id).as_deref(),
+        Some(dilla_desktop::strings::t("voice.failed")),
+        "the window says the join failed"
+    );
+}
+
 /// Task 28 item 2: a window that closes while another window's leave is pending starts no join.
 #[gpui::test]
 fn a_window_closed_before_the_handover_starts_no_join(cx: &mut TestAppContext) {

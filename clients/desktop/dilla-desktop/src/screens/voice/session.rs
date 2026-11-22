@@ -447,6 +447,14 @@ impl MediaSession {
             .clone()
     }
 
+    /// Whether this session's call media is live: from the start of a join (the process's media router may be this
+    /// session's from then on) until the call's media ended or its join was dropped (the router is free again). A join
+    /// in another window waits for it to clear ([`super::after_leaving_other_calls`]): the router takes one call per
+    /// process, so a join whose media starts before it clears fails with `E_CALL_BUSY`.
+    pub fn media_live(&self) -> bool {
+        self.live.is_live()
+    }
+
     /// Every remote video stream's newest frame.
     pub fn videos(&self) -> RemoteVideos {
         self.videos
@@ -554,6 +562,10 @@ impl MediaLive {
     fn begin(self: &Arc<Self>) -> LiveGuard {
         *self.live.lock().unwrap_or_else(|p| p.into_inner()) = true;
         LiveGuard(self.clone())
+    }
+
+    fn is_live(&self) -> bool {
+        *self.live.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Waits until no call's media is live, at most `bound`; true when none is.
