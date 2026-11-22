@@ -135,8 +135,7 @@ fn profile_dir() -> PathBuf {
 fn call_peer() -> PathBuf {
     static BUILT: std::sync::Once = std::sync::Once::new();
     BUILT.call_once(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let mut build = Command::new(cargo);
+        let mut build = dilla_testkit::nested_cargo::command();
         build.args(["build", "-p", "dilla-media", "--example", "call-peer"]);
         build.current_dir(repo_root());
         if !cfg!(debug_assertions) {

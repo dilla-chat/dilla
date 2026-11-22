@@ -46,11 +46,44 @@ fn workspace_root() -> PathBuf {
 /// How long the app may take to answer one request (GPU start-up included) before the driver gives up.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// `$CARGO` (or `cargo`) with the variables cargo sets for a running test removed (`CARGO_MANIFEST_DIR`,
+/// `CARGO_PKG_*`, `CARGO_CRATE_NAME`, `CARGO_BIN_EXE_*`, `OUT_DIR`, ...), for a test that builds the app itself.
+///
+/// A nested `cargo build` that inherits them records them in the fingerprint of every build script that tracks one:
+/// `ring`'s tracks `CARGO_MANIFEST_DIR`. The next outer `cargo build` then sees a different value, re-runs `ring`'s
+/// build script and rebuilds everything above it (the vendored webrtc C++ build too, about 40 minutes), and the two
+/// builds keep invalidating each other. The user's cargo configuration (`CARGO_HOME`, `CARGO_TARGET_DIR`,
+/// `CARGO_BUILD_*`, `RUSTFLAGS`, `CC`, ...) is kept.
+///
+/// A copy of `dilla_testkit::nested_cargo::command` (this crate has no dependency on the testkit): keep the two in step.
+pub fn nested_cargo() -> Command {
+    const EXACT: &[&str] = &[
+        "CARGO_MANIFEST_DIR",
+        "CARGO_MANIFEST_PATH",
+        "CARGO_MANIFEST_LINKS",
+        "CARGO_CRATE_NAME",
+        "CARGO_BIN_NAME",
+        "CARGO_TARGET_TMPDIR",
+        "CARGO_PRIMARY_PACKAGE",
+        "OUT_DIR",
+    ];
+    const PREFIXES: &[&str] = &["CARGO_PKG_", "CARGO_BIN_EXE_", "CARGO_CFG_"];
+    let mut cargo = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    for (name, _) in std::env::vars_os() {
+        let per_crate = name
+            .to_str()
+            .is_some_and(|n| EXACT.contains(&n) || PREFIXES.iter().any(|p| n.starts_with(p)));
+        if per_crate {
+            cargo.env_remove(name);
+        }
+    }
+    cargo
+}
+
 /// The cargo target directory of this workspace, as `cargo metadata` reports it (honours
 /// `CARGO_TARGET_DIR` and `build.target-dir`).
 pub fn target_dir() -> PathBuf {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let output = Command::new(cargo)
+    let output = nested_cargo()
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(workspace_root())
         .output()
@@ -72,8 +105,7 @@ fn automation_binary() -> &'static Path {
         if let Some(path) = std::env::var_os("DILLA_AUTOMATION_BIN") {
             return PathBuf::from(path);
         }
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
+        let status = nested_cargo()
             .args(["build", "-p", "dilla-desktop", "--features", "automation"])
             .current_dir(workspace_root())
             .status()

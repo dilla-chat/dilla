@@ -200,8 +200,7 @@ impl Peer {
         BUILT.call_once(|| {
             // `cargo test --test live` builds no example (and would leave a stale one): build it
             // once per run, with this build's profile.
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-            let mut build = Command::new(cargo);
+            let mut build = dilla_testkit::nested_cargo::command();
             build.args(["build", "-p", "dilla-media", "--example", "call-peer"]);
             if !cfg!(debug_assertions) {
                 build.arg("--release");

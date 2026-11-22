@@ -63,8 +63,7 @@ fn profile_dir() -> PathBuf {
 /// Builds `args` once per process (an example or a binary the test spawns), in this build's profile.
 fn cargo_build(once: &'static std::sync::Once, args: &[&str]) {
     once.call_once(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let mut build = Command::new(cargo);
+        let mut build = dilla_testkit::nested_cargo::command();
         build.arg("build").args(args);
         if !cfg!(debug_assertions) {
             build.arg("--release");

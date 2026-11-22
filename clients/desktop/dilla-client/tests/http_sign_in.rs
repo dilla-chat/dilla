@@ -79,8 +79,7 @@ fn wasi_core(root: &Path) -> PathBuf {
     }
     let wasm = root.join("internal/mlswasi/testdata/dilla_core_wasi.wasm");
     if !wasm.exists() {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let status = Command::new(cargo)
+        let status = dilla_testkit::nested_cargo::command()
             .args([
                 "build",
                 "-p",

@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use dilla_parity::{
     Driver, ElementInfo, GlyphCoverage, Os, ParityFailure, RgbaImage, Tolerance, assert_parity,
-    assert_parity_with, glyph_coverage, target_dir, tolerance_for,
+    assert_parity_with, glyph_coverage, nested_cargo, target_dir, tolerance_for,
 };
 use image::Rgba;
 
@@ -48,9 +47,8 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 #[test]
 #[ignore = "slow: run explicitly in CI (cargo test -p dilla-parity -- --ignored)"]
 fn release_build_has_no_automation() {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Positive control: the needles below really are in an automation build, so their absence means something.
-    let status = Command::new(&cargo)
+    let status = nested_cargo()
         .args(["build", "-p", "dilla-desktop", "--features", "automation"])
         .current_dir(workspace_root())
         .status()
@@ -62,7 +60,7 @@ fn release_build_has_no_automation() {
         "the marker is missing from the automation build"
     );
 
-    let status = Command::new(&cargo)
+    let status = nested_cargo()
         .args(["build", "--release", "-p", "dilla-desktop"])
         .current_dir(workspace_root())
         .status()
