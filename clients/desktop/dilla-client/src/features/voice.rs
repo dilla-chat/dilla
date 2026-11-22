@@ -953,62 +953,77 @@ impl Voice {
     /// The leave; answers whether the instance acknowledged it (no call to leave: yes).
     async fn leave_acknowledged(&self) -> Result<bool, ClientError> {
         let rt = self.rt();
-        // Dropped when this leave returns, however it returns: a join waiting on `leave_done` goes on then.
+        // Closed once this leave and every earlier one have finished: `_leaving` is held until this returns (however it
+        // returns), and this returns only after the earlier leave's receiver closed. A second leave (a double click, a
+        // window handover beside the voice screen's leave, sign-out) finds no call, yet it answers, and a join waiting
+        // on it goes on, only after the first leave's self-Remove and forget. Only backwards: a leave never waits on a
+        // later one, so the chain has no cycle.
         let (_leaving, leave_done) = watch::channel(());
-        let (live, joining) = {
+        let (live, joining, earlier) = {
             let mut r = lock(&rt);
-            r.leave_done = Some(leave_done);
+            let earlier = r.leave_done.replace(leave_done);
             r.generation += 1;
             r.link.send_replace(None);
             r.last_self = None;
             r.self_offline = None;
             r.resends = None;
             r.own_in_call.clear();
-            (r.live.take(), (r.joining.take(), r.join_done.take()))
+            (
+                r.live.take(),
+                (r.joining.take(), r.join_done.take()),
+                earlier,
+            )
         };
-        let (joining, join_done) = joining;
-        drop(joining);
-        let own = self.inner.snapshot().account.device_id;
-        let snap = self.inner.snapshot();
-        self.inner.publish(move |s| {
-            if let (Some(ch), Some(d)) = (s.voice.call.channel, own) {
-                s.voice.drop_device(ch, d);
+        let answer: Result<bool, ClientError> = async {
+            let (joining, join_done) = joining;
+            drop(joining);
+            let own = self.inner.snapshot().account.device_id;
+            let snap = self.inner.snapshot();
+            self.inner.publish(move |s| {
+                if let (Some(ch), Some(d)) = (s.voice.call.channel, own) {
+                    s.voice.drop_device(ch, d);
+                }
+                s.voice.call = OwnCall::default();
+                s.voice.speaking.clear();
+                s.voice.sfu_remotes.clear();
+                s.voice.verified_peers.clear();
+                s.voice.screen_streams.clear();
+                s.voice.share = LocalShare::default();
+            });
+            // A join in flight was cancelled just above: this answers once it has torn down (its self-Remove posted, a
+            // call it started left), as controller.ts `leave` awaits `joining.done`.
+            if let Some(done) = join_done {
+                let _ = done.await;
             }
-            s.voice.call = OwnCall::default();
-            s.voice.speaking.clear();
-            s.voice.sfu_remotes.clear();
-            s.voice.verified_peers.clear();
-            s.voice.screen_streams.clear();
-            s.voice.share = LocalShare::default();
-        });
-        // A join in flight was cancelled just above: this answers once it has torn down (its self-Remove posted, a call
-        // it started left), as controller.ts `leave` awaits `joining.done`.
-        if let Some(done) = join_done {
-            let _ = done.await;
-        }
-        let Some(live) = live else {
-            return Ok(true);
-        };
-        #[cfg(feature = "testing")]
-        {
-            let hold = lock(&rt).leave_hold.take();
-            if let Some((reached, release)) = hold {
-                let _ = reached.send(());
-                let _ = release.await;
+            let Some(live) = live else {
+                return Ok(true);
+            };
+            #[cfg(feature = "testing")]
+            {
+                let hold = lock(&rt).leave_hold.take();
+                if let Some((reached, release)) = hold {
+                    let _ = reached.send(());
+                    let _ = release.await;
+                }
             }
+            let alone = own.is_some_and(|d| {
+                snap.voice
+                    .participants(live.channel)
+                    .iter()
+                    .all(|p| p.device_id == d)
+            });
+            let left = self
+                .calls
+                .leave(live.group_id, live.call_id, alone)
+                .await
+                .map_err(|_| ClientError::Stopped)??;
+            Ok(left.proposed || left.ended)
         }
-        let alone = own.is_some_and(|d| {
-            snap.voice
-                .participants(live.channel)
-                .iter()
-                .all(|p| p.device_id == d)
-        });
-        let left = self
-            .calls
-            .leave(live.group_id, live.call_id, alone)
-            .await
-            .map_err(|_| ClientError::Stopped)??;
-        Ok(left.proposed || left.ended)
+        .await;
+        if let Some(mut earlier) = earlier {
+            let _ = earlier.changed().await;
+        }
+        answer
     }
 
     /// session.ts `onRoomEnd` → `leave('lost')`: the call's LiveKit room ended on its own (a newer device of this user

@@ -108,8 +108,15 @@ pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
                 let (Some(catch_up), Some(built)) = (catch_up, built) else {
                     break false;
                 };
+                // The timeout may cut the catch-up between a page's apply and the engine's apply hook (its cursor step,
+                // membership report and cursor timer). That is safe here only because this group is forgotten just
+                // below; do not reuse this cut for a group that lives on.
                 let _ = tokio::time::timeout(LEAVE_CATCH_UP, catch_up.catch_up(group)).await;
                 let now = row_of(core, group);
+                // State 4 is also the row of a group this core forgot, which would answer "acknowledged" with no
+                // Remove landed. Nothing forgets it meanwhile: `Voice::removed` is generation-gated and the join that
+                // could (`forget_stale`) waits for this leave (`Runtime::leave_done`). The row cannot tell the two
+                // apart, so this stays a comment rather than a guard.
                 if now.as_ref().is_some_and(|r| r.state == STATE_REMOVED) {
                     log::info!(
                         "calls: leave: the self-Remove built at epoch {built} was refused for its epoch; the \

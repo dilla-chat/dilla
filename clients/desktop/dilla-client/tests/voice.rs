@@ -946,3 +946,85 @@ async fn a_rejoin_waits_for_the_leave_in_flight() {
     drop(a);
     drop(host);
 }
+
+/// Round 2 of the removal fix (R1-I1): a second leave while the first is still in flight (a double click, a window
+/// handover beside the voice screen's leave, sign-out) finds no call; a rejoin after it still waits for the first
+/// leave's self-Remove and forget, and the second leave answers only after the first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_rejoin_after_a_second_leave_waits_for_the_first() {
+    let tag = "voice-rejoin-two-leaves";
+    let host = tokio::task::spawn_blocking(move || world::start_host(tag))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let alice = world::sign_up(&host, &invite, "alice", tag).await;
+    let (host, alice, voice) = tokio::task::spawn_blocking(move || {
+        let (_, v) = world::voice_community(&host, &alice, &[]);
+        world::clear_session(&alice);
+        (host, alice, ChannelId(v))
+    })
+    .await
+    .unwrap();
+    let a = client(&alice).await;
+    listed(&a, voice).await;
+    tokio::time::timeout(WAIT, a.voice().join(voice))
+        .await
+        .expect("the first join answers")
+        .unwrap()
+        .expect("alice joins");
+    until(&a, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    })
+    .await;
+
+    let (reached, release) = a.voice().hold_next_leave();
+    let mut first = a.voice().leave();
+    tokio::time::timeout(WAIT, reached)
+        .await
+        .expect("the first leave reaches its self-Remove")
+        .unwrap();
+    until(&a, "the first leave left the call here", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    })
+    .await;
+    // The second leave finds no call. It answers only after the first (the chain); either way it has installed its own
+    // `leave_done` by the end of this wait.
+    let mut second = a.voice().leave();
+    let second_early = tokio::time::timeout(Duration::from_secs(1), &mut second)
+        .await
+        .is_ok();
+    let mut rejoined = a.voice().join(voice);
+    if let Ok(early) = tokio::time::timeout(Duration::from_secs(3), &mut rejoined).await {
+        panic!("the rejoin waits for the first leave still in flight; it answered {early:?}");
+    }
+    assert_ne!(a.state().borrow().voice.call.phase, CallPhase::In);
+    assert!(
+        !second_early,
+        "the second leave answers only after the first"
+    );
+    let _ = release.send(());
+    let _ = tokio::time::timeout(WAIT, &mut first)
+        .await
+        .expect("the first leave answers once let go");
+    let _ = tokio::time::timeout(WAIT, &mut second)
+        .await
+        .expect("the second leave answers after the first");
+    tokio::time::timeout(WAIT, &mut rejoined)
+        .await
+        .expect("the rejoin answers after the leaves")
+        .unwrap()
+        .expect("alice rejoins");
+    let s = until(&a, "alice is in the call again", |s| {
+        s.voice.call.phase == CallPhase::In
+    })
+    .await;
+    let group = s.voice.call.group_id.expect("the rejoined call's group");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    a.calls()
+        .media_epoch(&group)
+        .expect("the rejoined call's group is held and keyed");
+    assert_eq!(a.state().borrow().voice.call.phase, CallPhase::In);
+    drop(a);
+    drop(host);
+}
