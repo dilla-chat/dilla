@@ -19,7 +19,7 @@ use dilla_client::calls::wire::{decode_call_started, decode_channel_call, decode
 use dilla_client::calls::{
     CallCatchUp, CallCore, CallPhase, CallRoutes, CallStarted, ChannelCall, CoreRefusal,
     FROZEN_RETRY, GroupSummary, HandshakePage, JoinHooks, JoinTarget, REJOIN_STEP, REJOIN_WAIT,
-    RouteError, join_call, leave_call, media_epoch, rotate_call,
+    RouteError, join_call, leave_call, leave_call_caught_up, media_epoch, rotate_call,
 };
 use dilla_core::cbor::Encoder;
 use zeroize::Zeroizing;
@@ -57,6 +57,9 @@ struct FakeCore {
     join_external: VecDeque<Result<Vec<u8>, CoreRefusal>>,
     groups: Vec<GroupSummary>,
     joined_fails: bool,
+    /// The next leave proposal is followed by another member's commit, applied by the sync engine while the proposal is
+    /// in flight (the call group's epoch moves by one).
+    commit_after_leave_proposal: bool,
 }
 
 impl CallCore for FakeCore {
@@ -97,6 +100,11 @@ impl CallCore for FakeCore {
     }
     fn call_leave_proposal(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
         self.log.push(format!("leave_proposal {:02x}", id[0]));
+        if std::mem::take(&mut self.commit_after_leave_proposal) {
+            for row in self.groups.iter_mut().filter(|r| r.group_id == *id) {
+                row.epoch += 1;
+            }
+        }
         Ok(b"remove".to_vec())
     }
     fn call_rotate(&mut self, id: &[u8; 16]) -> Result<Vec<u8>, CoreRefusal> {
@@ -651,6 +659,161 @@ async fn a_pending_remove_is_an_acknowledged_leave() {
         .push_back(Err(err(503, "E_UNAVAILABLE")));
     let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
     assert!(!left.proposed && !left.ended);
+}
+
+/// The call group's row in the fake core, at `epoch`.
+fn call_row(epoch: u64) -> GroupSummary {
+    GroupSummary {
+        group_id: GROUP,
+        kind: 1,
+        target_id: CHANNEL,
+        state: 2,
+        epoch,
+        next_seq: 0,
+        pending_commit: false,
+    }
+}
+
+/// A catch-up that applies `commits` commits of other members to the fake core's call group (its epoch moves by that
+/// many) and counts itself.
+struct AppliesCommits<'a> {
+    core: &'a Mutex<FakeCore>,
+    commits: u64,
+    runs: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait::async_trait]
+impl CallCatchUp for AppliesCommits<'_> {
+    async fn catch_up(&self, group: &[u8; 16]) {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut core = self.core.lock().unwrap();
+        for row in core.groups.iter_mut().filter(|r| r.group_id == *group) {
+            row.epoch += self.commits;
+        }
+    }
+}
+
+/// The removal flake (2026-11-22): a leave right after another device joined built its self-Remove on the epoch before
+/// that join's commit, which this device had not applied yet; the instance refused it (422 `E_COMMIT_INVALID`), and the
+/// others kept the device in their call until the instance noticed it gone. The group is caught up and the self-Remove
+/// is built and posted again on the new epoch.
+#[tokio::test]
+async fn a_self_remove_refused_for_its_epoch_is_built_again_after_a_catch_up() {
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(err(422, "E_COMMIT_INVALID")));
+    let catch_up = AppliesCommits {
+        core: &core,
+        commits: 1,
+        runs: Default::default(),
+    };
+    let left = leave_call_caught_up(&core, &routes, Some(&catch_up), &GROUP, &CHANNEL, false).await;
+    assert!(left.proposed && !left.ended);
+    assert_eq!(catch_up.runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        routes.posted(),
+        ["post_proposal remove", "post_proposal remove"]
+    );
+    assert_eq!(
+        core.lock().unwrap().log,
+        ["leave_proposal 44", "leave_proposal 44", "forget 44"]
+    );
+}
+
+/// The commit that made the instance refuse the self-Remove may be applied by the sync engine while the post is in
+/// flight, before the leave's own catch-up runs (which then finds nothing new): the epoch the Remove was built on is what
+/// counts, so it is built again all the same.
+#[tokio::test]
+async fn a_self_remove_is_built_again_when_the_engine_applied_the_commit_during_its_post() {
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        commit_after_leave_proposal: true,
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(err(422, "E_COMMIT_INVALID")));
+    let nothing_new = AppliesCommits {
+        core: &core,
+        commits: 0,
+        runs: Default::default(),
+    };
+    let left =
+        leave_call_caught_up(&core, &routes, Some(&nothing_new), &GROUP, &CHANNEL, false).await;
+    assert!(left.proposed);
+    assert_eq!(
+        routes.posted(),
+        ["post_proposal remove", "post_proposal remove"]
+    );
+}
+
+/// Bounded: a refusal the catch-up does not explain (the epoch stayed) is final, a self-Remove is built again at most
+/// LEAVE_REBUILDS times, and without a catch-up (a join's own leave) the refusal is final as before.
+#[tokio::test]
+async fn a_self_remove_refusal_the_catch_up_does_not_explain_is_final() {
+    use dilla_client::calls::controller::LEAVE_REBUILDS;
+    let refused = |routes: &FakeRoutes, n: u32| {
+        routes
+            .proposal
+            .lock()
+            .unwrap()
+            .extend((0..n).map(|_| Err(err(422, "E_COMMIT_INVALID"))));
+    };
+
+    // The epoch stays: one catch-up, no second post.
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(3)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    refused(&routes, 1);
+    let still = AppliesCommits {
+        core: &core,
+        commits: 0,
+        runs: Default::default(),
+    };
+    let left = leave_call_caught_up(&core, &routes, Some(&still), &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed);
+    assert_eq!(still.runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(routes.posted(), ["post_proposal remove"]);
+
+    // Every post refused although every catch-up moves the epoch: 1 + LEAVE_REBUILDS posts, then the group is forgotten.
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(3)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    refused(&routes, LEAVE_REBUILDS + 5);
+    let moving = AppliesCommits {
+        core: &core,
+        commits: 1,
+        runs: Default::default(),
+    };
+    let left = leave_call_caught_up(&core, &routes, Some(&moving), &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed);
+    assert_eq!(routes.posted().len(), 1 + LEAVE_REBUILDS as usize);
+    assert_eq!(core.lock().unwrap().log.last().unwrap(), "forget 44");
+
+    // No catch-up: the first refusal is final.
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(3)],
+        ..Default::default()
+    });
+    let routes = FakeRoutes::default();
+    refused(&routes, 1);
+    let left = leave_call(&core, &routes, &GROUP, &CHANNEL, false).await;
+    assert!(!left.proposed);
+    assert_eq!(routes.posted(), ["post_proposal remove"]);
 }
 
 #[tokio::test]

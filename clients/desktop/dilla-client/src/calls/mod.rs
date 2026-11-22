@@ -27,7 +27,9 @@ use zeroize::Zeroizing;
 use crate::seams::{Http, HttpError};
 use crate::sync::requests::SocketHttp;
 
-pub use controller::{Left, RotateError, decline_ring, leave_call, media_epoch, rotate_call};
+pub use controller::{
+    Left, RotateError, decline_ring, leave_call, leave_call_caught_up, media_epoch, rotate_call,
+};
 pub use join::{
     FROZEN_RETRY, JoinHooks, JoinRefused, JoinTarget, Joined, REJOIN_STEP, REJOIN_WAIT, join_call,
 };

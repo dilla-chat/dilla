@@ -20,7 +20,8 @@ use tokio::sync::{oneshot, watch};
 use super::controller::{Left, RotateError, decline_ring};
 use super::{
     CallCatchUp, CallCore, CallPhase, CallRoutes, CoreRefusal, HttpRoutes, JoinHooks, JoinRefused,
-    JoinTarget, Joined, MediaEpoch, RouteError, join_call, leave_call, media_epoch, rotate_call,
+    JoinTarget, Joined, MediaEpoch, RouteError, join_call, leave_call, leave_call_caught_up,
+    media_epoch, rotate_call,
 };
 use crate::client::{Client, ClientError, Inner};
 use crate::seams::{Http, HttpError, Route};
@@ -296,17 +297,21 @@ impl<H: Http + 'static> Calls<H> {
         let _ = super::lock(&**self.inner.engine().core()).map(|mut c| c.call_group_forget(group));
     }
 
-    /// Leaves the call ([`leave_call`]).
+    /// Leaves the call ([`leave_call_caught_up`]: a self-Remove refused for its epoch is built again after the sync
+    /// engine's catch-up).
     pub fn leave(
         &self,
         group: [u8; 16],
         call: [u8; 16],
         alone: bool,
     ) -> oneshot::Receiver<Result<Left, ClientError>> {
-        let core = self.inner.engine().core().clone();
+        let engine = self.inner.engine().clone();
         let routes = self.routes.clone();
-        self.inner
-            .spawn(async move { Ok(leave_call(&*core, &*routes, &group, &call, alone).await) })
+        self.inner.spawn(async move {
+            let core = engine.core().clone();
+            let catch_up = EngineCatchUp(engine);
+            Ok(leave_call_caught_up(&*core, &*routes, Some(&catch_up), &group, &call, alone).await)
+        })
     }
 
     /// The hourly rotation ([`rotate_call`]), reconciled through the sync engine's catch-up.

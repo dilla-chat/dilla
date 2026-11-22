@@ -47,17 +47,61 @@ pub async fn leave_call<C: CallCore, R: CallRoutes + ?Sized>(
     call: &[u8; 16],
     alone: bool,
 ) -> Left {
+    leave_call_caught_up(core, routes, None, group, call, alone).await
+}
+
+/// How many times a self-Remove the instance refused for its epoch is built again, each once a
+/// catch-up finds the group past the epoch it was built on.
+pub const LEAVE_REBUILDS: u32 = 2;
+
+/// [`leave_call`] with the group's catch-up, for a self-Remove built on an epoch the instance has
+/// left: a member's commit this device has not applied yet (another device's join, a rotation)
+/// moved the epoch, and the instance refuses a proposal for the old one (422 `E_COMMIT_INVALID`).
+/// The group is then caught up and, when its epoch is no longer the one the Remove was built on (the
+/// catch-up, or the sync engine meanwhile, applied a commit), the self-Remove is built and posted
+/// again (at most [`LEAVE_REBUILDS`] times), so the others see this device go at once rather than
+/// whenever the instance notices it gone. A refusal the catch-up does not explain is final.
+pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
+    core: &Mutex<C>,
+    routes: &R,
+    catch_up: Option<&dyn CallCatchUp>,
+    group: &[u8; 16],
+    call: &[u8; 16],
+    alone: bool,
+) -> Left {
     let mut ended = false;
     if alone {
         ended = routes.end_call_if_alone(call).await.unwrap_or(false);
     }
-    let proposal = lock(core).and_then(|mut c| c.call_leave_proposal(group));
-    let proposed = match proposal {
-        Ok(body) => match routes.post_proposal(group, body).await {
-            Ok(_) => true,
-            Err(e) => e.is(409, "E_REMOVE_PENDING"),
-        },
-        Err(_) => false,
+    let mut rebuilds = 0;
+    let proposed = loop {
+        // The epoch the self-Remove is built on, read under the same lock: the sync engine applies commits under it.
+        let Ok((built, body)) = lock(core).and_then(|mut c| {
+            let epoch = c
+                .groups()?
+                .into_iter()
+                .find(|r| r.group_id == *group)
+                .map(|r| r.epoch);
+            Ok((epoch, c.call_leave_proposal(group)?))
+        }) else {
+            break false;
+        };
+        match routes.post_proposal(group, body).await {
+            Ok(_) => break true,
+            Err(e) if e.is(409, "E_REMOVE_PENDING") => break true,
+            Err(e) if e.is(422, "E_COMMIT_INVALID") && rebuilds < LEAVE_REBUILDS => {
+                let Some(catch_up) = catch_up else {
+                    break false;
+                };
+                catch_up.catch_up(group).await;
+                let now = row_of(core, group).map(|r| r.epoch);
+                if built.is_none() || now == built {
+                    break false;
+                }
+                rebuilds += 1;
+            }
+            Err(_) => break false,
+        }
     };
     let _ = lock(core).map(|mut c| c.call_group_forget(group));
     Left { ended, proposed }
