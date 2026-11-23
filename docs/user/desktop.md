@@ -297,9 +297,9 @@ what the client still does not do.
   Sharing a window brings that window's application's sound by itself, and the sound section then reads "Sound from
   {app}". You can switch it off there or choose another application. Sharing a whole screen brings no application's
   sound unless you choose one. Nothing is chosen for you on Wayland (the system's dialog picks the window), when the
-  window's application isn't playing, or for Windows Store apps. Dilla's own sound is never shared. macOS may ask for permission to record system audio the first
-  time. The camera works on Linux, Windows and macOS (the built-in camera, an external one, and Continuity Camera on
-  macOS 14 or newer).
+  window's application isn't playing, or for Windows Store apps. Dilla's own sound is never shared. macOS may ask for
+  permission to record system audio the first time. The camera works on Linux, Windows and macOS (the built-in camera,
+  an external one, and Continuity Camera on macOS 14 or newer).
 - **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
   Decline), and a click opens the conversation. A ring raises its notification and sound with every window closed to
   the tray; Answer opens the window. On Linux an ended ring's notification is withdrawn, and a newer message in the
