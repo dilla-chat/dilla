@@ -378,3 +378,6 @@ func (d *DS) GroupLockFree(groupID id.ID) bool {
 func StoreInstanceProposalForTest(d *DS, ctx context.Context, groupID id.ID, row store.GroupRow, blob []byte, proposal store.ProposalRow) error {
 	return d.storeInstanceProposal(ctx, groupID, row, blob, proposal)
 }
+
+// PublicMessageEpochForTest is publicMessageEpoch: the framed epoch of a PublicMessage.
+func PublicMessageEpochForTest(msg []byte) (uint64, bool) { return publicMessageEpoch(msg) }

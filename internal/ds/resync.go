@@ -81,9 +81,6 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	if err := d.requireGroupCapability(ctx, s, row); err != nil {
 		return CommitResult{}, err
 	}
-	if err := checkExternalCommitEpoch(r.ExternalCommit, epoch); err != nil {
-		return CommitResult{}, err
-	}
 	out, err := d.commitLocked(ctx, s, groupID, CommitRequest{
 		Epoch:     epoch,
 		Commit:    r.ExternalCommit,
@@ -128,7 +125,9 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 // timing contract: the client stages again on the group as it is now. No conflict metadata is
 // returned: the uploader may hold no leaf. One for an epoch the group has not reached is
 // "epoch_ahead", as commitPreflight answers it. A message whose framing this cannot read is left to
-// the parse.
+// the parse. It is commitLocked's step (2) for an external commit, so it runs after the membership
+// answer and the closed-group answer (protocol/02: a closed group is 409 E_GROUP_CLOSED "before the
+// epoch check"), and before the freeze and the parse.
 func checkExternalCommitEpoch(msg []byte, groupEpoch uint64) *Error {
 	epoch, ok := publicMessageEpoch(msg)
 	if !ok || epoch == groupEpoch {

@@ -1164,7 +1164,7 @@ E_VERSION         : [code, detail, null, wire([uint]), e2ee([uint]), media([uint
 | 410 | `E_INVITE_INVALID` | the invite is expired, exhausted or revoked | none |
 | 410 | `E_BOT_KEY_STALE` | a sealed Bot command names a `key_id` that is neither the community's published command key nor, for 24 hours after a rotation, the key it replaced | read the catalog once (the new publication) and resend the same `request_id` sealed to it |
 | 413 | `E_TOO_LARGE` | the object exceeds the instance limit | split or attach |
-| 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause | do not retry unchanged; resync if behind |
+| 422 | `E_COMMIT_INVALID` | structural or policy failure; `rule` names the clause. Two rules are timing, not the commit: `"epoch"` (the group changed while the commit was prepared; on `POST /resync`, an external commit framed for an epoch the group has left) and `"outstanding_proposals"` (for an external commit, invariant 5's freeze met inside the commit) | do not retry unchanged; resync if behind. On `"epoch"`, stage the commit again on the group as it is now; on `"outstanding_proposals"`, wait for a member's commit as for `425 E_COMMIT_REQUIRED`. Every other rule is final |
 | 422 | `E_COMMITMENT_INVALID` | `private_message.authenticated_data` is not exactly 32 bytes | recompute `C` and resend |
 | 425 | `E_COMMIT_REQUIRED` | outstanding DS proposals must be committed first | commit them (or wait for `mls.commit_needed`), then resend |
 | 426 | `E_UPGRADE_REQUIRED` | the client offered only wire versions older than every one the instance supports (wire 6; older clients are not served) | stop retrying and tell the user to update the app |

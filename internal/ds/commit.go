@@ -155,6 +155,14 @@ func (d *DS) commitLocked(ctx context.Context, s Session, groupID id.ID, c Commi
 	if err != nil {
 		return CommitResult{}, err
 	}
+	// (2, external) /resync supplies the group's own epoch, so the check above cannot see a stale
+	// external commit: its framed epoch is compared here, after the closed-group answer and before
+	// the freeze and the parse (checkExternalCommitEpoch, resync.go).
+	if o.external {
+		if eerr := checkExternalCommitEpoch(c.Commit, row.Epoch); eerr != nil {
+			return CommitResult{}, eerr
+		}
+	}
 
 	// (1a) an outstanding instance Add whose device or user has become ineligible is voided before
 	// clause 1 is applied, so a commit that leaves it out can land (VoidIneligibleAdds says why no

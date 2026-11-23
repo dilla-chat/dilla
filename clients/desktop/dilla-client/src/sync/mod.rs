@@ -1795,7 +1795,9 @@ impl Engine {
         }
     }
 
-    /// joinall.ts `joinOne`: true when joined or already held.
+    /// joinall.ts `joinOne`: true when joined or already held. A refusal [`join_one_again`] admits is tried again at
+    /// once; any other is left to the next `join_all` (`JOIN_ALL_RETRY`). The tries spent carry over between rounds
+    /// (they did not before: the lane's job took a copy of the counter, so the 409 budget never ran out).
     async fn join_one(self: Arc<Self>, eg: ExpectedGroup) -> bool {
         let g = eg.group_id;
         let mut joins = 0u32;
@@ -1804,31 +1806,37 @@ impl Engine {
                 return true;
             }
             let this = Arc::clone(&self);
-            let result = self
+            // The lane's job owns its counters (it is moved onto the lane), so it hands them back: the tries spent and
+            // the epoch its commit was staged on.
+            let (result, spent, staged) = self
                 .lanes
                 .run(&key(&g), async move {
+                    let mut joins = joins;
+                    let mut staged = None;
                     let state = this.state_of(g).await;
                     if matches!(state, Some(2) | Some(3)) {
-                        return Ok(());
+                        return (Ok(()), joins, staged);
                     }
                     if matches!(state, Some(0) | Some(1)) {
                         let _ = with_core(&this.core, move |c| c.group_discard(&g)).await;
                     }
-                    this.clone().external_join(eg, &mut joins, &mut None).await
+                    let r = this
+                        .clone()
+                        .external_join(eg, &mut joins, &mut staged)
+                        .await;
+                    (r, joins, staged)
                 })
                 .await;
+            joins = spent;
             // Wait for the jobs the join queued (the activation's catch-up) to be in line.
             self.lanes.run(&key(&g), async {}).await;
             match result {
-                Ok(()) => return true,
-                Err(SyncError::Stopped) => return true,
-                Err(e)
-                    if e.api().is_some_and(|a| a.is(409, "E_COMMIT_CONFLICT"))
-                        && joins < COMMIT_RETRY_MAX =>
-                {
-                    continue;
+                Ok(()) | Err(SyncError::Stopped) => return true,
+                Err(e) => {
+                    if !join_one_again(&self, g, &e, joins, staged).await {
+                        return false;
+                    }
                 }
-                Err(_) => return false,
             }
         }
     }
@@ -2857,6 +2865,32 @@ fn join_retry(e: &SyncError, joins: u32) -> JoinRetry {
         };
     }
     JoinRetry::Fail
+}
+
+/// Whether the background join (`join_all`'s [`Engine::join_one`]) tries a refused external join again at once, by the
+/// open's policy ([`join_retry`]) within the same [`COMMIT_RETRY_MAX`]: 409 `E_COMMIT_CONFLICT` at once, 422
+/// `E_COMMIT_INVALID` `epoch` only when the group's epoch is known to have moved past `staged` (another device's commit
+/// landed while this one was staged). A frozen group (425, or `outstanding_proposals`) is not waited out here, and every
+/// other refusal is final: both are left to the next `join_all`.
+async fn join_one_again<P: JoinPort>(
+    port: &P,
+    g: Gid,
+    e: &SyncError,
+    joins: u32,
+    staged: Option<u64>,
+) -> bool {
+    match join_retry(e, joins) {
+        JoinRetry::Now => true,
+        JoinRetry::IfMoved => {
+            let now = port
+                .read_group_info(g)
+                .await
+                .ok()
+                .and_then(|b| group_info_epoch(&b));
+            epoch_moved(staged, now)
+        }
+        JoinRetry::Unfrozen(_) | JoinRetry::Fail => false,
+    }
 }
 
 /// The epoch of a `GET /v1/groups/{id}/info` body (`[epoch, group_info, tree_hash, next_seq]`).

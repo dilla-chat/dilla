@@ -227,7 +227,8 @@ async function joinExisting(d: JoinDeps, t: JoinTarget, groupId: Id, tried: { in
 }
 
 /** The instance's refusals of a commit built on an epoch it has left: dillad answers 422 E_COMMIT_INVALID (rule
- *  structural, its resync takes the epoch to commit against from the group itself), a lost race 409 E_COMMIT_CONFLICT.
+ *  epoch since 2026-11-23, structural before: its resync takes the epoch to commit against from the group itself), a
+ *  lost race 409 E_COMMIT_CONFLICT. Every 422 rule is retried here, bounded by groupMovedSince and the try budget.
  *  409 E_REMOVE_PENDING is neither: the rejoin's own wait takes it; nor is 409 E_GROUP_CLOSED, which joinLoop answers
  *  with a fresh registration. */
 function isStaleCommit(e: unknown): boolean {
