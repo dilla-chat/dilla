@@ -68,6 +68,20 @@ fn hold_timer_running() -> bool {
     })
 }
 
+/// Waits up to 5 s for the hold timer's thread to show its name: `std` names a spawned thread from
+/// inside it, after `spawn` has returned, so a check right after `install` can run first.
+#[cfg(target_os = "linux")]
+fn hold_timer_starts() -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !hold_timer_running() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
 /// A call's PeerConnection, alive at exit as one is when the app quits mid-call: its transformers
 /// stay registered while the process tears down.
 fn leave_a_call_alive() {
@@ -125,7 +139,7 @@ fn the_process_exits_cleanly_with_the_hold_timer_running_and_a_call_alive() {
     }
     assert!(webrtc_sys::dilla_transform::install(Box::new(Nothing)));
     #[cfg(target_os = "linux")]
-    assert!(hold_timer_running(), "the hold timer started");
+    assert!(hold_timer_starts(), "the hold timer started");
     leave_a_call_alive();
 }
 
