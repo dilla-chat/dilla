@@ -14,7 +14,7 @@ use super::requests::SocketRequests;
 use super::{
     COMMIT_RETRY_MAX, ConnectionEvent, CoreError, Engine, ExpectedGroup, JoinPort, JoinRetry,
     JoinStep, MEMBERSHIP_WAIT, Membership, SyncError, SyncHooks, UNFROZEN_POLL, epoch_moved,
-    group_info_epoch, join_named, join_retry, wait_unfrozen,
+    group_info_epoch, join_named, join_one_again, join_retry, wait_unfrozen,
 };
 use crate::auth::AuthToken;
 use crate::gateway::frames::{self, Frame, Op, Value};
@@ -705,4 +705,62 @@ async fn a_refused_joiner_posts_once_and_surfaces() {
     let e = open_named(&port).await.expect_err("refused");
     assert_eq!(e.code(), "E_COMMIT_INVALID");
     assert_eq!(port.steps(), ["stage@10", "post", "discard"]);
+}
+
+/// The background join (`join_all`'s `join_one`) takes the open's policy for a refusal it tries again at once: a 422
+/// `epoch` only when the group moved past the epoch its commit was staged on (two devices joining at once: the
+/// instance answers the loser `epoch`, never `structural`), a 409 conflict, both within the same budget. A frozen group
+/// and every clause that judges the commit are left to the next `join_all`.
+#[tokio::test]
+async fn a_background_join_retries_a_stale_epoch_only_once_the_group_moved() {
+    let g = [9; 16];
+    let moved = Script::new(|_| 11);
+    let still = Script::new(|_| 10);
+    assert!(join_one_again(&moved, g, &invalid("epoch"), 1, Some(10)).await);
+    assert!(!join_one_again(&still, g, &invalid("epoch"), 1, Some(10)).await);
+    assert!(
+        !join_one_again(&moved, g, &invalid("epoch"), 1, None).await,
+        "an unknown staged epoch is not moved"
+    );
+    assert!(
+        !join_one_again(&moved, g, &invalid("epoch"), COMMIT_RETRY_MAX, Some(10)).await,
+        "the tries are spent"
+    );
+    assert!(
+        join_one_again(
+            &still,
+            g,
+            &refused(409, "E_COMMIT_CONFLICT", None),
+            1,
+            Some(10)
+        )
+        .await
+    );
+    assert!(
+        !join_one_again(
+            &still,
+            g,
+            &refused(409, "E_COMMIT_CONFLICT", None),
+            COMMIT_RETRY_MAX,
+            Some(10)
+        )
+        .await
+    );
+    for final_or_frozen in [
+        invalid("structural"),
+        invalid("external_joiner"),
+        invalid("outstanding_proposals"),
+        refused(425, "E_COMMIT_REQUIRED", Some(2_000)),
+        refused(409, "E_GROUP_CLOSED", None),
+    ] {
+        assert!(
+            !join_one_again(&moved, g, &final_or_frozen, 1, Some(10)).await,
+            "{final_or_frozen}"
+        );
+    }
+    assert_eq!(
+        still.info_reads.load(Ordering::Acquire),
+        1,
+        "only the epoch refusal reads the group, never a 409"
+    );
 }

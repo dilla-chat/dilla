@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dilla-chat/dilla/internal/bot/community/welcome"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/bot/protocol"
@@ -93,6 +94,38 @@ type installationFeed struct {
 	// firstSeen is when a join episode was first heard: the welcome handler keys its pending state on the event's id
 	// and time, so a retried episode must present the same ones.
 	firstSeen map[id.ID]uint64
+	// welcomeRetries is the joins whose welcome was deferred (welcome.ErrRetryLater), by episode: run again by
+	// retryWelcomes on the due-work tick, after a pass binds the welcome handler, and on a live channel-group commit.
+	welcomeRetries map[id.ID]*welcomeRetry
+	// welcomeKicked is set by a kick (a pass, a commit): the next retry run waits only welcomeRetryMin.
+	welcomeKicked bool
+	// welcomeRunning is set while a kicked retry run is in flight; welcomeMu serializes the welcome runs, the feed
+	// worker's and the retries', so one episode is never sent twice at once.
+	welcomeRunning atomic.Bool
+	welcomeMu      sync.Mutex
+	closed         atomic.Bool
+}
+
+// welcomeRetry is one deferred join: the member, how many retries ran, and when the last run was.
+type welcomeRetry struct {
+	user  id.ID
+	tries int
+	last  time.Time
+}
+
+// A deferred welcome is retried no sooner than welcomeRetryMin after its last run, doubling per retry up to
+// welcomeRetryCap. The welcome itself bounds the episode (8 send attempts, the 24 h catch-up cutoff); welcomeRetryMaxAge
+// and welcomeRetryLimit only keep the set from holding an entry, or growing, without end.
+const (
+	welcomeRetryMin        = 2 * time.Second
+	welcomeRetryCap        = time.Minute
+	welcomeRetryMaxAge     = 25 * time.Hour
+	welcomeRetryLimit      = 1024
+	welcomeRetryRunTimeout = 2 * time.Minute
+)
+
+func welcomeRetryBackoff(tries int) time.Duration {
+	return min(welcomeRetryMin<<min(tries, 5), welcomeRetryCap)
 }
 
 var _ Feed = (*installationFeed)(nil)
@@ -102,7 +135,7 @@ var feedTrustRetry = trust.DefaultRetry
 
 func newInstallationFeed(installation, community, botUser id.ID, log *slog.Logger, requestPass func()) *installationFeed {
 	f := &installationFeed{installation: installation, community: community, botUser: botUser, log: log, requestPass: requestPass, now: time.Now,
-		state: newFeedState(), firstSeen: map[id.ID]uint64{}}
+		state: newFeedState(), firstSeen: map[id.ID]uint64{}, welcomeRetries: map[id.ID]*welcomeRetry{}}
 	f.trust = trust.New(feedTrustCore{f}, feedTrustRetry).WithLogger(log).WithGroups(f.inTrustGroup)
 	return f
 }
@@ -116,6 +149,7 @@ func (f *installationFeed) inTrustGroup(group id.ID) bool {
 
 // close stops the feed's trust retries: the installation's feed is dropped (fix round 1, M-3).
 func (f *installationFeed) close() {
+	f.closed.Store(true)
 	f.trust.Close()
 }
 
@@ -147,6 +181,11 @@ func (f *installationFeed) setDeps(d feedDeps) {
 	f.mu.Unlock()
 	if rebound {
 		f.trust.Kick()
+	}
+	if d.welcome != nil {
+		// A pass bound the welcome handler, after its membership work: a Bot channel's group it joined just now can take
+		// the welcomes that were waiting for it.
+		f.kickWelcomes(true)
 	}
 }
 
@@ -273,6 +312,13 @@ func (f *installationFeed) joined(ctx context.Context, user id.ID) {
 	if !ok {
 		return
 	}
+	f.runWelcome(ctx, d, user, episode)
+}
+
+// runWelcome runs the welcome and join-role handler for one episode, with the event id and time fixed for that
+// episode, and keeps or drops its retry by the outcome. Logs carry ids, counts and the error only: never a name or
+// the welcome text.
+func (f *installationFeed) runWelcome(ctx context.Context, d feedDeps, user, episode id.ID) {
 	f.mu.Lock()
 	at, seen := f.firstSeen[episode]
 	if !seen {
@@ -284,8 +330,123 @@ func (f *installationFeed) joined(ctx context.Context, user id.ID) {
 	var eventID id.ID
 	copy(eventID[:], h[:id.Size])
 	ev := protocol.Event{ID: eventID, CommunityID: f.community, Sequence: 1, Timestamp: at, Kind: protocol.EventMemberJoin, Data: []any{user, episode}}
-	if err := d.welcome(ctx, ev); err != nil {
-		f.log.Warn("bot feed member join not welcomed", "error", err.Error())
+	f.welcomeMu.Lock()
+	err := d.welcome(ctx, ev)
+	f.welcomeMu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	retry := f.welcomeRetries[episode]
+	switch {
+	case errors.Is(err, welcome.ErrRetryLater):
+		if retry == nil {
+			if len(f.welcomeRetries) >= welcomeRetryLimit {
+				f.log.Warn("bot feed member join not welcomed", "episode_id", episode.String(), "reason", "retry_set_full", "pending", len(f.welcomeRetries))
+				return
+			}
+			retry = &welcomeRetry{user: user}
+			f.welcomeRetries[episode] = retry
+			f.log.Info("bot feed member join welcome deferred", "episode_id", episode.String())
+		} else {
+			retry.tries++
+		}
+		retry.last = f.now()
+		return
+	case errors.Is(err, welcome.ErrGaveUp):
+		tries := 0
+		if retry != nil {
+			tries = retry.tries
+		}
+		f.log.Warn("bot feed member join welcome given up", "episode_id", episode.String(), "retries", tries)
+	case err != nil:
+		f.log.Warn("bot feed member join not welcomed", "episode_id", episode.String(), "error", err.Error())
+	}
+	delete(f.welcomeRetries, episode)
+}
+
+// pendingWelcomes is how many deferred joins wait for a retry.
+func (f *installationFeed) pendingWelcomes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.welcomeRetries)
+}
+
+// kickWelcomes starts a retry run off the caller's goroutine when joins are waiting and none is running. kicked lets
+// the run take each join after welcomeRetryMin instead of its full backoff. A kick that finds a run in flight is kept
+// for the next run.
+func (f *installationFeed) kickWelcomes(kicked bool) {
+	if f.closed.Load() {
+		return
+	}
+	f.mu.Lock()
+	waiting := len(f.welcomeRetries)
+	if kicked && waiting > 0 {
+		f.welcomeKicked = true
+	}
+	f.mu.Unlock()
+	if waiting == 0 || !f.welcomeRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer f.welcomeRunning.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), welcomeRetryRunTimeout)
+		defer cancel()
+		f.retryWelcomes(ctx)
+	}()
+}
+
+// retryWelcomes runs every deferred join whose backoff passed. A member no longer in the community, or whose current
+// episode is another one, is dropped unwelcomed: the welcome is for that membership episode only.
+func (f *installationFeed) retryWelcomes(ctx context.Context) {
+	d := f.current()
+	if d.welcome == nil {
+		return
+	}
+	now := f.now()
+	type due struct{ user, episode id.ID }
+	var runs []due
+	f.mu.Lock()
+	kicked := f.welcomeKicked
+	f.welcomeKicked = false
+	for episode, r := range f.welcomeRetries {
+		at := f.firstSeen[episode]
+		if !f.state.members[r.user] || at <= uint64(max(now.Add(-welcomeRetryMaxAge).Unix(), 0)) {
+			delete(f.welcomeRetries, episode)
+			continue
+		}
+		wait := welcomeRetryBackoff(r.tries)
+		if kicked {
+			wait = welcomeRetryMin
+		}
+		if now.Sub(r.last) >= wait {
+			runs = append(runs, due{user: r.user, episode: episode})
+		}
+	}
+	f.mu.Unlock()
+	for _, r := range runs {
+		if ctx.Err() != nil || f.closed.Load() {
+			return
+		}
+		if d.episodes == nil {
+			return
+		}
+		current, present, err := d.episodes.ResolveCurrentEpisode(ctx, r.user)
+		f.mu.Lock()
+		if err != nil {
+			// Unknown, not gone: the join waits for its next backoff.
+			if retry := f.welcomeRetries[r.episode]; retry != nil {
+				retry.last = f.now()
+			}
+			f.mu.Unlock()
+			f.log.Warn("bot feed member episode unavailable", "episode_id", r.episode.String(), "error", err.Error())
+			continue
+		}
+		if !present || current != r.episode {
+			delete(f.welcomeRetries, r.episode)
+			f.mu.Unlock()
+			continue
+		}
+		f.mu.Unlock()
+		f.runWelcome(ctx, d, r.user, r.episode)
 	}
 }
 
@@ -303,6 +464,12 @@ func (f *installationFeed) Member(ctx context.Context, ev MemberEvent) {
 		f.state.members[ev.User] = true
 	} else {
 		delete(f.state.members, ev.User)
+		// A member who left is not welcomed for the episode they left.
+		for episode, r := range f.welcomeRetries {
+			if r.user == ev.User {
+				delete(f.welcomeRetries, episode)
+			}
+		}
 	}
 	f.mu.Unlock()
 	if ev.Joined && !was {
@@ -330,12 +497,17 @@ func (f *installationFeed) Community(_ context.Context, _, owner id.ID, snapshot
 
 func (f *installationFeed) ChannelGroup(_ context.Context, ev ChannelGroupEvent) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	s := f.target(ev.Snapshot)
 	if old, ok := s.groups[ev.Group]; ok && old.Epoch >= ev.Epoch {
+		f.mu.Unlock()
 		return // an older epoch, queued before a newer one arrived, never goes back
 	}
 	s.groups[ev.Group] = ev
+	f.mu.Unlock()
+	if !ev.Snapshot {
+		// A commit moved a channel group on: a newcomer's Add, which held a deferred welcome, may be committed now.
+		f.kickWelcomes(true)
+	}
 }
 
 // BotChannel records a mark. A live mark asks for a pass, which joins the channel's group (applies its Welcome and syncs

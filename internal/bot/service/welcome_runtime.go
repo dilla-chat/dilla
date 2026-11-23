@@ -27,6 +27,10 @@ type WelcomeDestinationResolver struct {
 	// Feature names the caller in the needs_bot_channel flag ("welcome", "announcements", "polls", "role_panels",
 	// "music"); empty is "post".
 	Feature string
+	// DeferWhileBusy makes the transient states retryable (welcome.ErrRetryLater): the Bot not yet in the channel's
+	// group, or the group holding pending proposals or a pending commit, which the server would refuse a post into and
+	// close the attempt. The welcome sets it; other features keep their own handling.
+	DeferWhileBusy bool
 }
 
 type channelLister interface {
@@ -46,7 +50,7 @@ func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, commun
 			FlagNeedsBotChannel(community, feature, channel)
 		}
 		logRefusal(ctx, feature, channel, err)
-		return id.ID{}, err
+		return id.ID{}, r.deferrable(err)
 	}
 	ClearNeedsBotChannel(community, feature)
 	channels, err := r.Session.Channels(ctx, community)
@@ -65,7 +69,7 @@ func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, commun
 			// Not (yet) in the Bot's native state: a Bot channel marked a moment ago is joined from its kept Welcome later.
 			err = fmt.Errorf("%w: %w", ErrBotNotJoined, err)
 			logRefusal(ctx, feature, channel, err)
-			return id.ID{}, err
+			return id.ID{}, r.deferrable(err)
 		}
 		if group.ID != *ch.TextGroupID || group.State != 2 || group.Community == nil || *group.Community != community || group.Target != channel {
 			err = errors.New("welcome destination MLS group is not authorized for this channel")
@@ -73,11 +77,26 @@ func (r WelcomeDestinationResolver) ResolveTextGroup(ctx context.Context, commun
 				err = ErrBotNotJoined
 			}
 			logRefusal(ctx, feature, channel, err)
-			return id.ID{}, err
+			return id.ID{}, r.deferrable(err)
+		}
+		if r.DeferWhileBusy && (group.ProposalsPending > 0 || group.PendingCommit) {
+			// The newcomer's Add (or a Remove) is still outstanding: the server would refuse the post and close the
+			// attempt, and a post accepted before the Add commit is unreadable by the newcomer. Wait for the commit.
+			logRefusal(ctx, feature, channel, ErrGroupBusy)
+			return id.ID{}, r.deferrable(ErrGroupBusy)
 		}
 		return group.ID, nil
 	}
 	return id.ID{}, errors.New("configured welcome channel is unavailable")
+}
+
+// deferrable marks a transient refusal as retryable (welcome.ErrRetryLater) for a resolver that defers; any other
+// error, and every error of a resolver that does not defer, is returned as it is.
+func (r WelcomeDestinationResolver) deferrable(err error) error {
+	if r.DeferWhileBusy && (errors.Is(err, ErrBotNotJoined) || errors.Is(err, ErrBotChannelsUnknown) || errors.Is(err, ErrGroupBusy)) {
+		return fmt.Errorf("%w: %w", err, welcome.ErrRetryLater)
+	}
+	return err
 }
 
 // WelcomeSender sends through SendCoordinator, which persists the exact MLS
@@ -108,7 +127,7 @@ func (s WelcomeSender) SendWelcome(ctx context.Context, req welcome.SendRequest)
 	if err != nil {
 		return protocol.SendReceipt{}, err
 	}
-	return s.Coordinator.Send(ctx, s.Session, SendInput{OperationID: req.OperationID, AttemptID: req.AttemptID, GroupID: req.GroupID, RequestBody: body, OriginalNow: req.OriginalNow, ExpectedGeneration: discovery.Generation})
+	return s.Coordinator.Send(ctx, s.Session, SendInput{OperationID: req.OperationID, AttemptID: req.AttemptID, PredecessorAttemptID: req.PredecessorAttemptID, GroupID: req.GroupID, RequestBody: body, OriginalNow: req.OriginalNow, ExpectedGeneration: discovery.Generation})
 }
 
 func (s WelcomeSender) ResolveWelcome(ctx context.Context, operation, attempt id.ID) (protocol.SendReceipt, bool, error) {

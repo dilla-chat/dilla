@@ -2,7 +2,9 @@ package welcome
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -552,5 +554,262 @@ func TestRoleGrantIsExplicitlyUnavailable(t *testing.T) {
 	_, _, p, _, u, e, _ := fixture()
 	if err := p.GrantRole(context.Background(), u, e); !errors.Is(err, ErrRoleGrantUnavailable) {
 		t.Fatalf("grant result=%v", err)
+	}
+}
+
+// scriptedSender answers each send with the next outcome in its script (the last one repeats) and records every request.
+type scriptedSender struct {
+	outcomes []protocol.SendOutcome
+	requests []SendRequest
+	resolved []id.ID
+}
+
+func (s *scriptedSender) SendWelcome(_ context.Context, req SendRequest) (protocol.SendReceipt, error) {
+	s.requests = append(s.requests, req)
+	outcome := s.outcomes[min(len(s.requests)-1, len(s.outcomes)-1)]
+	r := protocol.SendReceipt{OperationID: req.OperationID, AttemptID: req.AttemptID, PredecessorAttemptID: req.PredecessorAttemptID,
+		CommunityID: req.CommunityID, GroupID: req.GroupID, CiphertextHash: make([]byte, 32), Outcome: outcome}
+	if outcome == protocol.ReceiptAccepted {
+		r.SendResponse = &protocol.OriginalSendResponse{Sequence: 1, FrankingTag: make([]byte, 32), ReceiveTimestamp: 1, Body: mustCBOR([]any{uint64(1), make([]byte, 32), uint64(1)})}
+	}
+	return r, nil
+}
+
+func (s *scriptedSender) ResolveWelcome(_ context.Context, _, attempt id.ID) (protocol.SendReceipt, bool, error) {
+	s.resolved = append(s.resolved, attempt)
+	return protocol.SendReceipt{}, false, nil
+}
+
+func scriptedFixture(outcomes ...protocol.SendOutcome) (*testNative, *scriptedSender, *Processor, *testMembers, id.ID, id.ID, id.ID) {
+	n, _, p, c, u, e, _ := fixture()
+	s := &scriptedSender{outcomes: outcomes}
+	p.sender = s
+	members := p.members.(*testMembers)
+	return n, s, p, members, c, u, e
+}
+
+// storedEpisode reads the episode back from the native state store.
+func storedEpisode(t *testing.T, p *Processor, user, episodeID id.ID) episode {
+	t.Helper()
+	v, _, err := p.load(context.Background(), p.stateKey(user, episodeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// The server closed attempt 0 (the group was busy): the episode stays pending with a successor attempt, and the next run
+// sends attempt 1 chained to the closed one. An accepted successor posts the welcome.
+func TestClosedReceiptRetriesWithSuccessor(t *testing.T) {
+	_, s, p, _, c, u, e := scriptedFixture(protocol.ReceiptClosedNotAccepted, protocol.ReceiptAccepted)
+	ev := joinEvent(c, u, e, 1_999_999)
+	if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+		t.Fatalf("closed receipt: err=%v, want ErrRetryLater", err)
+	}
+	op := operationID(p.binding.Installation, u, e)
+	if got := storedEpisode(t, p, u, e); got.Status != StatusPending || got.Attempt != 1 {
+		t.Fatalf("after a closed receipt: status=%v attempt=%d, want pending 1", got.Status, got.Attempt)
+	}
+	if first := s.requests[0]; first.AttemptID != attemptID(op) || first.PredecessorAttemptID != nil {
+		t.Fatalf("attempt 0 = %s (predecessor %v), want the v1 id and no predecessor", first.AttemptID, first.PredecessorAttemptID)
+	}
+	if err := p.Process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.requests) != 2 {
+		t.Fatalf("sends=%d, want 2", len(s.requests))
+	}
+	second := s.requests[1]
+	if second.OperationID != op || second.AttemptID != attemptID(op, 1) || second.AttemptID == attemptID(op) ||
+		second.PredecessorAttemptID == nil || *second.PredecessorAttemptID != attemptID(op) {
+		t.Fatalf("successor attempt=%s predecessor=%v", second.AttemptID, second.PredecessorAttemptID)
+	}
+	if got := storedEpisode(t, p, u, e); got.Status != StatusPosted {
+		t.Fatalf("status=%v, want posted", got.Status)
+	}
+	if err := p.Process(context.Background(), ev); err != nil || len(s.requests) != 2 {
+		t.Fatalf("a posted episode was processed again: err=%v sends=%d", err, len(s.requests))
+	}
+}
+
+// Attempt n's id is the v2 domain plus the operation plus n as a big-endian uint32; attempt 0 keeps the v1 id.
+func TestAttemptIDDerivation(t *testing.T) {
+	op := testID(42)
+	want := sha256.Sum256(append(append([]byte("dilla.bot.welcome.attempt.v2\x00"), op[:]...), 0, 0, 0, 3))
+	var w id.ID
+	copy(w[:], want[:16])
+	if attemptID(op, 3) != w {
+		t.Fatalf("attempt 3 = %s, want %s", attemptID(op, 3), w)
+	}
+	v1 := sha256.Sum256(append([]byte("dilla.bot.welcome.attempt.v1\x00"), op[:]...))
+	var w0 id.ID
+	copy(w0[:], v1[:16])
+	if attemptID(op) != w0 || attemptID(op, 0) != w0 {
+		t.Fatal("attempt 0 changed its id")
+	}
+}
+
+// A join seen before the Bot joined the channel's group defers: nothing is sent, the episode stays pending at attempt 0.
+func TestNotJoinedIsRetryable(t *testing.T) {
+	_, s, p, _, c, u, e := scriptedFixture(protocol.ReceiptAccepted)
+	p.destination = testDestination{err: fmt.Errorf("bot has not joined the channel's group yet: %w", ErrRetryLater)}
+	ev := joinEvent(c, u, e, 1_999_999)
+	if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+		t.Fatalf("not joined: err=%v, want ErrRetryLater", err)
+	}
+	if len(s.requests) != 0 {
+		t.Fatalf("sent %d while not joined", len(s.requests))
+	}
+	if got := storedEpisode(t, p, u, e); got.Status != StatusPending || got.Attempt != 0 {
+		t.Fatalf("status=%v attempt=%d", got.Status, got.Attempt)
+	}
+	p.destination = testDestination{group: testID(12)}
+	if err := p.Process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.requests) != 1 || s.requests[0].PredecessorAttemptID != nil {
+		t.Fatalf("after joining: sends=%d", len(s.requests))
+	}
+}
+
+// While the destination group has pending proposals or a pending commit, nothing is sent and no attempt is used up.
+func TestPendingGroupDefers(t *testing.T) {
+	_, s, p, _, c, u, e := scriptedFixture(protocol.ReceiptAccepted)
+	p.destination = testDestination{err: fmt.Errorf("group busy: %w", ErrRetryLater)}
+	ev := joinEvent(c, u, e, 1_999_999)
+	for range 3 {
+		if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+			t.Fatalf("busy group: err=%v", err)
+		}
+	}
+	if len(s.requests) != 0 {
+		t.Fatalf("sent %d into a busy group", len(s.requests))
+	}
+	if got := storedEpisode(t, p, u, e); got.Status != StatusPending || got.Attempt != 0 {
+		t.Fatalf("status=%v attempt=%d, want pending 0", got.Status, got.Attempt)
+	}
+}
+
+// A server that keeps refusing: the 8th closed receipt ends the episode as failed, and nothing is sent after that.
+func TestRetryBoundGivesUp(t *testing.T) {
+	_, s, p, _, c, u, e := scriptedFixture(protocol.ReceiptClosedNotAccepted)
+	ev := joinEvent(c, u, e, 1_999_999)
+	for i := 1; i < maxAttempts; i++ {
+		if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+			t.Fatalf("closed receipt %d: err=%v, want ErrRetryLater", i, err)
+		}
+	}
+	if err := p.Process(context.Background(), ev); !errors.Is(err, ErrGaveUp) || errors.Is(err, ErrRetryLater) {
+		t.Fatalf("closed receipt %d: err=%v, want ErrGaveUp", maxAttempts, err)
+	}
+	if len(s.requests) != 8 || maxAttempts != 8 {
+		t.Fatalf("sends=%d (max %d), want 8", len(s.requests), maxAttempts)
+	}
+	if got := storedEpisode(t, p, u, e); got.Status != StatusFailed {
+		t.Fatalf("status=%v, want failed", got.Status)
+	}
+	if err := p.Process(context.Background(), ev); err != nil || len(s.requests) != 8 {
+		t.Fatalf("a failed episode was retried: err=%v sends=%d", err, len(s.requests))
+	}
+	op := operationID(p.binding.Installation, u, e)
+	for i, r := range s.requests {
+		if r.AttemptID != attemptID(op, uint32(i)) {
+			t.Fatalf("send %d used attempt %s", i, r.AttemptID)
+		}
+		if i > 0 && (r.PredecessorAttemptID == nil || *r.PredecessorAttemptID != s.requests[i-1].AttemptID) {
+			t.Fatalf("send %d is not chained to send %d", i, i-1)
+		}
+	}
+}
+
+// A member who left before the retry runs gets no welcome.
+func TestLeftMemberNotWelcomedOnRetry(t *testing.T) {
+	_, s, p, members, c, u, e := scriptedFixture(protocol.ReceiptClosedNotAccepted, protocol.ReceiptAccepted)
+	ev := joinEvent(c, u, e, 1_999_999)
+	if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+		t.Fatalf("err=%v", err)
+	}
+	members.present = false
+	if err := p.Process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.requests) != 1 {
+		t.Fatalf("sends=%d, want only the first", len(s.requests))
+	}
+	if got := storedEpisode(t, p, u, e); got.Status != StatusLeft {
+		t.Fatalf("status=%v, want left", got.Status)
+	}
+}
+
+// After a restart (a fresh processor over the same state), a posted episode is not sent again, and a pending one's
+// closed attempt is not reused: the stored attempt decides.
+func TestPostedEpisodeNeverResent(t *testing.T) {
+	n, s, p, _, c, u, e := scriptedFixture(protocol.ReceiptClosedNotAccepted, protocol.ReceiptAccepted)
+	ev := joinEvent(c, u, e, 1_999_999)
+	if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+		t.Fatalf("err=%v", err)
+	}
+	restart := func() *Processor {
+		q, err := New(n, Options{ChannelID: p.channel, ExpectedGroupID: p.expectedGroup, Destination: p.destination, Template: p.template, ServerName: p.serverName, ChannelName: p.channelName, Members: p.members, Sender: s, Now: p.now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+	if err := restart().Process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	op := operationID(p.binding.Installation, u, e)
+	if len(s.requests) != 2 || s.requests[1].AttemptID != attemptID(op, 1) {
+		t.Fatalf("after restart: sends=%d", len(s.requests))
+	}
+	if err := restart().Process(context.Background(), ev); err != nil || len(s.requests) != 2 {
+		t.Fatalf("a posted episode was resent after restart: err=%v sends=%d", err, len(s.requests))
+	}
+}
+
+// A pending episode past the catch-up cutoff resolves its current (successor) attempt, not attempt 0.
+func TestExpiredPendingResolvesCurrentAttempt(t *testing.T) {
+	_, s, p, _, c, u, e := scriptedFixture(protocol.ReceiptClosedNotAccepted)
+	ev := joinEvent(c, u, e, 1_999_999)
+	for range 2 {
+		if err := p.Process(context.Background(), ev); !errors.Is(err, ErrRetryLater) {
+			t.Fatalf("err=%v", err)
+		}
+	}
+	p.now = func() time.Time { return time.Unix(2_000_000, 0).Add(25 * time.Hour) }
+	if err := p.Process(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	op := operationID(p.binding.Installation, u, e)
+	if len(s.resolved) != 1 || s.resolved[0] != attemptID(op, 2) || len(s.requests) != 2 {
+		t.Fatalf("resolved=%v sends=%d, want attempt 2 resolved and no late send", s.resolved, len(s.requests))
+	}
+	if got := storedEpisode(t, p, u, e); got.Status != StatusMissed {
+		t.Fatalf("status=%v, want missed", got.Status)
+	}
+}
+
+// Episodes stored before attempts existed (v1 rows, five fields) read back as attempt 0; a row with an attempt or the
+// failed status round-trips.
+func TestEpisodeStateIsBackwardCompatible(t *testing.T) {
+	n, _, p, _, _, u, e := scriptedFixture(protocol.ReceiptAccepted)
+	key := p.stateKey(u, e)
+	v1 := mustCBOR([]any{uint64(1), uint64(StatusPending), testID(7), uint64(1_999_999), testID(8)})
+	n.values[stateMapKey(stateArea, key)] = native.StateValue{Revision: 1, Value: v1}
+	got, rev, err := p.load(context.Background(), key)
+	if err != nil || rev != 1 || got.Status != StatusPending || got.Attempt != 0 || got.OperationID != testID(8) {
+		t.Fatalf("v1 row: %+v rev=%d err=%v", got, rev, err)
+	}
+	for i, want := range []episode{
+		{Status: StatusPending, EventID: testID(7), Timestamp: 5, OperationID: testID(8), Attempt: 3},
+		{Status: StatusFailed, EventID: testID(7), Timestamp: 5, OperationID: testID(8), Attempt: 7},
+	} {
+		if err := p.save(context.Background(), key, uint64(i+1), want); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, err := p.load(context.Background(), key); err != nil || got != want {
+			t.Fatalf("round trip %d: %+v err=%v, want %+v", i, got, err, want)
+		}
 	}
 }

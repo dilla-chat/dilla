@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -31,7 +32,17 @@ var (
 	ErrConflict             = errors.New("welcome episode conflicts with persisted event")
 	ErrRoleGrantUnavailable = errors.New("welcome role grants are unavailable")
 	ErrReceiptUnresolved    = errors.New("welcome send outcome must be resolved before expiry")
+	// ErrRetryLater is returned (errors.Is) when the welcome could not be sent yet and the episode stays pending: the
+	// Bot has not joined the destination group, the group has pending proposals or a pending commit, or the server
+	// closed the attempt without accepting it (a successor attempt is stored). The caller runs the join again later.
+	ErrRetryLater = errors.New("welcome deferred: retry later")
+	// ErrGaveUp is returned once, when the maxAttempts-th attempt closed: the episode is stored as StatusFailed.
+	ErrGaveUp = errors.New("welcome given up")
 )
+
+// maxAttempts bounds the send attempts of one membership episode. Deferrals that send nothing do not count; the
+// 24 h catch-up cutoff bounds those.
+const maxAttempts = 8
 
 type Native interface {
 	Binding() native.Binding
@@ -62,6 +73,7 @@ type Sender interface {
 
 type SendRequest struct {
 	OperationID, AttemptID                                    id.ID
+	PredecessorAttemptID                                      *id.ID
 	CommunityID, InstallationID, MemberID, EpisodeID, GroupID id.ID
 	Text                                                      string
 	OriginalNow                                               uint64
@@ -85,6 +97,8 @@ const (
 	StatusPosted
 	StatusMissed
 	StatusLeft
+	// StatusFailed is terminal: every one of maxAttempts attempts was closed without acceptance.
+	StatusFailed
 )
 
 type episode struct {
@@ -92,6 +106,9 @@ type episode struct {
 	EventID     id.ID
 	Timestamp   uint64
 	OperationID id.ID
+	// Attempt is the attempt the next send uses: the count of attempts the server closed without accepting. Rows stored
+	// before attempts existed read as 0.
+	Attempt uint32
 }
 
 type Processor struct {
@@ -218,7 +235,7 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 		return err
 	}
 	if event.Kind == protocol.EventMemberLeave {
-		if current.Status == StatusPosted {
+		if current.Status == StatusPosted || current.Status == StatusFailed {
 			return nil
 		}
 		if current.Status == StatusLeft && current.EventID == event.ID {
@@ -227,7 +244,7 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 		return p.save(ctx, key, revision, episode{Status: StatusLeft, EventID: event.ID, Timestamp: event.Timestamp, OperationID: operationID(p.binding.Installation, user, episodeID)})
 	}
 	op := operationID(p.binding.Installation, user, episodeID)
-	if current.Status == StatusPosted || current.Status == StatusMissed || current.Status == StatusLeft {
+	if current.Status == StatusPosted || current.Status == StatusMissed || current.Status == StatusLeft || current.Status == StatusFailed {
 		return nil
 	}
 	if current.Status == StatusPending && (current.EventID != event.ID || current.Timestamp != event.Timestamp || current.OperationID != op) {
@@ -249,18 +266,29 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 			return nil
 		}
 	}
+	// next is the stored episode with a new status; it keeps the attempt counter.
+	next := func(status Status) episode {
+		v := current
+		v.Status = status
+		return v
+	}
+	attempt := attemptID(op, current.Attempt)
 	if tooOld(event.Timestamp, p.now()) {
-		receipt, found, resolveErr := p.sender.ResolveWelcome(ctx, op, attemptID(op))
+		// Only the current attempt can be outstanding: each earlier one was closed before its successor was stored.
+		receipt, found, resolveErr := p.sender.ResolveWelcome(ctx, op, attempt)
 		if resolveErr != nil {
 			return resolveErr
 		}
 		if found {
-			if !acceptedReceipt(receipt, op, attemptID(op), p.binding.Community, p.expectedGroup) {
+			if closedReceipt(receipt, op, attempt, p.binding.Community, p.expectedGroup) {
+				return p.save(ctx, key, revision, next(StatusMissed))
+			}
+			if !acceptedReceipt(receipt, op, attempt, p.binding.Community, p.expectedGroup) {
 				return ErrReceiptUnresolved
 			}
-			return p.save(ctx, key, revision, episode{Status: StatusPosted, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
+			return p.save(ctx, key, revision, next(StatusPosted))
 		}
-		return p.save(ctx, key, revision, episode{Status: StatusMissed, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
+		return p.save(ctx, key, revision, next(StatusMissed))
 	}
 	group, err := p.destination.ResolveTextGroup(ctx, p.binding.Community, p.channel)
 	if err != nil {
@@ -274,7 +302,7 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 		return err
 	}
 	if !member {
-		return p.save(ctx, key, revision, episode{Status: StatusLeft, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
+		return p.save(ctx, key, revision, next(StatusLeft))
 	}
 	text, err := Preview(p.template, name, p.serverName, p.channelName)
 	if err != nil {
@@ -283,15 +311,45 @@ func (p *Processor) Process(ctx context.Context, event protocol.Event) error {
 	if event.Timestamp > math.MaxInt64 {
 		return errors.New("welcome event timestamp out of range")
 	}
-	attempt := attemptID(op)
-	receipt, sendErr := p.sender.SendWelcome(ctx, SendRequest{OperationID: op, AttemptID: attempt, CommunityID: p.binding.Community, InstallationID: p.binding.Installation, MemberID: user, EpisodeID: episodeID, GroupID: group, Text: text, OriginalNow: event.Timestamp})
+	req := SendRequest{OperationID: op, AttemptID: attempt, CommunityID: p.binding.Community, InstallationID: p.binding.Installation, MemberID: user, EpisodeID: episodeID, GroupID: group, Text: text, OriginalNow: event.Timestamp}
+	if current.Attempt > 0 {
+		// The server's attempt chain stays authoritative: a successor names the closed attempt it replaces
+		// (announcements/scheduler.go does the same).
+		previous := attemptID(op, current.Attempt-1)
+		req.PredecessorAttemptID = &previous
+	}
+	receipt, sendErr := p.sender.SendWelcome(ctx, req)
 	if sendErr != nil {
 		return sendErr
+	}
+	if closedReceipt(receipt, op, attempt, p.binding.Community, group) {
+		// The server refused the post (the group was frozen by pending proposals, or its epoch moved) and closed the
+		// attempt. It can never be accepted later, so the episode moves on to a successor attempt, up to maxAttempts.
+		closed := next(StatusPending)
+		closed.Attempt++
+		if closed.Attempt >= maxAttempts {
+			closed.Status = StatusFailed
+			if err = p.save(ctx, key, revision, closed); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: %d attempts closed without acceptance", ErrGaveUp, closed.Attempt)
+		}
+		if err = p.save(ctx, key, revision, closed); err != nil {
+			return err
+		}
+		return fmt.Errorf("welcome attempt %d closed without acceptance: %w", current.Attempt, ErrRetryLater)
 	}
 	if !acceptedReceipt(receipt, op, attempt, p.binding.Community, group) {
 		return errors.New("welcome send has no authoritative accepted receipt")
 	}
-	return p.save(ctx, key, revision, episode{Status: StatusPosted, EventID: event.ID, Timestamp: event.Timestamp, OperationID: op})
+	return p.save(ctx, key, revision, next(StatusPosted))
+}
+
+// closedReceipt reports a valid receipt of exactly this attempt that the server closed without accepting it.
+func closedReceipt(receipt protocol.SendReceipt, operation, attempt, community, group id.ID) bool {
+	_, err := protocol.EncodeReceipt(receipt)
+	return err == nil && receipt.Outcome == protocol.ReceiptClosedNotAccepted && receipt.OperationID == operation &&
+		receipt.AttemptID == attempt && protocol.ValidateReceiptContext(receipt, community, group) == nil
 }
 
 func acceptedReceipt(receipt protocol.SendReceipt, operation, attempt, community, group id.ID) bool {
@@ -329,8 +387,16 @@ func operationID(installation, user, episodeID id.ID) id.ID {
 	}
 	return out
 }
-func attemptID(op id.ID) id.ID {
+
+// attemptID is the operation's attempt n. Attempt 0 keeps the v1 id, so episodes already in flight keep theirs; a
+// successor n >= 1 hashes the v2 domain, the operation and n as a big-endian uint32.
+func attemptID(op id.ID, n ...uint32) id.ID {
 	h := sha256.Sum256(append([]byte("dilla.bot.welcome.attempt.v1\x00"), op[:]...))
+	if len(n) > 0 && n[0] > 0 {
+		var counter [4]byte
+		binary.BigEndian.PutUint32(counter[:], n[0])
+		h = sha256.Sum256(append(append([]byte("dilla.bot.welcome.attempt.v2\x00"), op[:]...), counter[:]...))
+	}
 	var out id.ID
 	copy(out[:], h[:16])
 	if out.IsZero() {
@@ -353,18 +419,31 @@ func (p *Processor) load(ctx context.Context, key []byte) (episode, uint64, erro
 	if v.Revision == 0 {
 		return episode{}, 0, nil
 	}
+	// Version 1 rows (five fields) predate attempts and read as attempt 0; version 2 rows add the attempt and allow
+	// StatusFailed.
 	var a []any
-	if cborx.Unmarshal(v.Value, &a) != nil || len(a) != 5 || a[0] != uint64(1) {
+	decodeErr := cborx.Unmarshal(v.Value, &a)
+	versioned := len(a) == 5 && a[0] == uint64(1) || len(a) == 6 && a[0] == uint64(2)
+	if decodeErr != nil || !versioned {
 		return episode{}, 0, errors.New("malformed welcome episode state")
+	}
+	maxStatus, attempt := uint64(StatusLeft), uint64(0)
+	if len(a) == 6 {
+		var aok bool
+		if attempt, aok = a[5].(uint64); !aok || attempt > maxAttempts {
+			return episode{}, 0, errors.New("malformed welcome episode state")
+		}
+		maxStatus = uint64(StatusFailed)
 	}
 	status, ok := a[1].(uint64)
 	eventBytes, eok := a[2].([]byte)
 	ts, tok := a[3].(uint64)
 	opBytes, ook := a[4].([]byte)
-	if !ok || status < uint64(StatusPending) || status > uint64(StatusLeft) || !eok || len(eventBytes) != 16 || !tok || ts > math.MaxInt64 || !ook || len(opBytes) != 16 {
+	if !ok || status < uint64(StatusPending) || status > maxStatus || !eok || len(eventBytes) != 16 || !tok || ts > math.MaxInt64 || !ook || len(opBytes) != 16 {
 		return episode{}, 0, errors.New("malformed welcome episode state")
 	}
 	var result episode
+	result.Attempt = uint32(attempt)
 	result.Status = Status(status)
 	copy(result.EventID[:], eventBytes)
 	copy(result.OperationID[:], opBytes)
@@ -379,7 +458,13 @@ func (p *Processor) save(ctx context.Context, key []byte, revision uint64, value
 	if revision >= math.MaxInt64 {
 		return errors.New("welcome state revision exhausted")
 	}
-	body, err := cborx.Marshal([]any{uint64(1), uint64(value.Status), value.EventID, value.Timestamp, value.OperationID})
+	row := []any{uint64(1), uint64(value.Status), value.EventID, value.Timestamp, value.OperationID}
+	if value.Attempt > 0 || value.Status == StatusFailed {
+		// Version 2 only when it carries something version 1 cannot, so an episode without retries stays readable by
+		// an older Bot.
+		row = []any{uint64(2), uint64(value.Status), value.EventID, value.Timestamp, value.OperationID, uint64(value.Attempt)}
+	}
+	body, err := cborx.Marshal(row)
 	if err != nil {
 		return err
 	}

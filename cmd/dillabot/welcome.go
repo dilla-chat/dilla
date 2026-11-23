@@ -62,7 +62,8 @@ func newWelcomeHandler(n *native.Client, session *client.Session, authority *cli
 	if err != nil {
 		return nil, err
 	}
-	destination := service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "welcome"}
+	// The welcome defers while the Bot is not in the group yet or the group is busy; the feed runs the join again.
+	destination := service.WelcomeDestinationResolver{Session: session, Native: n, Feature: "welcome", DeferWhileBusy: true}
 	var granter welcome.JoinRoleGranter
 	if capabilities&botRolesCapability != 0 {
 		granter = welcomeRoleGranter{members: members, installation: installation}
