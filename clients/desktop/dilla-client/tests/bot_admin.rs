@@ -9,7 +9,7 @@
 //! end-to-end ones run against dilla's real Bot (Task 28, `testing::host::bot`): the Bot reaching ready and the join
 //! role are below; the rest are listed in `BEHAVIOUR-GATES.md`.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dilla_client::state::{ChannelId, CommunityId};
 use dilla_client::testing::host::bot::enable_bot;
@@ -428,23 +428,19 @@ async fn a_welcome_saved_in_settings_greets_a_new_member() {
             .get(&general)
             .is_some_and(|t| t.items.iter().any(|i| i.bot && i.body.contains("Bea")))
     };
-    // The Bot joins a freshly marked Bot channel's group in the background, and a join it sees before that is not welcomed
-    // ("bot has not joined the channel's group yet"). Nothing on the client says when it is in, so a join that went
-    // unwelcomed is done once more, as a member would who left and came back.
+    // Bea joins once. The Bot may see the join before it is in the freshly marked channel's group, or while Bea's Add is
+    // still uncommitted there: it defers the welcome and retries it, so she is greeted once, without leaving and coming back.
+    // Bea's own timeline is not asserted: her client joins the channel's group when it opens the channel, and opening it
+    // while Alice commits her Add races (E_COMMIT_INVALID); a greeting sent before she opened it is not readable to her.
     b.onboarding().join(&code).await.expect("bea joins");
-    let first = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < first && !greeted(&a.state().borrow()) {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-    if !greeted(&a.state().borrow()) {
-        b.server_admin()
-            .leave(community)
-            .wait()
-            .await
-            .expect("bea leaves");
-        b.onboarding().join(&code).await.expect("bea joins again");
-        wait_for(&a, Duration::from_secs(90), "the Bot greets Bea", greeted).await;
-    }
+    wait_for(&a, Duration::from_secs(90), "the Bot greets Bea", greeted).await;
+    let welcomes = a.state().borrow().timelines.get(&general).map_or(0, |t| {
+        t.items
+            .iter()
+            .filter(|i| i.bot && i.body.contains("Bea"))
+            .count()
+    });
+    assert_eq!(welcomes, 1, "one welcome per membership episode");
     a.stop();
     b.stop();
     drop(host);

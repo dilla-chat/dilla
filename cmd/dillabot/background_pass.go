@@ -151,6 +151,17 @@ func (r *botGatewayRuntime) maintain(ctx context.Context, done map[id.ID]bool) e
 
 // maintainDue runs every installation's maintenance on the due-work tick (maintenanceDue).
 func (r *botGatewayRuntime) maintainDue(ctx context.Context) error {
+	// The due-work tick also drives each feed's deferred welcomes (off this goroutine, on their own backoff); with none
+	// waiting it sends nothing.
+	r.mu.Lock()
+	feeds := make([]*installationFeed, 0, len(r.feeds))
+	for _, f := range r.feeds {
+		feeds = append(feeds, f)
+	}
+	r.mu.Unlock()
+	for _, f := range feeds {
+		f.kickWelcomes(false)
+	}
 	return r.maintainEach(ctx, map[id.ID]bool{}, maintenanceDue)
 }
 

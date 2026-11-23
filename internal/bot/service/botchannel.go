@@ -31,6 +31,10 @@ var ErrBotChannelsUnknown = errors.New("bot channels not known yet")
 // joined from its kept Welcome some seconds after the mark). Temporary: a post waits for the join.
 var ErrBotNotJoined = errors.New("bot has not joined the channel's group yet")
 
+// ErrGroupBusy means the channel's group has pending proposals or a pending commit (a member's Add or Remove not yet
+// committed): the server refuses a post until it is committed. Temporary.
+var ErrGroupBusy = errors.New("the channel's group has pending proposals or a pending commit")
+
 // refusalReason is the short reason a post was refused, for the log.
 func refusalReason(err error) string {
 	switch {
@@ -40,6 +44,8 @@ func refusalReason(err error) string {
 		return "bot_channels_unknown"
 	case errors.Is(err, ErrBotNotJoined):
 		return "not_joined"
+	case errors.Is(err, ErrGroupBusy):
+		return "group_busy"
 	}
 	return "unavailable"
 }
