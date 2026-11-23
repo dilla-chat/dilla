@@ -109,9 +109,11 @@ func errGroupExists(detail string) *Error {
 // errCommitInvalid names the clause that refused the commit. `rule` is a stable string a client
 // may log but must not branch on beyond the code, with two exceptions that are a client contract:
 //
-//   - "epoch": the group changed while this commit was being prepared (commitLocked's transaction).
-//     It is timing, not the commit: a client may build the commit again on the group as it is now
-//     (the desktop client's send re-frame and its external join of an opened channel do).
+//   - "epoch": the group changed while this commit was being prepared (commitLocked's transaction,
+//     and an external commit on POST /resync built for an epoch the group has since left:
+//     checkExternalCommitEpoch). It is timing, not the commit: a client may build the commit again
+//     on the group as it is now (the desktop client's send re-frame and its external join of an
+//     opened channel do).
 //   - "outstanding_proposals": an instance proposal is outstanding that the commit does not
 //     reference. For an external commit it is invariant 5's freeze met inside the commit (a
 //     proposal made, or a member come online, after the freeze check): a joiner waits for a

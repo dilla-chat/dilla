@@ -2,7 +2,9 @@ package ds
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 
 	"github.com/dilla-chat/dilla/internal/id"
 	"github.com/dilla-chat/dilla/internal/mlswasi"
@@ -79,6 +81,9 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	if err := d.requireGroupCapability(ctx, s, row); err != nil {
 		return CommitResult{}, err
 	}
+	if err := checkExternalCommitEpoch(r.ExternalCommit, epoch); err != nil {
+		return CommitResult{}, err
+	}
 	out, err := d.commitLocked(ctx, s, groupID, CommitRequest{
 		Epoch:     epoch,
 		Commit:    r.ExternalCommit,
@@ -111,6 +116,62 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 		return CommitResult{}, err
 	}
 	return out, nil
+}
+
+// checkExternalCommitEpoch answers an external commit built for an epoch other than the group's
+// before the commit is read. /resync takes no epoch from the client (the commit is compared with
+// the group's own), so commitPreflight's one-commit-per-epoch check, which answers a stale member
+// commit 409 E_COMMIT_CONFLICT, never fires here; without this the parse refuses a stale external
+// commit as "structural" (openmls's WrongEpoch), a rule the client must not retry, although the
+// commit was only built before another commit landed (two devices joining at once, a member's commit
+// between the joiner's GroupInfo read and its upload). A stale one is rule "epoch", errCommitInvalid's
+// timing contract: the client stages again on the group as it is now. No conflict metadata is
+// returned: the uploader may hold no leaf. One for an epoch the group has not reached is
+// "epoch_ahead", as commitPreflight answers it. A message whose framing this cannot read is left to
+// the parse.
+func checkExternalCommitEpoch(msg []byte, groupEpoch uint64) *Error {
+	epoch, ok := publicMessageEpoch(msg)
+	if !ok || epoch == groupEpoch {
+		return nil
+	}
+	if epoch > groupEpoch {
+		return errCommitInvalid("epoch_ahead",
+			fmt.Sprintf("the commit is for epoch %d; this instance is at %d", epoch, groupEpoch))
+	}
+	return errCommitInvalid("epoch", "the group changed while this commit was being prepared")
+}
+
+// publicMessageEpoch reads the epoch of an MLSMessage carrying a PublicMessage (RFC 9420 §6:
+// uint16 version, uint16 wire_format = 1, then FramedContent's opaque group_id<V> and uint64
+// epoch). The length is a §2.1.2 variable-length integer of 1, 2 or 4 bytes.
+func publicMessageEpoch(msg []byte) (uint64, bool) {
+	const mls10, publicMessage = 1, 1
+	if len(msg) < 5 || binary.BigEndian.Uint16(msg) != mls10 || binary.BigEndian.Uint16(msg[2:]) != publicMessage {
+		return 0, false
+	}
+	rest := msg[4:]
+	var n, width int
+	switch rest[0] >> 6 {
+	case 0:
+		n, width = int(rest[0]), 1
+	case 1:
+		if len(rest) < 2 {
+			return 0, false
+		}
+		n, width = int(binary.BigEndian.Uint16(rest)&0x3fff), 2
+	case 2:
+		if len(rest) < 4 {
+			return 0, false
+		}
+		n, width = int(binary.BigEndian.Uint32(rest)&0x3fffffff), 4
+	default:
+		return 0, false
+	}
+	rest = rest[width:]
+	if len(rest) < n+8 {
+		return 0, false
+	}
+	return binary.BigEndian.Uint64(rest[n:]), true
 }
 
 // guardResyncTarget refuses a resync — and a heal, which runs it at the restored epoch — by the

@@ -2819,10 +2819,12 @@ enum JoinRetry {
     /// `clause1Exempt`), and is waited out the same way.
     Unfrozen(Duration),
     /// 422 `E_COMMIT_INVALID` under the `epoch` clause (the group changed while the instance prepared this commit:
-    /// internal/ds commit.go): retried only when the group's epoch is known to have moved past the one the refused
-    /// commit was staged on. Every other 422 clause (`external_joiner`, `structural`, `group_info*`, ...) judges the
-    /// commit itself, never its timing (a stale epoch is 409 `E_COMMIT_CONFLICT`, answered before the commit is read),
-    /// and is the open's answer: a device the instance refuses is never sent round to post again.
+    /// internal/ds commit.go; or another commit landed between this device's GroupInfo read and its `POST resync`, which
+    /// takes no epoch from the client and so answers a stale external commit under this clause before reading it:
+    /// internal/ds resync.go `checkExternalCommitEpoch`): retried only when the group's epoch is known to have moved
+    /// past the one the refused commit was staged on. Every other 422 clause (`external_joiner`, `structural`,
+    /// `group_info*`, ...) judges the commit itself, never its timing, and is the open's answer: a device the instance
+    /// refuses is never sent round to post again.
     IfMoved,
 }
 
