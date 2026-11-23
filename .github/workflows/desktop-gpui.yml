@@ -228,6 +228,9 @@ jobs:
       - run: node --test scripts/behaviour-gates.test.mjs
       - name: sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: sccache server, with a local-only fallback
+        shell: bash
+        run: bash scripts/ci-sccache-start.sh
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
       # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (git-ignored, absent on a fresh
       # checkout): the client under test and the server it talks to must be the core of this very commit.
@@ -395,6 +398,9 @@ jobs:
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - name: sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: sccache server, with a local-only fallback
+        shell: bash
+        run: bash scripts/ci-sccache-start.sh
       # The test host and the WASI core dilla-client's real-server tests start (all read DILLA_CORE_WASI).
       # The WASI core is rebuilt here on purpose, not taken from internal/mlswasi/testdata (git-ignored, absent on a fresh
       # checkout): the client under test and the server it talks to must be the core of this very commit.
@@ -560,6 +566,9 @@ jobs:
           key: desktop-gpui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
       - name: sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: sccache server, with a local-only fallback
+        shell: bash
+        run: bash scripts/ci-sccache-start.sh
       # Without gpui-pre-macos's `font-kit` the app gets GPUI's NoopTextSystem and draws no text at all, silently
       # (the dilla-MacBook check of #174). A window can't be shot here, so the feature itself is checked.
       - name: The macOS text system is compiled in
@@ -722,6 +731,9 @@ jobs:
           Set-Content -Path (Join-Path $data 'takeover-sentinel.txt') -Value 'kept'
       - name: sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: sccache server, with a local-only fallback
+        shell: bash
+        run: bash scripts/ci-sccache-start.sh
       - name: Build the release binary (static CRT)
         shell: bash
         run: cargo build -p dilla-desktop --release --locked
