@@ -80,13 +80,22 @@ API_AVAILABLE(macos(12.3))
   if (type != SCStreamOutputTypeScreen || !CMSampleBufferIsValid(sampleBuffer)) {
     return;
   }
-  // Only complete frames carry pixels; idle, blank, suspended and started frames do not.
+  // Only complete frames carry pixels; idle, blank, suspended and started frames do not. A stopped
+  // frame is the stream's end (the shared window closed): the sink hears it once, as from
+  // -stream:didStopWithError:.
   CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
   if (!attachments || CFArrayGetCount(attachments) < 1) {
     return;
   }
   NSDictionary* info = (__bridge NSDictionary*)CFArrayGetValueAtIndex(attachments, 0);
   NSNumber* status = info[SCStreamFrameInfoStatus];
+  if (status && status.integerValue == SCFrameStatusStopped) {
+    std::lock_guard<std::mutex> guard(lock_);
+    if (capture_) {
+      capture_->End();
+    }
+    return;
+  }
   if (!status || status.integerValue != SCFrameStatusComplete) {
     return;
   }
@@ -267,10 +276,8 @@ bool ToBgra(CGImageRef image, DillaScreenThumbnail& out) {
   CGContextRelease(context);
   out.width = static_cast<uint32_t>(width);
   out.height = static_cast<uint32_t>(height);
-  out.bgra.reserve(bytes.size());
-  for (const uint8_t b : bytes) {
-    out.bgra.push_back(b);
-  }
+  // One copy into Rust's vector (rust::Vec has no bulk append).
+  out.bgra = dilla_screen_bytes(rust::Slice<const uint8_t>(bytes.data(), bytes.size()));
   return true;
 }
 
@@ -307,11 +314,12 @@ rust::Vec<DillaScreenThumbnail> Screenshots(rust::Slice<const uint64_t> displays
                                             rust::Slice<const uint64_t> windows, uint32_t max_w,
                                             uint32_t max_h) {
   rust::Vec<DillaScreenThumbnail> out;
-  const dispatch_time_t deadline = After(kThumbnailWait);
   SCShareableContent* content = ShareableContent();
   if (!content) {
     return out;
   }
+  // The captures' own budget, from when they can start.
+  const dispatch_time_t deadline = After(kThumbnailWait);
   auto results = std::make_shared<Thumbnails>();
   dispatch_group_t group = dispatch_group_create();
   for (uint64_t id : displays) {

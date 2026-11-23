@@ -5,8 +5,6 @@
 // frames handed to a Rust sink. libwebrtc's ScreenCaptureKit capturer lists nothing without the
 // system picker, and its window capturer cannot take a filter, so none of it is reused here.
 
-use crate::impl_thread_safety;
-
 #[cxx::bridge(namespace = "livekit_ffi")]
 pub mod ffi {
     /// One display or on-screen window as ScreenCaptureKit lists it, unfiltered (dilla-media filters).
@@ -99,15 +97,24 @@ pub mod ffi {
         /// A complete frame (`SCStreamFrameInfoStatus` Complete only), the pixel buffer locked read-only for the
         /// call.
         fn on_frame(self: &mut DillaScreenSink, width: u32, height: u32, stride: u32, bgra: &[u8]);
-        /// `stream:didStopWithError:` (the window closed, the display went away, access withdrawn). Called once.
+        /// `stream:didStopWithError:` or a frame with `SCFrameStatusStopped` (the window closed, the display went
+        /// away, access withdrawn). Called once.
         fn on_end(self: &mut DillaScreenSink);
+
+        /// `bytes` as a Rust vector, in one copy (a thumbnail's pixels; rust::Vec has no bulk append).
+        fn dilla_screen_bytes(bytes: &[u8]) -> Vec<u8>;
     }
 }
 
 // The destructor: `stopCaptureWithCompletionHandler:` waited ≤ 2 s, `removeStreamOutput:`, then a
 // `dispatch_sync` on the output queue, so no `on_frame` runs after it returns (the camera's teardown
 // order).
-impl_thread_safety!(ffi::DillaScreenCapture, Send + Sync);
+//
+// SAFETY: Send only. The capture is created, reconfigured (`set_fps`) and destroyed on one thread at
+// a time (dilla-media's `dilla-screen` thread owns it); ScreenCaptureKit's queues reach it only
+// through its own locks (`Deliver`, `End`). It is not Sync: `set_fps(&self)` changes the stream's
+// configuration without a lock.
+unsafe impl Send for ffi::DillaScreenCapture {}
 
 /// One BGRA frame as the stream delivered it (borrowed for the call only): `height` rows of `stride` bytes, each
 /// starting with `width` pixels.
@@ -142,4 +149,8 @@ impl DillaScreenSink {
     fn on_end(&mut self) {
         (self.end)();
     }
+}
+
+fn dilla_screen_bytes(bytes: &[u8]) -> Vec<u8> {
+    bytes.to_vec()
 }
