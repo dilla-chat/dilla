@@ -33,7 +33,13 @@ pub fn overlay(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         windows: t("callStage.share.pickerWindows").into(),
         share: t("callStage.share.pickerShare").into(),
         cancel: t("callStage.share.pickerCancel").into(),
-        empty: t("callStage.share.pickerEmpty").into(),
+        // macOS without Screen Recording (Task 45, D22): the same empty state, saying how to allow it.
+        empty: t(if picker.denied {
+            "callStage.share.pickerPermission"
+        } else {
+            "callStage.share.pickerEmpty"
+        })
+        .into(),
     };
     Some(
         SharePicker::new("share-picker", labels)

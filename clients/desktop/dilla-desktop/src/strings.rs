@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2222] = [
+pub static STRINGS: [(&str, &str); 2223] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -488,6 +488,7 @@ pub static STRINGS: [(&str, &str); 2222] = [
     ("callStage.share.native", "Source"),
     ("callStage.share.pickerCancel", "Cancel"),
     ("callStage.share.pickerEmpty", "Nothing to share here"),
+    ("callStage.share.pickerPermission", "Dilla needs Screen Recording to show your screens and windows. Allow it in System Settings → Privacy & Security → Screen Recording, then quit and reopen Dilla."),
     ("callStage.share.pickerScreens", "Screens"),
     ("callStage.share.pickerShare", "Share"),
     ("callStage.share.pickerWindows", "Windows"),
