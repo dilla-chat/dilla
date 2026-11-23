@@ -175,9 +175,14 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   opening, calls `CGRequestScreenCaptureAccess()`, once per process. Nothing logs a title, an
   application name or a pid. `build.rs` compiles the `.mm` into the camera's ARC library
   (`webrtcsys-camera`), now silenced with `-Wno-everything` instead of `-w` so the file's own
-  `#pragma clang diagnostic error "-Wunguarded-availability-new"` holds: every 12.3 and 14.0 symbol is
-  behind `@available` and weak-imported, and the app's macOS 13 floor builds. ScreenCaptureKit and
-  CoreGraphics were linked already. Covered by `clients/desktop/dilla-media/src/sources/mac_list.rs`
+  `#pragma clang diagnostic error "-Wunguarded-availability-new"` holds (`dilla_camera_mac.mm`
+  carries the same pragma): every 12.3 and 14.0 symbol is behind `@available` and weak-imported.
+  The floor is real because the root `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET = "13.0"`,
+  which rustc's link (`LC_BUILD_VERSION` minos 13.0) and every cc build (`-mmacosx-version-min=13.0`)
+  take; without it cc built for the host SDK and the 14.0 symbols were linked strongly.
+  desktop-gpui.yml checks the shipped binary's minos and that `SCScreenshotManager` and
+  `AVCaptureDeviceTypeContinuityCamera` are weak imports. ScreenCaptureKit and CoreGraphics were
+  linked already. `DillaScreenCapture` is `Send` only (`set_fps` reconfigures without a lock). Covered by `clients/desktop/dilla-media/src/sources/mac_list.rs`
   (the filtering and naming, on every OS), `desktop.rs` and `desktop_mac.rs` (the listed owner, the
   frame packing), `clients/desktop/dilla-desktop/tests/share.rs` (a refused listing, the listed owner
   reaching the window's sound) and, from a terminal that holds Screen Recording,
