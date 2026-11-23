@@ -3,6 +3,8 @@
 //! thumbnail each (refreshed every 2 s, beta.5 `PICKER_REFRESH_MS`), and the person's choice starts the share of that
 //! source. Cancel, Escape, the scrim, the 2-minute deadline (`PICKER_DEADLINE_MS`) or the window going away share
 //! nothing. Linux on Wayland has no picker: the system portal's own dialog chooses (`dilla_media::sources::desktop::portal`).
+//! macOS draws this same picker since GPUI gaps Task 45 (D22), listing through ScreenCaptureKit: the first open in a
+//! process asks for Screen Recording, and without it the picker's empty state says how to allow it.
 //!
 //! Security boundary (beta.5): the picker opens only from a press on the focused window ([`open`] refuses otherwise);
 //! a choice is checked against the sources of the latest enumeration (a window that closed since is refused), and it
@@ -39,20 +41,37 @@ pub struct Found {
     pub thumbnail: Option<dilla_media::Frame>,
 }
 
-/// Lists the sources the picker offers (the real one: [`enumerate`]; the tests' fake).
-pub type Lister = Arc<dyn Fn() -> Vec<Found> + Send + Sync>;
+/// One enumeration: the tiles and whether the system refused (macOS without Screen Recording).
+#[derive(Clone, Default)]
+pub struct Listing {
+    pub found: Vec<Found>,
+    pub denied: bool,
+}
 
-/// Every screen, then every window, each with a 320 x 180 thumbnail; at most [`MAX_SOURCES`].
-pub fn enumerate() -> Vec<Found> {
-    [SourceKind::Screen, SourceKind::Window]
-        .into_iter()
-        .flat_map(desktop::list)
-        .take(MAX_SOURCES)
-        .map(|source| Found {
-            thumbnail: desktop::thumbnail(&source, THUMB_W, THUMB_H),
-            source,
-        })
-        .collect()
+impl From<Vec<Found>> for Listing {
+    fn from(found: Vec<Found>) -> Self {
+        Self {
+            found,
+            denied: false,
+        }
+    }
+}
+
+/// Lists the sources the picker offers (the real one: [`enumerate`]; the tests' fake).
+pub type Lister = Arc<dyn Fn() -> Listing + Send + Sync>;
+
+/// Every screen, then every window, each with a 320 x 180 thumbnail; at most [`MAX_SOURCES`]
+/// (`desktop::snapshot`). Blocking: the refresh loop runs it on the background executor.
+pub fn enumerate() -> Listing {
+    let snapshot = desktop::snapshot(MAX_SOURCES, THUMB_W, THUMB_H);
+    Listing {
+        found: snapshot
+            .sources
+            .into_iter()
+            .map(|(source, thumbnail)| Found { source, thumbnail })
+            .collect(),
+        denied: snapshot.denied,
+    }
 }
 
 /// A tile: its stable key (the kind and the capturer's id) and what it shows.
@@ -77,6 +96,9 @@ pub struct Picker {
     pub selected: Option<SharedString>,
     /// The latest enumeration; `None` until the first one lands.
     pub tiles: Option<Vec<Tile>>,
+    /// The latest enumeration was refused by the system (macOS without Screen Recording): the empty state says how to
+    /// allow it.
+    pub denied: bool,
     /// The stream quality the share starts at.
     pub options: ShareOptions,
     opened: Instant,
@@ -134,6 +156,7 @@ pub fn open(options: ShareOptions, window: &mut Window, cx: &mut App) -> bool {
             tab: TileKind::Screen,
             selected: None,
             tiles: None,
+            denied: false,
             options,
             opened: Instant::now(),
             generation,
@@ -240,9 +263,12 @@ pub(crate) fn refresh(window: WindowId, cx: &mut App) {
 }
 
 /// Enumerates on a background thread now and every [`REFRESH`] while this picker (`generation`) is open, one
-/// enumeration at a time; past [`DEADLINE`], or when its window is gone, the picker closes.
+/// enumeration at a time; past [`DEADLINE`], or when its window is gone, the picker closes. Before the first real
+/// enumeration (no test list) it asks for what listing needs (macOS: Screen Recording, once per process), on the
+/// background executor too: the open was the person's press on the focused window.
 fn refresh_loop(window: WindowId, generation: u64, cx: &mut App) {
     cx.spawn(async move |cx| {
+        let mut first = true;
         loop {
             let lister = cx.update(|cx| {
                 let alive = cx.windows().iter().any(|w| w.window_id() == window);
@@ -281,23 +307,31 @@ fn refresh_loop(window: WindowId, generation: u64, cx: &mut App) {
                     return;
                 }
                 Some(Some(lister)) => {
-                    let found = cx
+                    let ask = std::mem::take(&mut first);
+                    let listing = cx
                         .background_executor()
                         .spawn(async move {
                             match lister {
                                 Some(l) => l(),
-                                None => enumerate(),
+                                None => {
+                                    if ask {
+                                        desktop::request_access();
+                                    }
+                                    enumerate()
+                                }
                             }
                         })
                         .await;
                     cx.update(|cx| {
-                        let mut tiles: Vec<Tile> = found.into_iter().map(tile).collect();
+                        let denied = listing.denied;
+                        let mut tiles: Vec<Tile> = listing.found.into_iter().map(tile).collect();
                         let pickers = cx.default_global::<SharePickers>();
                         let mut old = Vec::new();
                         if let Some(p) = pickers.open.get_mut(&window)
                             && p.generation == generation
                         {
                             p.enumerating = false;
+                            p.denied = denied;
                             // A refresh that dropped the chosen source (its window closed) drops the selection.
                             if p.selected
                                 .as_ref()

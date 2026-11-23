@@ -288,14 +288,16 @@ what the client still does not do.
   lost. A deb, rpm, AUR or tar.gz install only says that a new version is available: update it with your package
   manager or from the release page. An alpha before the first signed one does not check: download the next alpha by
   hand. Linux has an AppImage, a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR).
-- **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
-  and macOS the system's own dialog chooses). A share can carry the sound of one application (the share menu's sound
-  section) on Linux, on Windows 10 version 2004 (build 19041) or newer, and on macOS 14.2 or newer. On an older
-  Windows or macOS the share has no application sound. Sharing a window brings that window's application's sound by
-  itself, and the sound section then reads "Sound from {app}". You can switch it off there or choose another
-  application. Sharing a whole screen brings no application's sound unless you choose one. Nothing is chosen for you on
-  Wayland and macOS (the system's dialog picks the window), when the window's application isn't playing, or for Windows
-  Store apps. Dilla's own sound is never shared. macOS may ask for permission to record system audio the first
+- **Screen capture and camera:** sharing a screen or a window works. Share opens Dilla's picker with a thumbnail of
+  every screen and window (on Wayland the system's own dialog chooses). On macOS the first share asks for Screen
+  Recording permission (System Settings → Privacy & Security → Screen Recording); after you allow it, quit and reopen
+  Dilla. macOS 15 and newer may ask again from time to time whether Dilla may keep recording the screen. A share can
+  carry the sound of one application (the share menu's sound section) on Linux, on Windows 10 version 2004 (build
+  19041) or newer, and on macOS 14.2 or newer. On an older Windows or macOS the share has no application sound.
+  Sharing a window brings that window's application's sound by itself, and the sound section then reads "Sound from
+  {app}". You can switch it off there or choose another application. Sharing a whole screen brings no application's
+  sound unless you choose one. Nothing is chosen for you on Wayland (the system's dialog picks the window), when the
+  window's application isn't playing, or for Windows Store apps. Dilla's own sound is never shared. macOS may ask for permission to record system audio the first
   time. The camera works on Linux, Windows and macOS (the built-in camera, an external one, and Continuity Camera on
   macOS 14 or newer).
 - **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and

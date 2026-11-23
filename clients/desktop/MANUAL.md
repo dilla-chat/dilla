@@ -8,13 +8,14 @@ need a person at a real machine. Record the date, the OS version and the result 
 `cargo run -p dilla-media --example capture-probe -- <what>` lists the sources and captures the first one for three
 seconds, printing the frame size; `ended` means the source closed.
 
-| Check | macOS 14+ (ScreenCaptureKit) | Windows 10/11 (Windows Graphics Capture) | Linux X11 | Linux Wayland (portal) |
+| Check | macOS 13+ (ScreenCaptureKit) | Windows 10/11 (Windows Graphics Capture) | Linux X11 | Linux Wayland (portal) |
 |---|---|---|---|---|
-| `capture-probe screens` lists every display, each with a 320 x 180 thumbnail, and frames arrive | n/a (the system picker: `portal`) | no prompt | no prompt | n/a (`portal`) |
-| `capture-probe windows` lists the open windows by title, frames arrive; closing the window prints `ended` | n/a | the capture border appears around the window | — | n/a |
-| `capture-probe portal` opens the system's "share your screen" dialog; Share gives frames, Cancel prints `did not open: the selection was cancelled` | ScreenCaptureKit's picker (macOS 14+); the first run asks for Screen Recording permission (System Settings → Privacy & Security) | n/a | n/a | KDE and GNOME |
+| `capture-probe screens` lists every display, each with a 320 x 180 thumbnail, and frames arrive | the first run asks for Screen Recording; thumbnails on 14+, one frame on 13 | no prompt | no prompt | n/a (`portal`) |
+| `capture-probe windows` lists the open windows by title, frames arrive; closing the window prints `ended` | the first run asks for Screen Recording; thumbnails on 14+, one frame on 13 | the capture border appears around the window | — | n/a |
+| `capture-probe portal` opens the system's "share your screen" dialog; Share gives frames, Cancel prints `did not open: the selection was cancelled` | n/a | n/a | n/a | KDE and GNOME |
 | `capture-probe camera` lists the cameras and frames arrive (about 640 x 480) | no camera source yet (follow-up) | the camera light comes on, and goes off at the end | V4L2 camera | V4L2 camera |
 | In a call: Share, then pick a screen; the other side sees it; Stop ends it, and closing the window ends it | | | | |
+| In a call: Share opens Dilla's picker; without Screen Recording it shows the permission line, and after allowing and relaunching it lists the tiles | | n/a | n/a | n/a |
 | In a call: the camera button starts the camera; the other side sees it | n/a | | | |
 
 ## Application audio (parity plan Package 3)

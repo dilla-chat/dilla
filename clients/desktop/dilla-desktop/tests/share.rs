@@ -11,11 +11,11 @@ use std::time::{Duration, Instant};
 
 use dilla_client::calls::CallPhase;
 use dilla_client::state::{AppState, ChannelId};
-use dilla_desktop::screens::share_picker::{self, Found, apps};
+use dilla_desktop::screens::share_picker::{self, Found, Listing, apps};
 use dilla_desktop::screens::voice::{self, ShareSources, TileKey};
 use dilla_media::sources::desktop::{DesktopSource, SourceKind};
 use dilla_media::{CaptureSource, Pull, ShareKind, ShareOptions, ShareResolution, TestPattern};
-use gpui::{App, Context, IntoElement, Render, TestAppContext, Window, div};
+use gpui::{App, Context, IntoElement, ParentElement, Render, Styled, TestAppContext, Window, div};
 
 #[path = "../../dilla-client/tests/support/call_world.rs"]
 mod call_world;
@@ -77,6 +77,7 @@ impl Recorder {
                                 kind: SourceKind::Screen,
                                 id: 1,
                                 title: "Display 1".to_owned(),
+                                owner: None,
                             },
                             thumbnail: None,
                         },
@@ -85,10 +86,12 @@ impl Recorder {
                                 kind: SourceKind::Window,
                                 id: 7,
                                 title: "Notes".to_owned(),
+                                owner: None,
                             },
                             thumbnail: None,
                         },
                     ]
+                    .into()
                 }),
                 cx,
             );
@@ -121,6 +124,17 @@ struct Host;
 impl Render for Host {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+    }
+}
+
+/// A window that draws its open picker over nothing, as the shell draws its overlays.
+struct PickerHost;
+
+impl Render for PickerHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .children(share_picker::overlay(window, cx))
     }
 }
 
@@ -538,8 +552,8 @@ fn the_sound_section_chooses_an_application_for_the_share(cx: &mut TestAppContex
 
 /// A window with a live call but no client (so no session: nothing is published, only `share_sound` is checked), the
 /// recording sources, and a window lookup that finds `Music` for the window with id 7 and nothing for any other. Wayland
-/// and macOS (the system's dialog chooses) never reach `share_source`: that is `toggle_share`'s portal branch, and no
-/// lookup runs there.
+/// (the system's dialog chooses) never reaches `share_source`: that is `toggle_share`'s portal branch, and no lookup runs
+/// there. macOS has Dilla's own picker since Task 45 (D22), so it takes this path like X11 and Windows.
 fn sound_world(
     cx: &mut TestAppContext,
 ) -> (
@@ -672,5 +686,106 @@ fn a_late_window_sound_is_dropped(cx: &mut TestAppContext) {
     cx.update(|cx| voice::sync(id, call_state(true), None, cx));
     cx.update(|cx| voice::sync(id, call_state(false), None, cx));
     cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+}
+
+// ---- Dilla's own share picker on macOS (Task 45, D22) ---------------------------------------------------------------
+
+/// A listing the system refused (macOS without Screen Recording) leaves the picker open with no tiles and marks it
+/// denied, so its empty state says how to allow Screen Recording; the overlay still draws. A listing that was not
+/// refused is not denied, even when it is empty.
+#[gpui::test]
+fn a_denied_listing_shows_how_to_allow_screen_recording(cx: &mut TestAppContext) {
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    cx.update(|cx| {
+        share_picker::set_lister(
+            Arc::new(|| Listing {
+                found: vec![],
+                denied: true,
+            }),
+            cx,
+        )
+    });
+    let (_, vcx) = cx.add_window_view(|_, _| PickerHost);
+    vcx.update(|window, _| window.activate_window());
+    vcx.run_until_parked();
+    let id = vcx.update(|window, _| window.window_handle().window_id());
+    assert!(vcx.update(|window, cx| share_picker::open(ShareOptions::default(), window, cx)));
+    wait_listed(vcx, id);
+    let (denied, tiles) = vcx.read(|cx| {
+        let p = share_picker::picker_of(id, cx).expect("the picker stays open");
+        (p.denied, p.tiles.as_ref().map(Vec::len))
+    });
+    assert!(denied, "the refusal reaches the picker");
+    assert_eq!(tiles, Some(0), "no tiles without Screen Recording");
+    // The window draws its picker, as the shell's overlays do.
+    vcx.update(|window, cx| {
+        assert!(share_picker::overlay(window, cx).is_some());
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    vcx.update(|_, cx| share_picker::cancel(id, cx));
+
+    cx.update(|cx| share_picker::set_lister(Arc::new(|| Vec::<Found>::new().into()), cx));
+    let (_, vcx) = cx.add_window_view(|_, _| Host);
+    vcx.update(|window, _| window.activate_window());
+    vcx.run_until_parked();
+    let id = vcx.update(|window, _| window.window_handle().window_id());
+    assert!(vcx.update(|window, cx| share_picker::open(ShareOptions::default(), window, cx)));
+    wait_listed(vcx, id);
+    assert!(
+        !vcx.read(|cx| share_picker::picker_of(id, cx).unwrap().denied),
+        "an empty listing is not a refusal"
+    );
+}
+
+/// The owner a window's tile was listed with (macOS: `SCWindow.owningApplication`) is the owner the window's sound is
+/// looked up for: the pid travels from the listing through the choice to the lookup unchanged.
+#[gpui::test]
+fn the_listed_owner_reaches_the_window_sound(cx: &mut TestAppContext) {
+    let (w, id, _, _) = sound_world(cx);
+    cx.update(|cx| {
+        share_picker::set_lister(
+            Arc::new(|| {
+                vec![Found {
+                    source: DesktopSource {
+                        kind: SourceKind::Window,
+                        id: 7,
+                        title: "Notes".to_owned(),
+                        owner: Some(4000),
+                    },
+                    thumbnail: None,
+                }]
+                .into()
+            }),
+            cx,
+        )
+    });
+    let asked: Arc<std::sync::Mutex<Vec<DesktopSource>>> = Arc::default();
+    let seen = asked.clone();
+    cx.update(|cx| {
+        apps::set_window_sound(
+            Arc::new(move |source| {
+                seen.lock().unwrap().push(source.clone());
+                None
+            }),
+            cx,
+        )
+    });
+    pick(cx, &w, "window:7");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while asked.lock().unwrap().is_empty() {
+        cx.run_until_parked();
+        assert!(
+            Instant::now() < deadline,
+            "the window's sound was never looked up"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].owner, Some(4000));
     assert_eq!(sound(cx, id), voice::ShareSound::Unset);
 }

@@ -30,6 +30,10 @@ pub mod dilla_camera;
 // DILLA PATCH: the macOS camera's authorisation gate with a forced status, only with `dilla-test-frames`.
 #[cfg(all(target_os = "macos", feature = "dilla-test-frames"))]
 pub mod dilla_camera_testing;
+// DILLA PATCH: Dilla's own macOS share picker through ScreenCaptureKit (GPUI gaps Task 45, D22),
+// core/vendor/README.md.
+#[cfg(target_os = "macos")]
+pub mod dilla_screen;
 // DILLA PATCH: the dilla-sframe/1 encoded-frame hook (core/vendor/README.md).
 pub mod dilla_transform;
 // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.

@@ -154,6 +154,36 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   (its packing test; on macOS the denied/restricted/refused gate) and, on a Mac with Camera access,
   `DILLA_MAC_CAPTURE=1 cargo test -p dilla-media --test capture mac_camera`, plus the manual
   `capture-probe camera`.
+- Dilla's own macOS share picker (GPUI gaps Task 45, D22, 2026-11-23): `include/livekit/dilla_screen.h`,
+  `src/dilla_screen.rs` (`webrtc_sys::dilla_screen`, macOS only: `dilla_screen_access(request)`,
+  `dilla_screen_list`, `dilla_screen_thumbnails`, `dilla_screen_open(...)`, `DillaScreenCapture::set_fps`) and
+  `src/dilla_screen_mac.mm`, ScreenCaptureKit directly. libwebrtc's ScreenCaptureKit capturer lists
+  nothing with the system picker off and its window capturer cannot take an `SCContentFilter`, so
+  this replaces it on macOS for the picker's sources. `SCShareableContent` (on-screen windows, no
+  desktop windows; waited at most 5 s) lists the displays (named by `NSScreen.localizedName`) and the
+  windows, each with its owning application's pid, bundle id and name as the WindowServer records
+  them, unfiltered (dilla-media's `sources::mac_list` filters). On macOS 14+ `SCScreenshotManager`
+  takes one thumbnail per source, all at once (at most 3 s together, BGRA, no cursor). The capture is
+  an own `SCStream` (32BGRA at the source's pixel size, `queueDepth` 3, no audio, a serial output
+  queue) with a display filter (everything on it, Dilla included) or a window filter
+  (`initWithDesktopIndependentWindow:`); an open re-resolves its id and refuses a window whose owner
+  is no longer the listed pid. Complete frames go to a Rust sink (`DillaScreenSink::on_frame`), and
+  `stream:didStopWithError:` once to `on_end`; the destructor stops the stream (at most 2 s), removes
+  its output and drains the output queue before it returns. Screen Recording: every listing, thumbnail
+  and open first checks `CGPreflightScreenCaptureAccess()` and without it never touches
+  `SCShareableContent` (which would prompt); only `dilla_screen_access(true)`, the app's picker
+  opening, calls `CGRequestScreenCaptureAccess()`, once per process. Nothing logs a title, an
+  application name or a pid. `build.rs` compiles the `.mm` into the camera's ARC library
+  (`webrtcsys-camera`), now silenced with `-Wno-everything` instead of `-w` so the file's own
+  `#pragma clang diagnostic error "-Wunguarded-availability-new"` holds: every 12.3 and 14.0 symbol is
+  behind `@available` and weak-imported, and the app's macOS 13 floor builds. ScreenCaptureKit and
+  CoreGraphics were linked already. Covered by `clients/desktop/dilla-media/src/sources/mac_list.rs`
+  (the filtering and naming, on every OS), `desktop.rs` and `desktop_mac.rs` (the listed owner, the
+  frame packing), `clients/desktop/dilla-desktop/tests/share.rs` (a refused listing, the listed owner
+  reaching the window's sound) and, from a terminal that holds Screen Recording,
+  `cargo test -p dilla-media --test capture mac_picker -- --ignored` (a real display with its
+  thumbnail; a helper app's window, `tests/support/mac_window.swift`, listed with its pid, captured,
+  and ending when the app is killed).
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
   back to LiveKit's own FrameCryptor or to no transform

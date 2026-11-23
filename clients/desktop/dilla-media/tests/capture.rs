@@ -271,3 +271,129 @@ fn mac_camera_delivers_frames() {
     eprintln!("{frames} frames in {:?}", started.elapsed());
     drop(cam);
 }
+
+/// GPUI gaps Task 45 (D22): Dilla's own macOS picker lists the real displays through ScreenCaptureKit (webrtc-sys
+/// `dilla_screen_mac.mm`): not refused, at least one screen with a real `CGDirectDisplayID`, and never one of this
+/// process's own windows. On macOS 14+ each screen's thumbnail comes from `SCScreenshotManager` and fits the tile. It
+/// never asks for Screen Recording: without it the listing is refused (and this fails), it never prompts.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "needs Screen Recording for the terminal that runs it (macOS; iTerm2 on dilla-MacBook, the macos-15 runner's shell): lists and captures the real screen"]
+fn mac_picker_lists_a_display_with_its_thumbnail() {
+    use dilla_media::sources::desktop::{self, SourceKind};
+
+    let snapshot = desktop::snapshot(64, 320, 180);
+    assert!(!snapshot.denied, "Screen Recording is refused");
+    let screens: Vec<_> = snapshot
+        .sources
+        .iter()
+        .filter(|(s, _)| s.kind == SourceKind::Screen)
+        .collect();
+    assert!(!screens.is_empty(), "no screen listed");
+    assert!(screens.iter().all(|(s, _)| s.id != 0 && s.owner.is_none()));
+    let own = std::process::id();
+    assert!(
+        snapshot.sources.iter().all(|(s, _)| s.owner != Some(own)),
+        "one of this process's own windows is offered"
+    );
+    eprintln!(
+        "{} screens, {} windows",
+        screens.len(),
+        snapshot.sources.len() - screens.len()
+    );
+    if objc2::available!(macos = 14.0) {
+        for (_, thumbnail) in &screens {
+            let t = thumbnail
+                .as_ref()
+                .expect("a screen's thumbnail on macOS 14+");
+            assert!(t.width > 0 && t.height > 0 && t.width <= 320 && t.height <= 180);
+        }
+    }
+}
+
+/// GPUI gaps Task 45 (D22): a window of another process is listed with that process as its owner (the WindowServer's
+/// record, `SCWindow.owningApplication`), which is the pid its sound is looked up for; it captures through an own
+/// `SCStream`, and the window going away ends the capture. The helper app (tests/support/mac_window.swift) is compiled
+/// with `swiftc -O` into this test's temp dir; it is killed on every path.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "needs Screen Recording for the terminal that runs it (macOS; iTerm2 on dilla-MacBook, the macos-15 runner's shell): lists and captures the real screen"]
+fn mac_picker_window_owner_is_the_helper_app() {
+    use dilla_media::capture_source::{CaptureSource, Pull};
+    use dilla_media::sources::desktop::{self, SourceKind};
+
+    /// Kills the helper on every path.
+    struct Helper(std::process::Child);
+    impl Drop for Helper {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(format!("dilla-mac-window-{nonce}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join("mac_window");
+    let swift =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/mac_window.swift");
+    let built = std::process::Command::new("swiftc")
+        .arg("-O")
+        .arg(&swift)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("swiftc runs");
+    assert!(built.success(), "the helper did not compile");
+    let title = format!("dilla-share-probe-{nonce}");
+    let mut helper = Helper(
+        std::process::Command::new(&bin)
+            .arg(&title)
+            .spawn()
+            .expect("the helper starts"),
+    );
+    let pid = helper.0.id();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let source = loop {
+        if let Some(s) = desktop::list(SourceKind::Window)
+            .into_iter()
+            .find(|s| s.title == title)
+        {
+            break s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the helper's window was never listed"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert_eq!(source.owner, Some(pid));
+    assert_eq!(desktop::window_owner_pid(&source), Some(pid));
+
+    let mut capture = desktop::open(Some(&source), 10, desktop::START_WAIT, &|| false)
+        .unwrap_or_else(|e| panic!("the helper's window did not open: {e}"));
+    let (w, h) = capture.size();
+    assert!(w > 0 && h > 0, "an empty first frame");
+
+    let _ = helper.0.kill();
+    let _ = helper.0.wait();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(capture.pull(), Pull::Ended) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the capture outlived its window");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(capture);
+    drop(helper);
+    let _ = std::fs::remove_dir_all(&dir);
+}
