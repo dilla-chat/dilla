@@ -1,0 +1,123 @@
+{
+  "name": "voice/stage-group",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/lounge}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "lin",
+        "display": "Lin"
+      },
+      {
+        "id": "sam",
+        "display": "Sam"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "lin",
+          "sam"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "Lounge"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "channel": "midgard/lounge",
+        "participants": [
+          {
+            "person": "ada"
+          },
+          {
+            "person": "mira"
+          },
+          {
+            "person": "bjorn",
+            "muted": true
+          },
+          {
+            "person": "lin",
+            "deafened": true
+          },
+          {
+            "person": "sam",
+            "sharing": true
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": ".d-call-stage__join",
+      "gpui": "-"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

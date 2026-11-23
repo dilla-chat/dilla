@@ -30,6 +30,7 @@
         "name": "Asgard Expedition Society",
         "owner": "bjorn",
         "members": ["ada", "bjorn", "mira", "liv", "sven", "kari", "dillabot"],
+        "bot": {"capabilities": ["polls"], "botChannels": ["war-council"]},
         "channels": [
           { "id": "general", "kind": "text", "name": "general" },
           { "id": "war-council", "kind": "text", "name": "war-council" },

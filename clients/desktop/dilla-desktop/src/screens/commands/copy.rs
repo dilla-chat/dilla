@@ -22,6 +22,10 @@ pub const JOIN_VOICE_FIRST: &str = "join voice first";
 pub const SEPARATOR: &str = " · ";
 /// CommandHost.tsx `suggest`: a `/unban` suggestion's second line.
 pub const BANNED_MEMBER: &str = "Banned member";
+/// CommandHost.tsx `suggest`: a message suggestion's second line when it is this account's, and a `/join` voice
+/// channel's.
+pub const YOUR_MESSAGE: &str = "Your message";
+pub const VOICE_CHANNEL: &str = "Voice channel";
 /// `commandPickerCopy.sugTitle`: the suggestions' title, by what they suggest.
 pub const SUG_MEMBERS: &str = "Members";
 pub const SUG_DURATIONS: &str = "Durations";
@@ -99,3 +103,19 @@ pub const REASON: &str = "Reason";
 pub const NO_REASON: &str = "none given";
 pub const LOGGED: &str = "Logged";
 pub const LOGGED_NOTE: &str = "modlog · visible to moderators";
+
+/// CommandHost.tsx's generic `ConfirmDialog`: its confirm, busy and cancel labels.
+pub const CONTINUE: &str = "Continue";
+pub const WORKING: &str = "Working…";
+pub const CANCEL: &str = "Cancel";
+
+/// UtilityCommandProvider.tsx literal results for `poll create` (the web keeps them outside its string tables).
+pub const POLL_NOT_HERE: &str = "Create a poll in a community channel.";
+pub const POLL_NOT_OFFERED: &str = "The Bot cannot create polls in this channel.";
+pub const POLL_STOPPED_OFFERING: &str = "The Bot stopped offering polls. Try again.";
+/// `caught`: how a refused create reads, by what the Bot answered.
+pub const POLL_BOT_UNAVAILABLE: &str = "The Bot is unavailable in this community.";
+pub const POLL_RECORD_CHANGED: &str = "The record changed. Refresh it and try again.";
+pub const POLL_NO_LONGER_AVAILABLE: &str = "This action is no longer available.";
+pub const POLL_TOO_LARGE: &str = "The answers use too much space. Shorten them and try again.";
+pub const POLL_CHECK_FIELDS: &str = "Check the fields and try again.";

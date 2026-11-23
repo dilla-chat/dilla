@@ -1,0 +1,40 @@
+{
+  "name": "commands/announcement-editor",
+  "window": [1280, 800],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "bjorn", "display": "Björn" },
+      { "id": "mira", "display": "Mira" },
+      { "id": "dillabot", "display": "Dilla Bot", "bot": true }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "bjorn", "mira", "dillabot"],
+        "channels": [
+          { "id": "general", "kind": "text", "name": "general" },
+          { "id": "news", "kind": "text", "name": "news" },
+          { "id": "afk", "kind": "voice", "name": "AFK", "system": true, "position": 1073741824 }
+        ],
+        "bot": { "capabilities": ["announcements"], "botChannels": ["general"] }
+      }
+    ],
+    "messages": [
+      { "key": "m1", "channel": "midgard/general", "sender": "ada", "ts": 1794481500, "body": "raid tonight at 20:00? bring the good shields" },
+      { "key": "m2", "channel": "midgard/general", "sender": "bjorn", "ts": 1794481560, "body": "in. last time the bridge troll took everything we had" },
+      { "key": "m3", "channel": "midgard/general", "sender": "mira", "ts": 1794481700, "body": "I will post the stand-up time as an announcement" }
+    ]
+  },
+  "steps": [
+    {"do": "type", "web": "css=.d-composer__input", "gpui": "composer", "text": "/announcement create"},
+    {"do": "key", "chord": "tab"},
+    {"do": "key", "chord": "enter"},
+    {"do": "settle"}
+  ]
+}

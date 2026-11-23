@@ -7,11 +7,22 @@ use crate::state::bot::{
 };
 
 /// What a row may change after it was added (`Partial<PrivateResult>`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Patch {
     pub status: Option<ResultStatus>,
     pub text: Option<String>,
     pub hold: Option<bool>,
+}
+
+/// A private row's text may quote a Bot's sealed answer or name a moderated member: Debug gives its length only.
+impl std::fmt::Debug for Patch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Patch")
+            .field("status", &self.status)
+            .field("text", &self.text.as_deref().map(crate::state::Redacted))
+            .field("hold", &self.hold)
+            .finish()
+    }
 }
 
 /// `stamp`: a pending or held row carries no `settled_at`; a finished one keeps the previous stamp while its status and

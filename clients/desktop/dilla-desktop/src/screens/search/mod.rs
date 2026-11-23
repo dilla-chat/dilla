@@ -79,9 +79,19 @@ pub enum Navigate {
     StartDm,
 }
 
-/// Answers whether the target was opened: `false` when it is gone (a hit whose conversation was left), which the palette
-/// says and stays open for.
-pub type OnNavigate = Rc<dyn Fn(Navigate, &mut Window, &mut App) -> bool>;
+/// What opening a result came to.
+pub enum NavOutcome {
+    /// Opened: the palette closes.
+    Done,
+    /// Gone (a hit whose conversation was left): the palette says so and stays open.
+    Gone,
+    /// Still running (a hit on a message loads earlier pages until it is there, Shell.tsx:1760-1785): the palette stays
+    /// open, and then acts on the answer, `true` for [`NavOutcome::Done`] and `false` for [`NavOutcome::Gone`].
+    Later(tokio::sync::oneshot::Receiver<bool>),
+}
+
+/// Opens the target and tells how that went.
+pub type OnNavigate = Rc<dyn Fn(Navigate, &mut Window, &mut App) -> NavOutcome>;
 
 /// What the host (the shell) tells the palette: what it shows, and how a result is opened.
 #[derive(Clone)]
@@ -167,6 +177,17 @@ pub fn request_open(cx: &mut App) {
 /// Asks for `window`'s palette to open (a button in that window).
 pub fn request_open_in(window: WindowId, cx: &mut App) {
     crate::per_window::get_mut::<OpenRequest>(window, cx).0 = true;
+    cx.refresh_windows();
+}
+
+/// The text a command (`/search`) asks the window's palette to open with.
+#[derive(Default)]
+struct OpenQuery(Option<String>);
+
+/// Asks for `window`'s palette to open with `query` in its field, as `/search` does (Shell.tsx:2175 `openSearch`, which
+/// takes a scope the palette ignores). An open palette takes the query too.
+pub fn request_open_with(window: WindowId, query: String, cx: &mut App) {
+    crate::per_window::get_mut::<OpenQuery>(window, cx).0 = Some(query);
     cx.refresh_windows();
 }
 
@@ -320,14 +341,38 @@ fn pick(palette: &Entity<Palette>, id: &SharedString, window: &mut Window, cx: &
     let (Some(target), Some(env)) = (target, env) else {
         return;
     };
-    if (env.navigate)(target, window, cx) {
-        close(palette, true, window, cx);
-    } else {
-        palette.update(cx, |p, _| p.unavailable = true);
-        let input = palette.read(cx).input.clone();
-        window.focus(&input.read(cx).focus_handle(cx), cx);
-        window.refresh();
+    match (env.navigate)(target, window, cx) {
+        NavOutcome::Done => close(palette, true, window, cx),
+        NavOutcome::Gone => unavailable(palette, window, cx),
+        NavOutcome::Later(answer) => {
+            // The palette stays open while the result is looked for (Search.tsx:47 awaits `run()`); a palette closed
+            // meanwhile (Escape) has nothing left to say.
+            let palette = palette.clone();
+            window
+                .spawn(cx, async move |cx| {
+                    let opened = answer.await.unwrap_or(false);
+                    let _ = cx.update(|window, cx| {
+                        if !palette.read(cx).open {
+                            return;
+                        }
+                        if opened {
+                            close(&palette, true, window, cx);
+                        } else {
+                            unavailable(&palette, window, cx);
+                        }
+                    });
+                })
+                .detach();
+        }
     }
+}
+
+/// The palette says the result is no longer available, and the textbox takes the focus back (Search.tsx:44-49).
+fn unavailable(palette: &Entity<Palette>, window: &mut Window, cx: &mut App) {
+    palette.update(cx, |p, _| p.unavailable = true);
+    let input = palette.read(cx).input.clone();
+    window.focus(&input.read(cx).focus_handle(cx), cx);
+    window.refresh();
 }
 
 /// The names `tracked` gives the result rows: a row's automation id is `search-option-<n>`.
@@ -403,11 +448,15 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let wid = window.window_handle().window_id();
     let env = env_of(wid, cx)?;
     let memory = palette_of(window, cx);
-    if std::mem::take(&mut crate::per_window::get_mut::<OpenRequest>(wid, cx).0)
-        && !memory.read(cx).open
+    let query = crate::per_window::get_mut::<OpenQuery>(wid, cx).0.take();
+    if (std::mem::take(&mut crate::per_window::get_mut::<OpenRequest>(wid, cx).0)
+        && !memory.read(cx).open)
+        || query.is_some()
     {
         let input = memory.read(cx).input.clone();
-        input.update(cx, |s, cx| s.set_value("", window, cx));
+        input.update(cx, |s, cx| {
+            s.set_value(query.unwrap_or_default(), window, cx)
+        });
         memory.update(cx, |p, _| {
             p.open = true;
             p.active = None;
@@ -721,9 +770,15 @@ pub fn palette(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     };
     Some(
         deferred(
-            ui::scrim("search-palette", vh)
+            ui::scrim("search-palette", vh, cx)
                 .on_mouse_down(MouseButton::Left, scrim_close)
-                .child(panel_el),
+                // SearchPalette.css:10: the panel's `d-modal` over `--duration-normal`, `backwards`.
+                .child(dilla_desktop_ui::motion::modal_in(
+                    panel_el,
+                    "search-palette-enter",
+                    dilla_desktop_ui::tokens::motion::NORMAL,
+                    cx,
+                )),
         )
         .with_priority(OVERLAY_PRIORITY)
         .into_any_element(),
@@ -749,7 +804,7 @@ mod tests {
                 community: Some(dilla_client::state::CommunityId([community; 16])),
                 ..SlotCx::default()
             },
-            navigate: std::rc::Rc::new(|_, _, _| true),
+            navigate: std::rc::Rc::new(|_, _, _| NavOutcome::Done),
         };
         cx.update(|cx| {
             provide(a, env(1), cx);
@@ -761,6 +816,50 @@ mod tests {
             assert!(crate::per_window::get::<OpenRequest>(a, cx).is_some_and(|r| r.0));
             assert!(crate::per_window::get::<OpenRequest>(b, cx).is_none_or(|r| !r.0));
         });
+    }
+
+    /// `/search` (Shell.tsx:2175): the palette opens with the command's query in its field, in the window that asked; an
+    /// open palette takes a new query too.
+    #[gpui::test]
+    fn a_search_command_opens_the_palette_with_its_query(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let vcx = cx.add_empty_window();
+        let w = vcx.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            provide(
+                w,
+                SearchEnv {
+                    ctx: SlotCx::default(),
+                    navigate: std::rc::Rc::new(|_, _, _| NavOutcome::Done),
+                },
+                cx,
+            );
+            w
+        });
+        let shown = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                drop(palette(window, cx));
+                let seen = inspect(window, cx).expect("drawn");
+                (
+                    seen.open,
+                    palette_of(window, cx)
+                        .read(cx)
+                        .input
+                        .read(cx)
+                        .value()
+                        .to_string(),
+                )
+            })
+        };
+        assert_eq!(shown(vcx), (false, String::new()));
+        vcx.update(|_, cx| request_open_with(w, "harbour".into(), cx));
+        assert_eq!(shown(vcx), (true, "harbour".to_owned()));
+        vcx.update(|_, cx| request_open_with(w, "lantern".into(), cx));
+        assert_eq!(
+            shown(vcx),
+            (true, "lantern".to_owned()),
+            "an open palette takes it"
+        );
     }
 
     /// Re-review N2: a release forgets what the palette showed (decrypted snippets, their hits) and the query typed

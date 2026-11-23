@@ -1471,6 +1471,15 @@ mod live {
         ada.open_channel(ch).await.unwrap().expect("ada joins");
         sends(&owner, ch, "before").await;
         sees(&ada, ch, ps[0].user_id, "before").await;
+        let server_name = wait_for(&ada, Duration::from_secs(10), "ada lists it", |s| {
+            s.communities.iter().any(|x| x.id == cid)
+        })
+        .await
+        .communities
+        .iter()
+        .find(|x| x.id == cid)
+        .map(|x| x.name.clone())
+        .expect("ada lists the server");
 
         owner
             .moderation()
@@ -1479,6 +1488,13 @@ mod live {
             .unwrap();
         wait_for(&ada, Duration::from_secs(30), "ada loses the server", |s| {
             !s.communities.iter().any(|x| x.id == cid)
+        })
+        .await;
+        // controller.ts 3073-3100: the server this account did not leave is told as a removal notice.
+        wait_for(&ada, Duration::from_secs(10), "ada is told", |s| {
+            s.removal_notices.len() == 1
+                && s.removal_notices[0].community == cid
+                && s.removal_notices[0].name == server_name
         })
         .await;
 
@@ -1501,6 +1517,11 @@ mod live {
         .unwrap();
         ada.refresh();
         listed(&ada, cid, 2).await;
+        // The join above went over HttpDs, so the list reading the server again is what drops the notice.
+        wait_for(&ada, Duration::from_secs(10), "the notice is gone", |s| {
+            s.removal_notices.is_empty()
+        })
+        .await;
         let ch = general(&ada, cid).await;
         ada.open_channel(ch)
             .await
@@ -1739,8 +1760,9 @@ mod removal {
     }
 
     fn body_nowhere(s: &AppState, who: &str) {
+        // R21 keeps decrypted texts out of the state's Debug output: they are read directly.
         assert!(
-            !format!("{s:?}").contains(BODY),
+            !dilla_client::testing::holds_text(s, BODY),
             "the removed body is still in {who}'s state"
         );
     }

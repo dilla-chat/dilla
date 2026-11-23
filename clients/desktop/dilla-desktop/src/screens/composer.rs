@@ -18,6 +18,7 @@
 use std::time::Duration;
 
 use dilla_client::state::{Channel, ChannelId, Member};
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Render, SharedString,
@@ -110,10 +111,16 @@ pub struct Composer {
     opened_s: Option<u64>,
     /// The message the reply bar aimed this field at when it last drew: a new target takes the keyboard.
     reply_seen: Option<dilla_client::state::MessageId>,
+    /// Tracks the box, so the ring follows the focus anywhere in it (Composer.css `.d-composer__box:focus-within`): the
+    /// field, the foot tools and the send button.
+    box_focus: FocusHandle,
     used_for: SharedString,
     used: usize,
     save: Option<Task<()>>,
     tick: Option<Task<()>>,
+    /// Whether the typing sweep was drawn when the field last drew, and the timer that ends its fade-out.
+    sweep_on: bool,
+    sweep_out: Option<Task<()>>,
     /// The window the field is drawn in ([`Composer::let_go`] empties it there).
     window: gpui::AnyWindowHandle,
     _subscriptions: Vec<Subscription>,
@@ -209,10 +216,13 @@ impl Composer {
             dismissed: None,
             opened_s: None,
             reply_seen: None,
+            box_focus: cx.focus_handle(),
             used_for: SharedString::default(),
             used: 0,
             save: None,
             tick: None,
+            sweep_on: false,
+            sweep_out: None,
             window: window.window_handle(),
             _subscriptions: vec![sub],
         }
@@ -292,16 +302,44 @@ impl Composer {
         self.write_draft(cx);
         self.loaded = next;
         let draft = match (&self.slots.client, next) {
-            (Some(client), Some(channel)) => client
-                .prefs()
-                .get::<String>(&composing::draft_key(channel))
-                .unwrap_or_default(),
+            (Some(client), Some(channel)) => loaded_draft(
+                crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel))),
+                || client.prefs().get::<String>(&composing::draft_key(channel)),
+            ),
             _ => String::new(),
         };
         self.dismissed = None;
         self.active = 0;
+        // Another conversation starts with an empty picker, as the web remounts its composer per target
+        // (`<ComposerArea key={targetId}>`, Shell.tsx:1464): what was picked in the last one never runs here.
+        let field = self.input.read(cx).focus_handle(cx);
+        crate::screens::commands::reset_composer(window.window_handle().window_id(), &field, cx);
         self.input
             .update(cx, |s, cx| s.set_value(draft, window, cx));
+    }
+
+    /// Task 30 (CommandHost.tsx:293-296): a command run from this field whose answer was uncertain comes back into it, so
+    /// the picker opens on the same draft and a resend is the same request. The draft the window was handed
+    /// (`commands::reopen`) is taken first, else the one the command memory keeps for this conversation (an answer that
+    /// landed off the window's thread). Only this composer's own client's drafts: one left for another session is dropped.
+    fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(channel) = self.loaded else {
+            return;
+        };
+        let wid = window.window_handle().window_id();
+        let serial = self.slots.client.as_ref().map(|c| c.serial());
+        let handed = crate::screens::commands::take_reopen(wid, serial, here(channel), cx);
+        let text = handed.or_else(|| {
+            self.slots.client.as_ref().and_then(|client| {
+                crate::screens::commands::with_memory(client, |m| m.take_reopen(here(channel)))
+            })
+        });
+        if let Some(text) = text {
+            self.set_text(&text, None, window, cx);
+            let field = self.input.read(cx).focus_handle(cx);
+            crate::screens::commands::set_composer(wid, &field, cx);
+            crate::screens::commands::draft_changed(wid, &text, cx);
+        }
     }
 
     fn on_input_event(
@@ -467,9 +505,12 @@ impl Composer {
     }
 
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Only the chips this composer owns are its own: another composer's (the thread's) are never sent from here.
+        let field = self.input.read(cx).focus_handle(cx);
         // w2 I-B1: a member chip naming nobody (a display name typed, no member picked) runs nothing; its list shows.
         if crate::screens::commands::chips::hold_unnamed_member(
             &self.slots,
+            &field,
             window.window_handle().window_id(),
             cx,
         ) {
@@ -479,6 +520,7 @@ impl Composer {
         // Task 28 follow-up 14: with a command picked, the chips' typed form is what is sent.
         let chips = crate::screens::commands::chips::draft(
             &self.slots,
+            &field,
             window.window_handle().window_id(),
             cx,
         );
@@ -497,14 +539,17 @@ impl Composer {
         if raw.trim().is_empty() && !files {
             return;
         }
-        // Task 20: a draft without files is the bot area's to decide first: posted (`//x` as `/x`, a built-in's text),
-        // answered privately on this device, or kept (a command still lacking its arguments).
-        let raw = if files && !chipped {
+        // Task 20: a draft is the bot area's to decide first: posted (`//x` as `/x`, a built-in's text), answered
+        // privately on this device, or kept (a command still lacking its arguments). A plain text with files goes as it is.
+        let raw = if !bot_area_first(&raw, files, chipped) {
             raw
         } else {
-            match crate::screens::commands::on_send(
+            match crate::screens::commands::on_send_in(
                 &self.slots,
+                None,
+                Some(&field),
                 &raw,
+                &|t| self.encoded(t),
                 window.window_handle().window_id(),
                 cx,
             ) {
@@ -619,6 +664,43 @@ impl Composer {
         false
     }
 
+    /// The box's top strip (Composer.css `__sweep`, `opacity: 0` with `transition: opacity var(--duration-turn)`): while
+    /// someone types it fades in and slides; when they stop it fades out at rest for the length of the transition, then
+    /// goes. An idle strip is empty and schedules nothing.
+    fn sweep_strip(&mut self, typing: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use dilla_desktop_ui::motion;
+        let turn = dilla_desktop_ui::tokens::motion::TURN;
+        if typing {
+            self.sweep_on = true;
+            self.sweep_out = None;
+            return motion::transition_in(
+                div().w_full().child(motion::sweep("composer-sweep", cx)),
+                "composer-sweep-in",
+                turn,
+                cx,
+            );
+        }
+        if std::mem::take(&mut self.sweep_on) && !cx.reduce_motion() {
+            self.sweep_out = Some(cx.spawn(async move |this: WeakEntity<Self>, cx| {
+                cx.background_executor().timer(turn).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.sweep_out = None;
+                    cx.notify();
+                });
+            }));
+        }
+        if self.sweep_out.is_some() {
+            motion::transition_out(
+                div().w_full().child(motion::sweep_still()),
+                "composer-sweep-out",
+                turn,
+                cx,
+            )
+        } else {
+            div().h(len(2.)).into_any_element()
+        }
+    }
+
     /// Re-draws once a second while slow mode counts down.
     fn arm_tick(&mut self, waiting: bool, cx: &mut Context<Self>) {
         if !waiting {
@@ -646,6 +728,20 @@ impl Composer {
 
 /// The field's accessible name (`shell.composer.label`, "message #general"): the target is the channel's `#name` or the
 /// DM's `@name`, put where the web's `#{channel}` is.
+/// The conversation of `channel`'s composer (its own log; a thread has a composer of its own).
+fn here(channel: ChannelId) -> dilla_client::state::bot::Conversation {
+    dilla_client::state::bot::Conversation {
+        channel,
+        thread: None,
+    }
+}
+
+/// The draft a composer loads for a channel (Task 30, CommandHost.tsx:123-129: an active row restores its text): the
+/// draft of an uncertain command to reopen wins over the stored `drafts.<channel>`.
+fn loaded_draft(reopen: Option<String>, stored: impl FnOnce() -> Option<String>) -> String {
+    reopen.or_else(stored).unwrap_or_default()
+}
+
 fn composer_label(target: &str) -> String {
     t("shell.composer.label").replace("#{channel}", target)
 }
@@ -665,7 +761,7 @@ fn tool(icon: IconName) -> impl IntoElement {
 
 /// The mention list over the box (MentionList.css): 340px (less the 32px sides) wide, the members title, 34px lines, the
 /// chosen one on `--surface-hi` with a 2px accent bar.
-fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
+fn mention_list(options: &[MentionOption], active: usize, cx: &gpui::App) -> gpui::AnyElement {
     let mut list = div().flex().flex_col().px(len(4.)).pb(len(4.));
     for (n, o) in options.iter().enumerate() {
         let lead = if let Some(user) = o.id.strip_prefix("m-") {
@@ -737,8 +833,8 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
         }
         list = list.child(row);
     }
-    // MentionList.css: `box-shadow: var(--shadow-2)`.
-    div()
+    // MentionList.css: `box-shadow: var(--shadow-2)`; `d-modal` over `--duration-tab`.
+    let panel = div()
         .w(len(340.))
         .overflow_hidden()
         .bg(color::SURFACE_2)
@@ -751,20 +847,46 @@ fn mention_list(options: &[MentionOption], active: usize) -> gpui::AnyElement {
                 line(
                     t("shell.composer.mentionsTitle").to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
                 .tracking(LABEL_TRACKING_WIDE),
             ),
         )
-        .child(list)
-        .into_any_element()
+        .child(list);
+    dilla_desktop_ui::motion::modal_in(
+        panel,
+        "mention-list-enter",
+        dilla_desktop_ui::tokens::motion::TAB,
+        cx,
+    )
+}
+
+/// Composer.css `.d-composer__box:focus-within`: `box-shadow: 0 0 0 3px var(--accent-soft)`.
+const FOCUS_RING_SPREAD: f32 = 3.0;
+
+/// Whether "send ↵" is the lit one (Composer.tsx `empty`: `value.trim() === ''` dims it). The picked command's chips hand the
+/// composer an empty draft (CommandPicker.tsx `PickerFrame.draft`: `'' with chips: send dims as in the prototype`), so with
+/// chips the button is dim whatever the fields hold; Enter runs the command. A tray with a card lets a blank draft send
+/// (ComposerArea.tsx `canSendEmpty={tray.length > 0}`).
+fn send_is_lit(draft: &str, chips: bool, tray: bool, blocked: bool) -> bool {
+    !chips && (tray || !draft.trim().is_empty()) && !blocked
+}
+
+impl Composer {
+    /// Composer.css `.d-composer__box:focus-within`: the focus is on something inside the box (the field, a tool, send). A
+    /// press on the box's own blank area makes GPUI focus the box's tracked handle itself, which is no control: on the web the
+    /// same press blurs the textarea and the ring drops, so the bare box does not light it.
+    fn ring_lit(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.box_focus.contains_focused(window, cx) && !self.box_focus.is_focused(window)
+    }
 }
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.switch_channel(window, cx);
+        self.reopen(window, cx);
         // ComposerArea.tsx: a reply started (the toolbar's Reply) puts the keyboard in the field.
         let reply = crate::screens::threads::replying_of(&self.slots, cx)
             .filter(|r| Some(r.channel) == self.slots.channel)
@@ -779,11 +901,18 @@ impl Render for Composer {
         let value = self.input.read(cx).value();
         let empty = value.is_empty();
         let ctx = self.slots.clone();
+        // ComposerArea.tsx `top`: the reply bar, then the attachment tray, both above the box.
+        let reply_bar = slots::composer_reply_bar(&ctx, window, cx);
+        let tray = slots::composer_tray(&ctx, window, cx);
         let leading = slots::composer_leading(&ctx, window, cx);
         let buttons = slots::composer_buttons(&ctx, window, cx);
-        let popup = slots::composer_popup(&ctx, window, cx);
+        let field_focus = self.input.read(cx).focus_handle(cx);
+        let popup = slots::composer_popup(&ctx, &field_focus, window, cx);
         // A picked command's chips in place of the field (Task 20's hook, Task 28 follow-up 14).
-        let chips = slots::composer_chips(&ctx, window, cx);
+        let (chips_bar, chips) = match slots::composer_chips(&ctx, &field_focus, window, cx) {
+            Some(v) => (Some(v.bar), Some(v.row)),
+            None => (None, None),
+        };
         let now_ms = ctx.clock.now() * 1000;
         let now_ms = match ctx.clock {
             crate::screens::shell::Clock::Local => std::time::SystemTime::now()
@@ -808,12 +937,13 @@ impl Render for Composer {
         let typing_text = ctx
             .channel
             .and_then(|c| typing::text(&ctx.state, c, now_ms));
+        let sweep = self.sweep_strip(typing_text.is_some(), cx);
         let options = self.open_options(cx);
         let active = self.active.min(options.len().saturating_sub(1));
         // The field is as high as the draft's lines (20px each), up to the cap; soft-wrapped lines are not counted.
         let rows = value.split('\n').count().clamp(1, max_rows());
         let placeholder = format!("Message {}", self.target);
-        let sendable = (!empty || chips.is_some()) && blocked.is_none();
+        let sendable = send_is_lit(&value, chips.is_some(), tray.is_some(), blocked.is_some());
         let field = div()
             .relative()
             .flex_1()
@@ -882,9 +1012,14 @@ impl Render for Composer {
             .items_center()
             .child(
                 // JetBrains Mono has no ↵: Chromium draws it from fontconfig's fallback face, DejaVu Sans (0.838em).
-                line("send ↵", text::BTN, line_height(text::BTN, 1.5), send_fg)
-                    .weight(font::WEIGHT_DISPLAY)
-                    .fallback(SYMBOL_FALLBACK),
+                line(
+                    "send ↵",
+                    text::BTN,
+                    dilla_desktop_ui::text::root_line_height(text::BTN),
+                    send_fg,
+                )
+                .weight(font::WEIGHT_DISPLAY)
+                .fallback(SYMBOL_FALLBACK),
             )
             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)));
         let row = div()
@@ -896,8 +1031,13 @@ impl Render for Composer {
             .pb(len(4.))
             .pl(len(12.))
             .child(
-                line("›", text::BASE, line_height(text::BASE, 1.5), color::ACCENT)
-                    .weight(font::WEIGHT_DISPLAY),
+                line(
+                    "›",
+                    text::BASE,
+                    dilla_desktop_ui::text::root_line_height(text::BASE),
+                    color::ACCENT,
+                )
+                .weight(font::WEIGHT_DISPLAY),
             )
             .child(match chips {
                 // The textarea stays in the tree, empty-sized: it keeps the focus and its Enter sends the chips.
@@ -941,7 +1081,7 @@ impl Render for Composer {
                 line(
                     who.clone(),
                     text::META,
-                    line_height(text::META, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::META),
                     color::ACCENT,
                 )
                 .ellipsis(),
@@ -952,7 +1092,7 @@ impl Render for Composer {
                 line(
                     t("shell.composer.newLine"),
                     text::META,
-                    line_height(text::META, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::META),
                     color::FG_3,
                 )
                 .fallback(SYMBOL_FALLBACK),
@@ -999,16 +1139,34 @@ impl Render for Composer {
         }
         let used = self.used as i64;
         let remaining = MAX_LEN as i64 - used;
+        // Composer.css: the box takes the accent border and a 3px accent-soft ring while the focus is anywhere in it; a
+        // reply bar above it squares its top corners off.
+        let focused = self.ring_lit(window, cx);
         let box_ = div()
+            .debug_selector(|| "composer-box".to_owned())
+            .track_focus(&self.box_focus)
             .w_full()
             .bg(color::SURFACE)
             .border_1()
-            .border_color(color::HAIRLINE_2)
+            .border_color(if focused {
+                color::ACCENT
+            } else {
+                color::HAIRLINE_2
+            })
+            .when(focused, |d| {
+                d.shadow(dilla_desktop_ui::metrics::spread_ring(
+                    color::ACCENT_SOFT,
+                    FOCUS_RING_SPREAD,
+                ))
+            })
             .rounded(radius::LG)
+            .when(reply_bar.is_some(), |d| d.rounded_t_none())
             .flex()
             .flex_col()
-            .child(div().h(len(2.)))
-            // The reply bar and the attachment tray (11, 12): no gap, so an empty slot takes no height.
+            // The 2px sweep (Composer.css `__sweep`): it slides only while someone else types, and an idle strip is
+            // empty and schedules no frames.
+            .child(sweep)
+            // What an area puts over the field (9): no gap, so an empty slot takes no height.
             .child(leading)
             .child(row)
             .child(foot);
@@ -1040,21 +1198,29 @@ impl Render for Composer {
             .bg(color::BG)
             .px(len(16.))
             .pb(len(14.))
+            // ComposerArea.tsx `top`: the command's bar, then the reply bar and the tray.
+            .children(chips_bar)
+            .children(reply_bar)
+            .children(tray.map(|t| div().debug_selector(|| "composer-tray".to_owned()).child(t)))
+            // Composer.tsx: the notice comes after `top`, just above the box (Composer.css `d-composer__notice`).
             .children(notice.map(|n| {
-                div().mb(len(4.)).children(paragraph(
-                    &n,
-                    text::SM,
-                    line_height(text::SM, 1.5),
-                    color::FG_2,
-                    (width - 32.0).max(1.0),
-                ))
+                div()
+                    .debug_selector(|| "composer-notice".to_owned())
+                    .mb(len(4.))
+                    .children(paragraph(
+                        &n,
+                        text::SM,
+                        dilla_desktop_ui::text::root_line_height(text::SM),
+                        color::FG_2,
+                        (width - 32.0).max(1.0),
+                    ))
             }))
             .child(box_)
             .children(reason.map(|r| {
                 div().mt(len(4.)).children(paragraph(
                     &r,
                     text::SM,
-                    line_height(text::SM, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::SM),
                     color::FG_2,
                     (width - 32.0).max(1.0),
                 ))
@@ -1068,7 +1234,7 @@ impl Render for Composer {
                 div().mt(len(4.)).flex().justify_end().child(line(
                     label,
                     text::XS,
-                    line_height(text::XS, 1.5),
+                    dilla_desktop_ui::text::root_line_height(text::XS),
                     if remaining < 0 {
                         color::DANGER
                     } else {
@@ -1083,7 +1249,7 @@ impl Render for Composer {
                     .left(len(16.))
                     .bottom_full()
                     .mb(len(6.))
-                    .child(mention_list(&options, active))
+                    .child(mention_list(&options, active, cx))
                     .child(crate::screens::messages::probe("mention-list"))
             }))
             .children(popup.map(|popup| {
@@ -1095,6 +1261,13 @@ impl Render for Composer {
                     .child(popup)
             }))
     }
+}
+
+/// Whether a send goes through the bot area ([`crate::screens::commands::on_send_in`]) before it is posted.
+/// ComposerArea.tsx `send` routes any draft that starts with `/` (`//x` included, which it posts as `/x`) to the command
+/// host whatever the tray holds; a picked command (chips) does too. Only a plain text with files skips it.
+fn bot_area_first(raw: &str, files: bool, chipped: bool) -> bool {
+    !files || chipped || raw.starts_with('/')
 }
 
 #[cfg(test)]
@@ -1112,9 +1285,318 @@ mod tests {
         assert_eq!(chars_of_byte(s, 99), 4);
     }
 
+    /// Composer.css `.d-composer__box:focus-within`: a 3px `--accent-soft` ring outside the box, no blur.
+    #[test]
+    fn the_focused_box_has_a_three_px_accent_soft_ring() {
+        let ring = dilla_desktop_ui::metrics::spread_ring(color::ACCENT_SOFT, FOCUS_RING_SPREAD);
+        assert_eq!(ring.len(), 1);
+        assert_eq!(f32::from(ring[0].spread_radius), 3.0);
+        assert_eq!(f32::from(ring[0].blur_radius), 0.0);
+        assert_eq!(ring[0].color, color::ACCENT_SOFT);
+        assert!(!ring[0].inset);
+    }
+
+    /// Composer.css `.d-composer__box:focus-within`: the ring holds while the focus is on a tool of the box, not only on
+    /// the field (Tab from the field reaches the foot's tools).
+    #[gpui::test]
+    fn the_box_has_the_focus_while_it_is_on_a_tool_of_the_foot(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (field, boxed) = composer.read_with(vcx, |c, cx| {
+            (c.input.read(cx).focus_handle(cx), c.box_focus.clone())
+        });
+        vcx.update(|window, cx| {
+            assert!(!boxed.contains_focused(window, cx), "nothing focused yet");
+            window.focus(&field, cx);
+        });
+        draw(vcx);
+        vcx.update(|window, cx| {
+            assert!(
+                boxed.contains_focused(window, cx),
+                "the field is in the box"
+            );
+            window.focus_next(cx);
+        });
+        draw(vcx);
+        vcx.update(|window, cx| {
+            assert!(!field.is_focused(window), "the focus moved on to a tool");
+            assert!(
+                boxed.contains_focused(window, cx),
+                "a tool is in the box too"
+            );
+        });
+    }
+
+    /// The web's `:focus-within` follows real focus: a press on the box's blank area (GPUI focuses the tracked box itself)
+    /// leaves the ring off, as the web's press blurs the textarea.
+    #[gpui::test]
+    fn the_bare_box_does_not_light_the_ring(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (field, boxed) = composer.read_with(vcx, |c, cx| {
+            (c.input.read(cx).focus_handle(cx), c.box_focus.clone())
+        });
+        let lit = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| composer.read(cx).ring_lit(window, cx))
+        };
+        vcx.update(|window, cx| window.focus(&field, cx));
+        draw(vcx);
+        assert!(lit(vcx), "the field holds the focus");
+        vcx.update(|window, cx| window.focus(&boxed, cx));
+        draw(vcx);
+        assert!(!lit(vcx), "the box itself is no control");
+    }
+
+    /// ComposerArea.tsx `top`: the attachment tray is over the composer's box, outside it, as the reply bar is.
+    #[gpui::test]
+    fn the_attachment_tray_is_over_the_box_not_in_it(cx: &mut gpui::TestAppContext) {
+        use dilla_client::state::AppState;
+        use dilla_client::state::attachments::{TrayItem, TrayPhase};
+        cx.update(crate::install);
+        let a = ChannelId([1; 16]);
+        let mut state = AppState::default();
+        state.attachments.trays.insert(
+            a,
+            vec![TrayItem {
+                id: "t1".into(),
+                name: "loot.txt".into(),
+                size: 39,
+                mime: "text/plain".into(),
+                image: false,
+                phase: TrayPhase::Ready,
+                reason: String::new(),
+            }],
+        );
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(a),
+                state: std::sync::Arc::new(state),
+                ..SlotCx::default()
+            });
+        });
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let (tray, boxed) = (
+            vcx.debug_bounds("composer-tray"),
+            vcx.debug_bounds("composer-box"),
+        );
+        let (tray, boxed) = (tray.expect("the tray is drawn"), boxed.expect("the box"));
+        assert!(
+            tray.bottom() <= boxed.top(),
+            "the tray ends above the box: {tray:?} {boxed:?}"
+        );
+    }
+
+    /// Composer.tsx: the slow-mode notice comes after `top` (the reply bar and the tray), just above the box.
+    #[gpui::test]
+    fn the_slow_mode_notice_is_under_the_tray_and_over_the_box(cx: &mut gpui::TestAppContext) {
+        use dilla_client::state::attachments::{TrayItem, TrayPhase};
+        use dilla_client::state::messages::{Timeline, TimelineItem, TimelineItemState};
+        use dilla_client::state::{ChannelGroupState, MessageId};
+        cx.update(crate::install);
+        let now = 1_000_000_u64;
+        let (mut state, channel, _) = world(0, false);
+        state.channels[0].slowmode = 30;
+        state.timelines.insert(
+            channel,
+            Timeline {
+                channel_id: channel,
+                group: ChannelGroupState::Active,
+                items: vec![TimelineItem {
+                    key: "s1".into(),
+                    state: TimelineItemState::Ok,
+                    reason: String::new(),
+                    sender_user: state.account.user_id,
+                    sender_device: None,
+                    own: true,
+                    bot: false,
+                    ts: now - 10,
+                    body: "x".into(),
+                    msg_id: Some(MessageId([1; 16])),
+                    seq: Some(1),
+                    edited: false,
+                    reply: None,
+                    reactions: Vec::new(),
+                    pinned: false,
+                    attachments: Vec::new(),
+                    mention: false,
+                    actions: Vec::new(),
+                }],
+                has_earlier: false,
+            },
+        );
+        state.attachments.trays.insert(
+            channel,
+            vec![TrayItem {
+                id: "t1".into(),
+                name: "loot.txt".into(),
+                size: 39,
+                mime: "text/plain".into(),
+                image: false,
+                phase: TrayPhase::Ready,
+                reason: String::new(),
+            }],
+        );
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.opened_s = Some(now - 60);
+            c.set_slots(SlotCx {
+                channel: Some(channel),
+                state: std::sync::Arc::new(state),
+                clock: crate::screens::shell::Clock::Fixed { now, utc: true },
+                ..SlotCx::default()
+            });
+        });
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        let tray = vcx
+            .debug_bounds("composer-tray")
+            .expect("the tray is drawn");
+        let notice = vcx
+            .debug_bounds("composer-notice")
+            .expect("the slow-mode notice is drawn");
+        let boxed = vcx.debug_bounds("composer-box").expect("the box");
+        assert!(
+            tray.bottom() <= notice.top(),
+            "the notice is under the tray: {tray:?} {notice:?}"
+        );
+        assert!(
+            notice.bottom() <= boxed.top(),
+            "the notice is over the box: {notice:?} {boxed:?}"
+        );
+    }
+
+    #[test]
+    fn send_is_dim_for_an_empty_or_blank_draft_with_chips_and_while_blocked() {
+        assert!(send_is_lit("hello", false, false, false));
+        assert!(!send_is_lit("", false, false, false));
+        assert!(!send_is_lit("  \n", false, false, false));
+        assert!(!send_is_lit("hello", false, false, true));
+        // The field still holds the typed `/role add ` under the chips: the chips' draft is empty.
+        assert!(!send_is_lit("/role add ", true, false, false));
+    }
+
+    /// ComposerArea.tsx:209-212: with a card in the tray, a typed `/ban bob spamming` runs the command (the command host
+    /// decides), never a post of the text with the file; `//x` goes there too and is posted as `/x`.
+    #[test]
+    fn a_typed_command_with_a_file_in_the_tray_runs_the_command() {
+        assert!(bot_area_first("/ban bob spamming", true, false));
+        assert!(bot_area_first("/me waves", true, false));
+        assert!(bot_area_first("//shrug", true, false));
+        assert!(!bot_area_first("look at this", true, false));
+        assert!(!bot_area_first("", true, false), "files alone are posted");
+        assert!(bot_area_first("look at this", false, false));
+        assert!(bot_area_first("look", true, true), "a picked command");
+    }
+
+    #[test]
+    fn a_card_in_the_tray_lights_send_for_a_blank_draft() {
+        assert!(send_is_lit("", false, true, false));
+        assert!(!send_is_lit("", false, true, true), "not while blocked");
+    }
+
     #[test]
     fn the_field_grows_to_the_css_cap() {
         assert_eq!(max_rows(), 10);
+    }
+
+    /// The web remounts the composer per conversation (`<ComposerArea key={targetId}>`): a command picked in channel X is
+    /// not there to run in channel Y.
+    #[gpui::test]
+    fn another_channel_starts_with_an_empty_picker(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let (x, y) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let on = |channel| SlotCx {
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| c.set_slots(on(x)));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (w, field) = vcx.update(|window, cx| {
+            (
+                window.window_handle().window_id(),
+                composer.read(cx).input.read(cx).focus_handle(cx),
+            )
+        });
+        vcx.update(|_, cx| {
+            commands::set_composer(w, &field, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            commands::picker_state_mut(w, cx).chips = Some(picked);
+            assert!(chips::draft(&on(x), &field, w, cx).is_some(), "picked in X");
+        });
+        composer.update(vcx, |c, _| c.set_slots(on(y)));
+        draw(vcx);
+        vcx.update(|_, cx| {
+            assert_eq!(
+                chips::draft(&on(y), &field, w, cx),
+                None,
+                "nothing of X in Y"
+            );
+        });
+    }
+
+    /// CommandPicker.tsx `PickerFrame.top`: a picked command's bar (its description and the keys' hint) is over the
+    /// composer's box, in ComposerArea.tsx's `top`, not inside the box with the chips.
+    #[gpui::test]
+    fn a_picked_commands_bar_is_over_the_box_not_in_it(cx: &mut gpui::TestAppContext) {
+        use crate::screens::commands::{self, chips};
+        cx.update(crate::install);
+        let x = ChannelId([1; 16]);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(x),
+                ..SlotCx::default()
+            });
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let (w, field) = vcx.update(|window, cx| {
+            (
+                window.window_handle().window_id(),
+                composer.read(cx).input.read(cx).focus_handle(cx),
+            )
+        });
+        vcx.update(|_, cx| {
+            commands::set_composer(w, &field, cx);
+            let mut picked = chips::Chips::new("shrug".into());
+            picked.values = vec!["hi".into()];
+            commands::picker_state_mut(w, cx).chips = Some(picked);
+        });
+        draw(vcx);
+        draw(vcx);
+        let (bar, boxed) = (
+            vcx.debug_bounds("command-bar-slot"),
+            vcx.debug_bounds("composer-box"),
+        );
+        let (bar, boxed) = (bar.expect("the bar is drawn"), boxed.expect("the box"));
+        assert!(
+            bar.bottom() <= boxed.top(),
+            "the bar ends above the box: {bar:?} {boxed:?}"
+        );
     }
 
     /// Task 28 item 13 (Task 9's listing): a sign-out lets go of the composer's draft. The field it shows empties (the
@@ -1134,6 +1616,97 @@ mod tests {
             "",
             "the draft left the field"
         );
+    }
+
+    /// Task 30 (CommandHost.tsx:123-129, :293-296): an uncertain command's draft comes back into the composer of its
+    /// conversation on the next draw, once; and when the composer next loads a conversation the person left, the draft
+    /// the command memory keeps for it wins over the stored `drafts.<channel>`.
+    #[gpui::test]
+    fn an_uncertain_command_reopens_its_draft(cx: &mut gpui::TestAppContext) {
+        use dilla_client::features::bot::memory::CommandMemory;
+        use dilla_client::state::bot::Conversation;
+        cx.update(crate::install);
+        let (a, b) = (ChannelId([1; 16]), ChannelId([2; 16]));
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        composer.update(vcx, |c, _| {
+            c.set_slots(SlotCx {
+                channel: Some(a),
+                ..SlotCx::default()
+            });
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        vcx.update(|_, cx| {
+            // Fix round 2 (I3): a draft left for another session (here, a client numbered 7; this composer has none, as
+            // after a sign-out) is never shown, and is dropped.
+            crate::screens::commands::reopen(
+                w,
+                Some(7),
+                Conversation {
+                    channel: a,
+                    thread: None,
+                },
+                "/warn user:other reason:secret".into(),
+                cx,
+            );
+        });
+        draw(vcx);
+        assert_eq!(composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(), "");
+        assert!(
+            vcx.update(|_, cx| crate::screens::commands::picker_state(w, cx).reopen)
+                .is_none(),
+            "dropped unread"
+        );
+        vcx.update(|_, cx| {
+            crate::screens::commands::reopen(
+                w,
+                None,
+                Conversation {
+                    channel: a,
+                    thread: None,
+                },
+                "/warn user:x reason:y".into(),
+                cx,
+            );
+        });
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "/warn user:x reason:y"
+        );
+        assert_eq!(
+            vcx.update(|_, cx| crate::screens::commands::picker_state(w, cx).draft),
+            "/warn user:x reason:y",
+            "the picker opens on it"
+        );
+        // Taken once: a later edit is not overwritten.
+        vcx.update(|window, cx| {
+            let input = composer.read(cx).input.clone();
+            input.update(cx, |s, cx| s.set_value("/warn", window, cx));
+        });
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "/warn"
+        );
+        // Another conversation the person comes back to: the memory's draft wins over the stored one, once.
+        let at_b = Conversation {
+            channel: b,
+            thread: None,
+        };
+        let mut memory = CommandMemory::default();
+        memory.uncertain(at_b, "/topic text:z", [1; 16], "topic\0text=z");
+        let stored = || Some("old".to_owned());
+        assert_eq!(
+            loaded_draft(memory.take_reopen(at_b), stored),
+            "/topic text:z"
+        );
+        assert_eq!(loaded_draft(memory.take_reopen(at_b), stored), "old");
+        assert_eq!(loaded_draft(None, || None), "");
     }
 
     /// A server with one text channel, the viewer holding only @everyone (allow `everyone_allow`), and one mentionable

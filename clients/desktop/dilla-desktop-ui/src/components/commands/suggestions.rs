@@ -17,7 +17,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::LABEL_TRACKING_WIDE;
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// `.d-cmd-sugs__list`: `max-height: 13.75rem`.
 pub const LIST_MAX: f32 = 220.0;
@@ -164,11 +164,11 @@ fn row(item: &SuggestionItem, index: usize, active: bool) -> impl IntoElement {
 }
 
 impl RenderOnce for CommandSuggestions {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let title = line(
             self.title.to_uppercase(),
             text::MICRO,
-            line_height(text::MICRO, 1.5),
+            crate::text::root_line_height(text::MICRO),
             color::FG_3,
         )
         .weight(font::WEIGHT_LABEL)
@@ -202,7 +202,8 @@ impl RenderOnce for CommandSuggestions {
                     .into_any_element()
             })
             .collect();
-        div()
+        let enter_id = (self.id.clone(), "enter");
+        let list = div()
             .id(self.id)
             .max_w(px(WIDTH))
             .w_full()
@@ -221,6 +222,8 @@ impl RenderOnce for CommandSuggestions {
                     .pb(px(4.0))
                     .px(px(4.0))
                     .children(rows),
-            )
+            );
+        // CommandPicker.css:51: `d-modal` over `--duration-tab`.
+        crate::motion::modal_in(list, enter_id, motion::TAB, cx)
     }
 }

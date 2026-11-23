@@ -20,7 +20,7 @@ use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
 use crate::roving::{Roving, focus_handles};
 use crate::text::{MONO_ADVANCE, line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// A chip's height (`1.375rem`).
 pub const CHIP_HEIGHT: f32 = 22.0;
@@ -109,6 +109,13 @@ pub struct ReactionBar {
     on_toggle: Option<OnToggle>,
     on_add: Option<OnAdd>,
     decorate: Option<Decorate>,
+    /// The log the bar is drawn in ([`crate::motion::scope`]): its chips' pops are remembered under it.
+    scope: SharedString,
+}
+
+/// The key prefix of a bar's chips in [`crate::motion::entered_age`]: the log's scope, then the bar's id.
+pub fn pop_prefix(scope: &str, id: &ElementId) -> String {
+    crate::motion::scoped(scope, &format!("{id:?}-pop-"))
 }
 
 impl ReactionBar {
@@ -128,7 +135,14 @@ impl ReactionBar {
             on_toggle: None,
             on_add: None,
             decorate: None,
+            scope: SharedString::default(),
         }
+    }
+
+    /// The log the bar is drawn in.
+    pub fn scope(mut self, scope: impl Into<SharedString>) -> Self {
+        self.scope = scope.into();
+        self
     }
 
     /// False: no element of the bar is a tab stop (its row is not the active one).
@@ -170,46 +184,55 @@ fn chip_view(
     handle: &gpui::FocusHandle,
     tab: bool,
     on_toggle: Option<OnToggle>,
-) -> impl IntoElement {
+    pop: crate::motion::Pop,
+) -> gpui::AnyElement {
+    let scale = pop.scale();
     let (bg, edge, count) = if chip.mine {
         (color::ACCENT_CHIP, color::ACCENT, color::ACCENT_2)
     } else {
         (color::SURFACE_2, color::HAIRLINE_2, color::FG_2)
     };
     let emoji = chip.emoji.clone();
-    div()
-        .id(id)
+    let s = scale;
+    let body = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(CHIP_INNER_GAP * s))
+        .h(px(CHIP_HEIGHT * s))
+        .px(px(CHIP_PAD_X * s))
+        .border(px(s))
+        .border_color(edge)
+        .bg(bg)
+        .rounded(radius::ROW * s)
+        .child(super::emoji_text(chip.display.clone(), text::BTN * s))
+        .child(
+            line(
+                chip.count.to_string(),
+                text::META * s,
+                line_height(text::META, 1.0) * s,
+                count,
+            )
+            .weight(font::WEIGHT_LABEL),
+        );
+    // The hidden copy that holds the chip's place while it pops is the picture alone: no id, focus, tab stop or press (a hidden
+    // element is not painted, so it could be neither focused nor pressed). The chip itself, at rest or scaled, is the button.
+    if !pop.live() {
+        return body.into_any_element();
+    }
+    body.id(id)
         .a11y(Role::Button, chip.name.clone())
         .toggled(chip.mine)
         .track_focus(handle)
         .tab_stop(tab)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(CHIP_INNER_GAP))
-        .h(px(CHIP_HEIGHT))
-        .px(px(CHIP_PAD_X))
-        .border_1()
-        .border_color(edge)
-        .bg(bg)
-        .rounded(radius::ROW)
         .cursor_pointer()
         .focus_visible(|s| s.shadow(focus_ring()))
-        .child(super::emoji_text(chip.display.clone(), text::BTN))
-        .child(
-            line(
-                chip.count.to_string(),
-                text::META,
-                line_height(text::META, 1.0),
-                count,
-            )
-            .weight(font::WEIGHT_LABEL),
-        )
         .on_click(move |_, window, cx| {
             if let Some(f) = &on_toggle {
                 f(&emoji, window, cx);
             }
         })
+        .into_any_element()
 }
 
 impl RenderOnce for ReactionBar {
@@ -239,19 +262,44 @@ impl RenderOnce for ReactionBar {
             .flex_wrap()
             .gap(px(BAR_GAP))
             .mt(px(BAR_MARGIN_TOP));
+        // ReactionBar.css:6: a chip pops in (`d-pop` over `--duration-slow`, `ease`) when its reaction first appears. The bar
+        // is drawn inside a message row, which the log stops drawing off screen, so the pop is remembered by key.
+        let mut popping = false;
+        // (A reaction taken down is a chip gone: the screen forgets its pop, so it pops again when it returns.)
+        let pop_prefix = pop_prefix(&self.scope, &self.id);
         for (i, chip) in self.chips.iter().enumerate() {
-            let view = chip_view(
-                (self.id.clone(), format!("chip-{i}")).into(),
-                chip,
-                &handles[i],
-                tab(i),
-                self.on_toggle.clone(),
-            )
-            .into_any_element();
+            let build = |pop: crate::motion::Pop| {
+                chip_view(
+                    (self.id.clone(), format!("chip-{i}")).into(),
+                    chip,
+                    &handles[i],
+                    tab(i),
+                    self.on_toggle.clone(),
+                    pop,
+                )
+            };
+            let age =
+                crate::motion::entered_age(cx, format!("{pop_prefix}{}", chip.emoji), motion::SLOW);
+            popping |= age.is_some();
+            let view = match age {
+                Some(age) => crate::motion::pop_frame(
+                    Some(crate::motion::pop_at(
+                        age,
+                        motion::SLOW,
+                        crate::motion::EASE,
+                    )),
+                    &build,
+                )
+                .into_any_element(),
+                None => build(crate::motion::Pop::Rest),
+            };
             row = row.child(match &self.decorate {
                 Some(d) => d(Slot::Chip(i), &handles[i], view),
                 None => view,
             });
+        }
+        if popping {
+            window.request_animation_frame();
         }
         let shown = self.revealed || focused.is_some();
         let on_add = self.on_add.clone();

@@ -171,6 +171,9 @@ async fn server_rename_channel_edit_leave_hand_over_delete() {
         s.communities.iter().all(|x| x.id != c) && !s.roles.access.contains_key(&c)
     })
     .await;
+    // A leave this account made is no removal. That no list read, whenever it lands, tells one is pinned by the
+    // publisher's unit test `a_stale_read_after_an_own_leave_tells_no_removal`; here the state after the leave has none.
+    assert!(a.state().borrow().removal_notices.is_empty());
 
     // The new owner deletes it.
     b.server_admin()

@@ -6,6 +6,7 @@
 //!
 //! Every size is the stylesheet's (OnboardingFrame.css), named below; positions come from layout.
 
+use dilla_desktop_ui::components::onboarding::frame::{BodyParagraph, Part};
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ClickEvent, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -126,7 +127,12 @@ pub fn link(
             .items_center()
             .cursor_pointer()
             .on_click(on_click)
-            .child(line(label, text::BTN, line_height(text::BTN, 1.5), ink)),
+            .child(line(
+                label,
+                text::BTN,
+                dilla_desktop_ui::text::root_line_height(text::BTN),
+                ink,
+            )),
     )
     .into_any_element()
 }
@@ -157,22 +163,35 @@ pub fn links_row(links: Vec<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-/// A paragraph of the body.
+/// A paragraph of the body (`.d-onboarding-frame__body > p`, 12.5px on an 18.75px line). The box is given its line's exact
+/// height: GPUI sizes a text box by a whole number of device px, so the 18.75px line came out 18.5px and the card, centred
+/// on its height, sat a quarter pixel (a whole pixel after snapping) lower than the web's 395.25px one. Its wrap is
+/// GPUI's, wherever the text sits (a dialog too): [`body_para`] is the card's own, which the frame wraps.
 pub fn para(text_: impl Into<SharedString>) -> AnyElement {
+    para_box(text_).into_any_element()
+}
+
+fn para_box(text_: impl Into<SharedString>) -> gpui::Div {
     div()
+        .min_h(px(dilla_desktop_ui::text::root_line_height(text::SM)))
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(dilla_desktop_ui::text::root_line_height(text::SM)))
         .font_family(font::MONO)
         .text_color(color::FG_2)
         .child(text_.into())
-        .into_any_element()
+}
+
+/// A paragraph of an authentication card's body: the frame wraps it, as `text-wrap: pretty` when it is the first one
+/// (`.d-onboarding-frame__body > p:first-child`), and flows it in the desktop authentication window.
+pub fn body_para(text_: impl Into<SharedString>) -> BodyParagraph {
+    BodyParagraph::new(text_, color::FG_2).flowing()
 }
 
 /// The code's or a field's error under it (`.d-onboarding-frame__error`).
 pub fn error_line(text_: impl Into<SharedString>) -> AnyElement {
     div()
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(dilla_desktop_ui::text::root_line_height(text::SM)))
         .font_family(font::MONO)
         .text_color(color::DANGER)
         .child(text_.into())
@@ -183,7 +202,7 @@ pub fn error_line(text_: impl Into<SharedString>) -> AnyElement {
 pub fn note(text_: impl Into<SharedString>) -> AnyElement {
     div()
         .text_size(text::BTN)
-        .line_height(px(line_height(text::BTN, 1.5)))
+        .line_height(px(dilla_desktop_ui::text::root_line_height(text::BTN)))
         .font_family(font::MONO)
         .text_color(color::FG_3)
         .child(text_.into())
@@ -197,7 +216,7 @@ pub struct AuthFrame {
     step: Option<SharedString>,
     progress: Option<(u8, u8)>,
     banner: Option<(BannerTone, SharedString)>,
-    body: Vec<AnyElement>,
+    body: Vec<Part>,
     action: Option<Action>,
     below: Vec<AnyElement>,
 }
@@ -228,8 +247,14 @@ impl AuthFrame {
         self
     }
 
-    pub fn child(mut self, child: impl IntoElement) -> Self {
-        self.body.push(child.into_any_element());
+    /// The next part of the body, already a [`Part`].
+    pub fn part(mut self, part: Part) -> Self {
+        self.body.push(part);
+        self
+    }
+
+    pub fn child(mut self, child: impl IntoElement + 'static) -> Self {
+        self.body.push(Part::of(child));
         self
     }
 
@@ -262,7 +287,7 @@ impl AuthFrame {
                     Some(step) => line(
                         step.to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        dilla_desktop_ui::text::root_line_height(text::MICRO),
                         color::FG_3,
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -312,8 +337,13 @@ impl AuthFrame {
                     .cursor_pointer()
                     .on_click(a.on_click)
                     .child(
-                        line(a.label, text::INPUT, line_height(text::INPUT, 1.5), ink)
-                            .weight(font::WEIGHT_DISPLAY),
+                        line(
+                            a.label,
+                            text::INPUT,
+                            dilla_desktop_ui::text::root_line_height(text::INPUT),
+                            ink,
+                        )
+                        .weight(font::WEIGHT_DISPLAY),
                     )
                     .child(Icon::new(IconName::ArrowRight).size(px(ARROW)).color(ink)),
             )
@@ -328,7 +358,8 @@ impl AuthFrame {
         .gap(px(CARD_GAP))
         .children(head)
         // The step's `<h1>`: a heading node a reader jumps to.
-        .child(
+        .child(tracked_box(
+            "sign-in-title",
             div()
                 .id("auth-title")
                 .a11y(Role::Heading, self.title.clone())
@@ -343,7 +374,7 @@ impl AuthFrame {
                     .weight(font::WEIGHT_DISPLAY)
                     .tracking(-0.01),
                 ),
-        )
+        ))
         .child(
             div()
                 .flex()
@@ -360,6 +391,7 @@ impl AuthFrame {
                 // `.d-onboarding-frame__body > p:first-child`: a banner drawn first in the body takes the place
                 // of the first child, and the paragraph after it keeps no 6px.
                 .children(self.body.into_iter().enumerate().map(|(i, part)| {
+                    let part = part.render(i == 0 && !has_banner);
                     if i == 0 && !has_banner {
                         div().mb(px(FIRST_PARA_GAP)).child(part).into_any_element()
                     } else {
@@ -378,6 +410,12 @@ impl AuthFrame {
                     .children(self.below),
             )
         });
+        let card = dilla_desktop_ui::components::onboarding::frame::card_in(
+            card,
+            "auth-card-enter",
+            desktop,
+            cx,
+        );
         dilla_desktop_ui::components::onboarding::frame::centred_scroll(
             "auth-page",
             0.0,

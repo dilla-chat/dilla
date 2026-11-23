@@ -32,17 +32,62 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 ![Server settings, Overview: the server's name and AFK timeout](screenshots/gpui-server-settings.png)
 
-![Your settings, Profile: display name, status and bio, with the card others see](screenshots/gpui-user-settings.png)
+![Your settings, Profile: display name, status and bio (drag its corner to make it taller), with the card others see](screenshots/gpui-user-settings.png)
 
 ![The search palette with results for "bridge"](screenshots/gpui-search.png)
 
 ![Sign-up, step 3 of 6: the recovery key, shown once](screenshots/gpui-onboarding-recovery-key.png)
 
+![The Bot's "started music" message with its now-playing card](screenshots/gpui-music-card.png)
+
+![The voice stage with the now-playing bar above the tiles](screenshots/gpui-music-stage.png)
+
+![The poll form over #general: question, answers, how long it stays open](screenshots/gpui-poll-form.png)
+
+![Server settings, Welcome messages after Load: the channel, the default message and the placeholders, not yet saved](screenshots/gpui-welcome-settings.png)
+
+### What the app does
+
+**Everyday use**
+
+- The app moves the way the browser did: new messages, menus, dialogs, toasts, badges, the speaking meter, the typing
+  indicator and the caret animate. Settings → Appearance → Motion and your system's reduced-motion setting turn it
+  down. Toasts (for example "Files over 25 MB can’t be sent") now show.
+- Author names take the colour of their highest coloured role. Names sort by your system's language (the DM picker, the
+  member lists and the @-mention list).
+- The reply bar and the attachment tray sit over the message box. A direct message with something new has an unread dot.
+- **Load earlier** at the top of a channel or a direct message fetches older messages (a long thread's pane has it too). A search result older
+  than what is shown jumps to it.
+- A channel row's menu (right-click or Shift+F10) sets how it notifies you (default, all messages, mentions or nothing) and has
+  **Edit channel**.
+- The call dock shows the link quality (the ping and the data rate, coloured when it is poor).
+- Two banners explain a stopped state: "You are no longer in {server}." after you were removed, and "This server needs an
+  update before this app can connect. Ask its admin." when the server is too old for the app.
+
+#### Polls and commands
+
+- Every built-in `/` command runs in channels and in threads. A command whose outcome is uncertain reopens its draft
+  instead of sending twice ([the commands](bot-commands.md)).
+- `/poll create` opens the poll form; polls work in threads.
+- `/announcement create` schedules an announcement and `/rolepanel create` posts a role panel, both from the message box.
+- The Bot's "started music" message carries a now-playing card, and the voice stage has a now-playing bar
+  ([music](music.md)).
+
+**Settings and moderation**
+
+- A ban shows its details: who, when, why and for how long.
+- Server settings → Welcome messages sets the channel and text the Bot welcomes new members with.
+- Check boxes match the web's size, and the bio field in your profile can be dragged taller by its corner grip.
+- Compact message density applies to the whole app, as in the browser.
+
+**Desktop only.** Two things the browser does not have: a channel's menu also has **Mark as read** and **Copy link**, and a
+thread's pane has **Load earlier** for a long thread.
+
 ### Install the Linux alpha
 
 Download the files from the newest
 [`desktop-gpui-v…` release](https://github.com/dilla-chat/dilla/releases?q=desktop-gpui&expanded=true) (the release
-notes carry the same table). `<v>` is the release's version, for example `0.2.0-alpha.1`.
+notes carry the same table). `<v>` is the release's version, for example `0.2.0-alpha.2`.
 
 | System | File | Install |
 |---|---|---|
@@ -243,12 +288,18 @@ what the client still does not do.
   lost. A deb, rpm, AUR or tar.gz install only says that a new version is available: update it with your package
   manager or from the release page. An alpha before the first signed one does not check: download the next alpha by
   hand. Linux has an AppImage, a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR).
-- **Screen capture and camera:** sharing a screen or a window works (Share opens a picker with thumbnails; on Wayland
-  and macOS the system's own dialog chooses). A share can carry the sound of one application (the share menu's sound
-  section) on Linux, on Windows 10 version 2004 (build 19041) or newer, and on macOS 14.2 or newer. On an older
-  Windows or macOS the share has no application sound. macOS may ask for permission to record system audio the first
-  time. The camera works on Linux, Windows and macOS (the built-in camera, an external one, and Continuity Camera on
-  macOS 14 or newer).
+- **Screen capture and camera:** sharing a screen or a window works. Share opens Dilla's picker with a thumbnail of
+  every screen and window (on Wayland the system's own dialog chooses). On macOS the first share asks for Screen
+  Recording permission (System Settings → Privacy & Security → Screen Recording); after you allow it, quit and reopen
+  Dilla. macOS 15 and newer may ask again from time to time whether Dilla may keep recording the screen. A share can
+  carry the sound of one application (the share menu's sound section) on Linux, on Windows 10 version 2004 (build
+  19041) or newer, and on macOS 14.2 or newer. On an older Windows or macOS the share has no application sound.
+  Sharing a window brings that window's application's sound by itself, and the sound section then reads "Sound from
+  {app}". You can switch it off there or choose another application. Sharing a whole screen brings no application's
+  sound unless you choose one. Nothing is chosen for you on Wayland (the system's dialog picks the window), when the
+  window's application isn't playing, or for Windows Store apps. Dilla's own sound is never shared. macOS may ask for
+  permission to record system audio the first time. The camera works on Linux, Windows and macOS (the built-in camera,
+  an external one, and Continuity Camera on macOS 14 or newer).
 - **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
   Decline), and a click opens the conversation. A ring raises its notification and sound with every window closed to
   the tray; Answer opens the window. On Linux an ended ring's notification is withdrawn, and a newer message in the

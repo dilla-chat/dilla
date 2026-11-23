@@ -4,13 +4,16 @@
 pub mod app;
 #[cfg(feature = "automation")]
 pub mod automation;
+pub mod density;
 pub mod edit_state;
 #[cfg(feature = "automation")]
 pub mod fixture;
 pub mod format;
 pub mod fullscreen;
 pub mod keys;
+pub mod layout;
 pub mod logging;
+pub mod motion;
 pub mod native;
 pub mod per_window;
 pub mod print;
@@ -113,6 +116,11 @@ pub fn install(cx: &mut App) {
         return;
     }
     cx.set_global(Installed);
+    // Names are ordered by the OS locale, as the browser's `localeCompare` is (the DM picker, the member lists).
+    // The unit tests run under en-US whatever the machine says.
+    #[cfg(test)]
+    format::pin_locale("en-US");
+    dilla_client::features::collate::set_locale(&format::date_locale());
     dilla_desktop_ui::theme::install(cx);
     gpui_component::init(cx);
     keys::bind_all(cx);

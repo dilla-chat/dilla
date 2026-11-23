@@ -96,17 +96,22 @@ sqlite-wasm-rs 0.6.3 builds SQLite3MC 2.6.1 on SQLite 3.54.0 (`sqlite3mc-src =20
 Since Task 6b the native store builds its own SQLite3MC too (change 2), from the same
 `sqlite3mc-src` release.
 
-## webrtc-sys 0.3.53
+## webrtc-sys 0.3.54
 
 Upstream: <https://github.com/livekit/rust-sdks> (`webrtc-sys/`; `.cargo_vcs_info.json` has the
 commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: webrtc-sys 0.3.53
-as published`), so `git diff` of that commit's successor shows the whole patch.
+as published`), so `git diff` of that commit's successor shows the whole patch. Moved to 0.3.54 for
+livekit 0.11.0 (Task 3 of the GPUI GUI-gaps plan, 2026-11-19) by applying upstream's own 0.3.53 to
+0.3.54 diff over the patched copy: `KeyProvider` refuses an out-of-range key index and clamps
+`key_ring_size` (`include/livekit/frame_cryptor.h`, `src/frame_cryptor.{cpp,rs}`), plus the version
+and changelog. It touches none of the dilla changes below and names the same `webrtc-sys-build
+0.3.21`, so the prebuilt libwebrtc is the same archive.
 
 Patched into the root workspace (`[patch.crates-io]` in `Cargo.toml`, Task 11) for `dilla-media`,
 which installs its hook (`dilla_media::transform::Router`) before the process's first
 PeerConnection. `experiments/gpui-voice-proof` (its own workspace and `[patch.crates-io]`) holds the
 original evidence, `experiments/gpui-voice-proof/REPORT.md`; `clients/desktop/dilla-media/tests/`
-(`glue.rs`, `hook_enforced.rs`, `call.rs`) covers the current glue.
+(`glue.rs`, `hook_enforced.rs`, `hook_exit.rs`, `call.rs`) covers the current glue.
 
 What it adds: a process-wide encoded-frame hook for dilla-sframe/1 (protocol/05), on LiveKit's
 prebuilt libwebrtc as it is downloaded (libwebrtc itself is not rebuilt). LiveKit's Rust SDK exposes
@@ -149,6 +154,41 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
   (its packing test; on macOS the denied/restricted/refused gate) and, on a Mac with Camera access,
   `DILLA_MAC_CAPTURE=1 cargo test -p dilla-media --test capture mac_camera`, plus the manual
   `capture-probe camera`.
+- Dilla's own macOS share picker (GPUI gaps Task 45, D22, 2026-11-23): `include/livekit/dilla_screen.h`,
+  `src/dilla_screen.rs` (`webrtc_sys::dilla_screen`, macOS only: `dilla_screen_access(request)`,
+  `dilla_screen_list`, `dilla_screen_thumbnails`, `dilla_screen_open(...)`, `DillaScreenCapture::set_fps`) and
+  `src/dilla_screen_mac.mm`, ScreenCaptureKit directly. libwebrtc's ScreenCaptureKit capturer lists
+  nothing with the system picker off and its window capturer cannot take an `SCContentFilter`, so
+  this replaces it on macOS for the picker's sources. `SCShareableContent` (on-screen windows, no
+  desktop windows; waited at most 5 s) lists the displays (named by `NSScreen.localizedName`) and the
+  windows, each with its owning application's pid, bundle id and name as the WindowServer records
+  them, unfiltered (dilla-media's `sources::mac_list` filters). On macOS 14+ `SCScreenshotManager`
+  takes one thumbnail per source, all at once (at most 3 s together, BGRA, no cursor). The capture is
+  an own `SCStream` (32BGRA at the source's pixel size, `queueDepth` 3, no audio, a serial output
+  queue) with a display filter (everything on it, Dilla included) or a window filter
+  (`initWithDesktopIndependentWindow:`); an open re-resolves its id and refuses a window whose owner
+  is no longer the listed pid. Complete frames go to a Rust sink (`DillaScreenSink::on_frame`), and
+  `stream:didStopWithError:` once to `on_end`; the destructor stops the stream (at most 2 s), removes
+  its output and drains the output queue before it returns. Screen Recording: every listing, thumbnail
+  and open first checks `CGPreflightScreenCaptureAccess()` and without it never touches
+  `SCShareableContent` (which would prompt); only `dilla_screen_access(true)`, the app's picker
+  opening, calls `CGRequestScreenCaptureAccess()`, once per process. Nothing logs a title, an
+  application name or a pid. `build.rs` compiles the `.mm` into the camera's ARC library
+  (`webrtcsys-camera`), now silenced with `-Wno-everything` instead of `-w` so the file's own
+  `#pragma clang diagnostic error "-Wunguarded-availability-new"` holds (`dilla_camera_mac.mm`
+  carries the same pragma): every 12.3 and 14.0 symbol is behind `@available` and weak-imported.
+  The floor is real because the root `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET = "13.0"`,
+  which rustc's link (`LC_BUILD_VERSION` minos 13.0) and every cc build (`-mmacosx-version-min=13.0`)
+  take; without it cc built for the host SDK and the 14.0 symbols were linked strongly.
+  desktop-gpui.yml checks the shipped binary's minos and that `SCScreenshotManager` and
+  `AVCaptureDeviceTypeContinuityCamera` are weak imports. ScreenCaptureKit and CoreGraphics were
+  linked already. `DillaScreenCapture` is `Send` only (`set_fps` reconfigures without a lock). Covered by `clients/desktop/dilla-media/src/sources/mac_list.rs`
+  (the filtering and naming, on every OS), `desktop.rs` and `desktop_mac.rs` (the listed owner, the
+  frame packing), `clients/desktop/dilla-desktop/tests/share.rs` (a refused listing, the listed owner
+  reaching the window's sound) and, from a terminal that holds Screen Recording,
+  `cargo test -p dilla-media --test capture mac_picker -- --ignored` (a real display with its
+  thumbnail; a helper app's window, `tests/support/mac_window.swift`, listed with its pid, captured,
+  and ending when the app is killed).
 - `src/peer_connection_factory.cpp`: the hook is mandatory. `create_peer_connection` throws
   `E_DILLA_NO_FRAME_HOOK` when no hook is installed, so a missing or late `install` can never fall
   back to LiveKit's own FrameCryptor or to no transform
@@ -175,7 +215,7 @@ trailer transformer only adds metadata), so the hook is glue implementing libweb
 Every transformer has an opaque handle, process-unique and never reused, which Rust learns when the
 transformer is attached (`attached`) and which names it in every later call. A receiver is bound by
 that handle, found from the subscribed track's own C++ object (`receiver_handle`, compared by
-identity; see libwebrtc 0.4.0 below), never by a track id string the SFU chose; dilla-media refuses a
+identity; see libwebrtc 0.4.1 below), never by a track id string the SFU chose; dilla-media refuses a
 second bind of a handle.
 
 The transformer has no pass-through of its own: every frame goes to Rust, and only a frame Rust
@@ -188,7 +228,11 @@ and every 20 ms on the hook's own timer thread, so a held frame of a silent trac
 Past a bound the oldest is dropped and reported, never released unauthenticated. The same timer
 sends the key-frame requests the hook asks for (`key_frame_requests`) through
 `VideoTrackSourceInterface::GenerateKeyFrame` on the receiving track's source, which libwebrtc turns
-into an RTCP PLI to the publisher.
+into an RTCP PLI to the publisher. The timer thread (`dilla-hold-tick`) belongs to the C++ glue,
+which stops and joins it when `exit()` runs the static destructors; the hook and the transformer
+registry are never destroyed, because libwebrtc's own threads, which nothing joins, can still run a
+transformer then (the registry used to be freed under the timer at exit, a SIGSEGV after the
+dilla-desktop voice tests had passed; `tests/hook_exit.rs`).
 
 Remove this copy when upstream exposes an equivalent custom frame transformer.
 
@@ -212,12 +256,15 @@ dilla-desktop's tests which build they run in. It feeds the decoder access units
 each picture to BGRA with libyuv (the colour matrix the bitstream names, BT.601 when it names none), scaled down to
 fit the box Rust gives. No PeerConnection, transformer or network is involved, and nothing in libwebrtc is rebuilt.
 
-## libwebrtc 0.4.0
+## libwebrtc 0.4.1
 
 Upstream: <https://github.com/livekit/rust-sdks> (`libwebrtc/`; `.cargo_vcs_info.json` has the
 commit). Apache-2.0. The published copy is the first commit that adds it (`vendor: libwebrtc 0.4.0 as
 published`), so the diff of that commit's successor shows the whole patch. Patched into the root
-workspace (`[patch.crates-io]`, Task 11).
+workspace (`[patch.crates-io]`, Task 11). Moved to 0.4.1 for livekit 0.11.0 (2026-11-19) by applying
+upstream's own 0.4.0 to 0.4.1 diff over the patched copy: the `KeyProvider` index checks, libwebrtc's
+log severities mapped onto `log` levels (`src/native/peer_connection_factory.rs`), webrtc-sys 0.3.54,
+the version and changelog. The dilla change below is untouched.
 
 The one change (`src/media_stream_track.rs`, `DILLA PATCH`): `sys_handle()` of `RtcAudioTrack`,
 `RtcVideoTrack` and `MediaStreamTrack` is public instead of `pub(crate)`, so dilla-media can hand a
@@ -225,6 +272,27 @@ subscribed track's own C++ object to `webrtc_sys::dilla_transform::receiver_hand
 receiver's transformer by identity rather than by a track id the SFU chose.
 
 Remove this copy when upstream makes the handle public or the webrtc-sys hook is upstreamed.
+
+## livekit 0.11.0
+
+Upstream: <https://github.com/livekit/rust-sdks> (`livekit/`; `.cargo_vcs_info.json` has the commit).
+Apache-2.0. The published copy is the first commit that adds it (`vendor: livekit 0.11.0 as
+published`): the published crate minus its `Cargo.lock`, so the diff of that commit's successor
+shows the whole patch. Patched into the root workspace (`[patch.crates-io]`, 2026-11-22).
+
+The one change (`src/rtc_engine/rtc_session.rs`, `DILLA PATCH`): a closed session's fast-publish
+negotiation stops. dillad's SFU asks for fast publish, and `execute_negotiation_with_retry` sends the
+publisher's offer and then waits up to 10 s for the answer, holding the session (both
+PeerConnections, every transceiver and its dilla frame transformer). A room closed while an offer
+was out (a leave during a publish or an unpublish renegotiation, including the one `Room::close`
+itself starts) never gets that answer, so the closed call's media stayed alive for 10 s after the
+leave. `SessionInner::close` now wakes the wait (`negotiation_queue.waker.notify_one()`, which keeps
+the wake-up for a negotiation about to wait), and the loop ends when the session is closed. Found by
+the desktop's dock-leave test on CI; pinned by dilla-media's
+`leaving_while_the_publisher_renegotiates_releases_every_frame_transformer` (tests/call.rs), which
+leaves right after publishing a camera and failed every time before the patch.
+
+Remove this copy when upstream stops the negotiation on close.
 
 ## gpui-pre-wgpu 0.3.12
 

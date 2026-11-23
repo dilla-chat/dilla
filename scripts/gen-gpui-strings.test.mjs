@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { applyOverrides, entries, rustString, stale } from './gen-gpui-strings.mjs';
+import { applyOverrides, browserLeaks, entries, leaks, rustString, stale } from './gen-gpui-strings.mjs';
 
 const DIR = join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'packages', 'web', 'src', 'strings');
 
@@ -60,4 +60,17 @@ test('no_web_wording_on_the_desktop: no key the desktop reads names the browser,
   const web = /\bbrowsers?\b|\btabs?\b|reload the page|\bthis site\b/i;
   const hits = [...table].filter(([k, v]) => !allowed.test(k) && web.test(v.replace(/\{[A-Za-z]+\}/g, "")) && src.includes(`"${k}"`)).map(([k]) => k);
   assert.deepEqual(hits, []);
+});
+
+test('the passkey copy says system and device, not browser', async () => {
+  const table = new Map(await entries());
+  assert.equal(table.get('factor.passkey.body'), 'Your system asks where to keep the passkey: on this computer, your phone or a security key. Keep it on this computer only if no one else uses it.');
+  assert.equal(table.get('factorSignin.passkey.unusable'), 'This device cannot use passkeys here. Use a backup code instead, or sign in from a device that can.');
+});
+
+test('the browser guard refuses a quoted browser key with no override and not on the list', async () => {
+  const en = { 'a.x': 'Open your browser', 'a.y': 'Open your browser', 'a.z': 'Open your browser', 'a.w': 'Nothing', 'a.unquoted': 'A Browser' };
+  const text = 'f("a.x"); f("a.y"); f("a.z"); f("a.w");';
+  assert.deepEqual(leaks(en, { 'a.y': 'Open your system' }, text, ['a.z']), ['a.x']);
+  assert.deepEqual(await browserLeaks(), [], 'the desktop as committed has no leak');
 });

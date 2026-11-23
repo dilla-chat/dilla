@@ -288,8 +288,9 @@ impl Render for MusicPage {
                     row = row.tag(t("serverSettings.music.youtubeTag"));
                 }
                 row.child(
+                    // The web passes `size="sm"`, but `.d-settings-row__control .d-btn[data-size="sm"]` (SettingsRow.css:29) makes
+                    // it a row action again: 2rem high, 12px across, `--text-btn`, which is the default size.
                     Button::new("music-provider-check", t("serverSettings.music.checkAgain"))
-                        .size(dilla_desktop_ui::components::ButtonSize::Sm)
                         .disabled(!manager || !installation_known || busy)
                         .on_click(move |_: &ClickEvent, _, cx| {
                             this.update(cx, |page, _| page.check_provider());

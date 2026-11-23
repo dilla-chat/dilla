@@ -15,7 +15,6 @@ use dilla_client::features::factors::{
     BackupCodes, FactorError, Factors, InstanceDoc, StepUpToken, TotpKey, is_six_digits,
     passkey_name_fits,
 };
-use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -24,30 +23,33 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use zeroize::Zeroizing;
 
+use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::banner::BannerTone;
 use dilla_desktop_ui::components::button::{Button, ButtonVariant};
+use dilla_desktop_ui::components::check_list::check_box;
 use dilla_desktop_ui::components::choice_cards::{ChoiceCardOption, ChoiceCards};
 use dilla_desktop_ui::components::dialog::Dialog;
 use dilla_desktop_ui::components::factor::{CodeList, code_list_columns, copy_text};
+use dilla_desktop_ui::components::onboarding::frame::{BodyParagraph, Part};
 use dilla_desktop_ui::components::qr_code::QrCode;
 use dilla_desktop_ui::components::text_field::TextField;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::metrics::Density;
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, text};
-use dilla_desktop_ui::{Icon, IconName};
 
 use super::code::{CodeEvent, CodeField};
-use super::frame::{Action, AuthFrame, error_line, link, nav_row, para};
+use super::frame::{Action, AuthFrame, body_para, error_line, link, nav_row};
 use crate::strings::{t, tf};
 use crate::tracked_box;
 
-/// The QR code's side and the gap to the key (FactorSetup.css `.dw-factor-key`).
+/// The QR code's side. app.css `.dw-factor-key` sets it `--group-gap` from the key, and `.dw-factor-key__text` sets the
+/// key's label `--row-gap` over its field: both the window's density.
 const QR_SIDE: f32 = 132.0;
+/// The gap between the factor dialog's banner and its body.
 const KEY_GAP: f32 = 16.0;
 /// The card's content width (400 − 2 × 28), for the code list's columns.
 const CARD_CONTENT: f32 = 344.0;
 /// The acknowledgement's box (a native 14px check box in a 24px target) and its gap to the label.
-const CHECK: f32 = 14.0;
-const CHECK_TARGET: f32 = 24.0;
 const CHECK_GAP: f32 = 8.0;
 
 /// Which factor the choice offers.
@@ -762,9 +764,11 @@ impl FactorSetupView {
 
     fn body(
         &mut self,
+        density: Density,
         cx: &mut Context<Self>,
-    ) -> (Vec<AnyElement>, Option<Action>, Vec<AnyElement>) {
+    ) -> (Vec<Part>, Option<Action>, Vec<AnyElement>) {
         let instance = self.instance.name.clone();
+        let embedded = self.embedded();
         let mut body = Vec::new();
         let mut below = Vec::new();
         let back = |cx: &mut Context<Self>| {
@@ -785,13 +789,21 @@ impl FactorSetupView {
         };
         let action = match self.step {
             Step::Choose => {
-                body.push(para(match self.origin {
-                    Origin::Required => tf("factor.choose.required", &[("instance", &instance)]),
-                    Origin::Signup { .. } => t("factor.choose.bodySignup").to_owned(),
-                    _ => tf("factor.choose.body", &[("instance", &instance)]),
-                }));
+                push_part(
+                    &mut body,
+                    lead(
+                        embedded,
+                        match self.origin {
+                            Origin::Required => {
+                                tf("factor.choose.required", &[("instance", &instance)])
+                            }
+                            Origin::Signup { .. } => t("factor.choose.bodySignup").to_owned(),
+                            _ => tf("factor.choose.body", &[("instance", &instance)]),
+                        },
+                    ),
+                );
                 if !self.has_password {
-                    body.push(para(t("factor.choose.noPassword")));
+                    push_part(&mut body, lead(embedded, t("factor.choose.noPassword")));
                 }
                 let mut options = Vec::new();
                 if self.has_password {
@@ -824,7 +836,8 @@ impl FactorSetupView {
                     Choice::Passkey => "passkey",
                 };
                 let this = cx.entity().downgrade();
-                body.push(
+                push_part(
+                    &mut body,
                     tracked_box(
                         "factor-kind",
                         ChoiceCards::new("factor-kind", options, value).on_change(
@@ -850,17 +863,18 @@ impl FactorSetupView {
                 match &self.key {
                     None => {
                         if self.busy {
-                            body.push(para(t("factor.totp.loading")));
+                            push_part(&mut body, lead(embedded, t("factor.totp.loading")));
                         }
                     }
                     Some(key) => {
-                        body.push(para(t("factor.totp.body")));
+                        push_part(&mut body, lead(embedded, t("factor.totp.body")));
                         let secret = self.secret_text.clone().unwrap_or_default();
                         let copy_secret = Zeroizing::new(key.secret.as_str().to_owned());
-                        body.push(
+                        push_part(
+                            &mut body,
                             div()
                                 .flex()
-                                .gap(px(KEY_GAP))
+                                .gap(density.group_gap())
                                 .items_start()
                                 .child(
                                     QrCode::new("factor-totp-qr", key.uri.as_str())
@@ -872,11 +886,11 @@ impl FactorSetupView {
                                         .min_w_0()
                                         .flex()
                                         .flex_col()
-                                        .gap(px(KEY_GAP / 2.0))
+                                        .gap(density.row_gap())
                                         .child(line(
                                             t("factor.totp.key"),
                                             text::XS,
-                                            line_height(text::XS, 1.5),
+                                            dilla_desktop_ui::text::root_line_height(text::XS),
                                             color::FG_2,
                                         ))
                                         // The setup key is never in the accessibility tree; "Read aloud" (a Tab
@@ -920,18 +934,20 @@ impl FactorSetupView {
                                 .into_any_element(),
                         );
                         if matches!(self.origin, Origin::Signup { .. }) {
-                            body.push(para(t("factor.totp.codeHint")));
+                            push_part(&mut body, lead(embedded, t("factor.totp.codeHint")));
                         }
                         let focus = gpui::Focusable::focus_handle(self.code.read(cx), cx);
-                        body.push(
+                        push_part(
+                            &mut body,
                             crate::tracked_focus("factor-totp-code", &focus, self.code.clone())
                                 .into_any_element(),
                         );
                         if !matches!(self.origin, Origin::Signup { .. }) {
-                            body.push(para(t("factor.totp.codeHint")));
+                            push_part(&mut body, lead(embedded, t("factor.totp.codeHint")));
                         }
                         if let Some(e) = self.code_error {
-                            body.push(
+                            push_part(
+                                &mut body,
                                 tracked_box("factor-code-error", error_line(t(e)))
                                     .into_any_element(),
                             );
@@ -952,14 +968,17 @@ impl FactorSetupView {
                 primary(label, ready, cx)
             }
             Step::Passkey => {
-                body.push(para(t("factor.passkey.body")));
+                push_part(&mut body, lead(embedded, t("factor.passkey.body")));
                 let mut field =
                     TextField::new("factor-passkey-name", t("factor.passkey.name"), &self.name)
                         .hint(t("factor.passkey.nameHint"));
                 if let Some(e) = self.name_error {
                     field = field.error(t(e));
                 }
-                body.push(tracked_box("factor-passkey-name", field).into_any_element());
+                push_part(
+                    &mut body,
+                    tracked_box("factor-passkey-name", field).into_any_element(),
+                );
                 if !self.embedded() {
                     below.push(nav_row(back(cx), None));
                 }
@@ -971,10 +990,11 @@ impl FactorSetupView {
                 primary(label, !self.busy, cx)
             }
             Step::Codes => {
-                body.push(para(t("factor.codes.body")));
-                body.push(para(t("factor.codes.notKey")));
+                push_part(&mut body, lead(embedded, t("factor.codes.body")));
+                push_part(&mut body, lead(embedded, t("factor.codes.notKey")));
                 let all = copy_text(&self.codes);
-                body.push(
+                push_part(
+                    &mut body,
                     CodeList::new("factor-codes", t("factor.codes.label"), &self.codes)
                         .columns(code_list_columns(CARD_CONTENT))
                         .action(tracked_box(
@@ -988,7 +1008,8 @@ impl FactorSetupView {
                         .into_any_element(),
                 );
                 let ack = self.ack;
-                body.push(
+                push_part(
+                    &mut body,
                     tracked_box(
                         "factor-ack",
                         check_row("factor-ack", t("factor.codes.ack"), ack).on_click(cx.listener(
@@ -1001,15 +1022,21 @@ impl FactorSetupView {
                     .into_any_element(),
                 );
                 if !ack {
-                    body.push(para(t("factor.codes.ackHint")));
+                    push_part(&mut body, lead(embedded, t("factor.codes.ackHint")));
                 }
                 primary(t("factor.codes.next"), ack, cx)
             }
             Step::Done => {
-                body.push(para(t(match self.added {
-                    Added::Totp => "factor.done.totp",
-                    Added::Passkey => "factor.done.passkey",
-                })));
+                push_part(
+                    &mut body,
+                    lead(
+                        embedded,
+                        t(match self.added {
+                            Added::Totp => "factor.done.totp",
+                            Added::Passkey => "factor.done.passkey",
+                        }),
+                    ),
+                );
                 primary(t("factor.done.next"), true, cx)
             }
         };
@@ -1017,10 +1044,24 @@ impl FactorSetupView {
     }
 }
 
+/// A paragraph of a step's body: in the card the frame wraps it (`text-wrap: pretty` as the first one, as FactorSetup.tsx
+/// renders it inside `OnboardingFrame`); in the Settings dialog, outside the frame, GPUI flows it.
+fn lead(embedded: bool, text: impl Into<SharedString>) -> BodyParagraph {
+    if embedded {
+        BodyParagraph::new(text, color::FG_2).flowing_always()
+    } else {
+        body_para(text)
+    }
+}
+
+fn push_part(body: &mut Vec<Part>, part: impl IntoElement + 'static) {
+    body.push(Part::of(part));
+}
+
 impl Render for FactorSetupView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.title();
-        let (body, action, below) = self.body(cx);
+        let (body, action, below) = self.body(Density::of(window, cx), cx);
         let banner = self.problem.clone().map(|p| (BannerTone::Danger, p));
         if self.embedded() {
             let close_label = if self.step == Step::Codes {
@@ -1043,7 +1084,7 @@ impl Render for FactorSetupView {
                                 p,
                             )
                         }))
-                        .children(body),
+                        .children(body.into_iter().map(|p| p.render(false))),
                 )
                 .on_close(move |_, cx| {
                     let _ = this.update(cx, |this, cx| {
@@ -1067,7 +1108,7 @@ impl Render for FactorSetupView {
             frame = frame.progress(n, total);
         }
         for b in body {
-            frame = frame.child(b);
+            frame = frame.part(b);
         }
         if let Some(action) = action {
             frame = frame.action(action);
@@ -1085,43 +1126,23 @@ impl Render for FactorSetupView {
 
 /// The codes step's acknowledgement: a check box and its label, one target.
 fn check_row(id: &'static str, label: &'static str, checked: bool) -> gpui::Stateful<gpui::Div> {
-    let edge = if checked {
-        color::ACCENT
-    } else {
-        color::CONTROL_EDGE_KEY
-    };
     div()
         .id(id)
         .flex()
         .items_center()
         .gap(px(CHECK_GAP))
         .cursor_pointer()
-        .child(
-            div()
-                .size(px(CHECK_TARGET))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .size(px(CHECK))
-                        .rounded(dilla_desktop_ui::tokens::radius::TAG)
-                        .border_1()
-                        .border_color(edge)
-                        .when(checked, |d| d.bg(color::ACCENT))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(checked, |d| {
-                            d.child(
-                                Icon::new(IconName::Check)
-                                    .size(px(CHECK - 4.0))
-                                    .color(color::ACCENT_INK),
-                            )
-                        }),
-                ),
-        )
-        .child(line(label, text::SM, line_height(text::SM, 1.5), color::FG))
+        .child(check_box(
+            (gpui::ElementId::from(id), "box"),
+            checked,
+            false,
+        ))
+        .child(line(
+            label,
+            text::SM,
+            dilla_desktop_ui::text::root_line_height(text::SM),
+            color::FG,
+        ))
 }
 
 impl Drop for FactorSetupView {

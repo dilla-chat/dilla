@@ -1,0 +1,14 @@
+{
+  "digest": "3f1fdd0d65c5fca0a4703db2b2ed552d1a10d90390cb453ead584ca33c0a1119",
+  "shift": 697264,
+  "hand_migrated": false,
+  "ids": {
+    "channel:midgard/afk": "3f7bf4ac18353caf3cd100a9df9e3c01",
+    "channel:midgard/general": "54f7ed06048cc4d6e557ecfa5df50c1a",
+    "dm:crew": "92827c93bbcb614fa73ffd9a72ea6377",
+    "person:ada": "f2a56abb8f3bd480722fadfa81781bfe",
+    "person:bjorn": "8708b8741c0b2837ac155f8732dee3c2",
+    "person:sol": "2e32e2ae793bfcb06f52e1ede796a7e9",
+    "server:midgard": "1a1872cb6d00ba8f66c32f6320d5ce52"
+  }
+}

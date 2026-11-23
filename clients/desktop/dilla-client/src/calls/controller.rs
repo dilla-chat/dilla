@@ -47,17 +47,100 @@ pub async fn leave_call<C: CallCore, R: CallRoutes + ?Sized>(
     call: &[u8; 16],
     alone: bool,
 ) -> Left {
+    leave_call_caught_up(core, routes, None, group, call, alone).await
+}
+
+/// How many times a self-Remove the instance refused for its epoch is built again, each once a
+/// catch-up finds the group past the epoch it was built on.
+pub const LEAVE_REBUILDS: u32 = 2;
+
+/// The bound on one catch-up of a leave whose self-Remove was refused for its epoch: past it the
+/// epoch counts as unchanged and the refusal is final, so a slow instance delays the leave's answer
+/// (which a join in another window waits for) by at most this much per rebuild.
+pub const LEAVE_CATCH_UP: Duration = Duration::from_secs(3);
+
+/// The group's row state once another member committed the Remove of this device's own leaf.
+const STATE_REMOVED: u64 = 4;
+
+/// [`leave_call`] with the group's catch-up, for a self-Remove built on an epoch the instance has
+/// left: a member's commit this device has not applied yet (another device's join, a rotation)
+/// moved the epoch, and the instance refuses a proposal for the old one (422 `E_COMMIT_INVALID`,
+/// rule `epoch`). The group is then caught up (within [`LEAVE_CATCH_UP`]) and, when its epoch is
+/// no longer the one the Remove was built on (the catch-up, or the sync engine meanwhile, applied a
+/// commit), the self-Remove is built and posted again (at most [`LEAVE_REBUILDS`] times), so the
+/// others see this device go at once rather than whenever the instance notices it gone. A catch-up
+/// that shows this device's leaf removed already (state 4) is an acknowledged leave. Any other
+/// refusal, or one the catch-up does not explain, is final.
+pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
+    core: &Mutex<C>,
+    routes: &R,
+    catch_up: Option<&dyn CallCatchUp>,
+    group: &[u8; 16],
+    call: &[u8; 16],
+    alone: bool,
+) -> Left {
     let mut ended = false;
     if alone {
         ended = routes.end_call_if_alone(call).await.unwrap_or(false);
     }
-    let proposal = lock(core).and_then(|mut c| c.call_leave_proposal(group));
-    let proposed = match proposal {
-        Ok(body) => match routes.post_proposal(group, body).await {
-            Ok(_) => true,
-            Err(e) => e.is(409, "E_REMOVE_PENDING"),
-        },
-        Err(_) => false,
+    let mut rebuilds = 0;
+    let proposed = loop {
+        // The epoch the self-Remove is built on, read under the same lock: the sync engine applies commits under it.
+        // An unreadable row only rules out a rebuild; the Remove still goes out.
+        let Ok((built, body)) = lock(core).and_then(|mut c| {
+            let epoch = c
+                .groups()
+                .ok()
+                .and_then(|rows| rows.into_iter().find(|r| r.group_id == *group))
+                .map(|r| r.epoch);
+            Ok((epoch, c.call_leave_proposal(group)?))
+        }) else {
+            break false;
+        };
+        match routes.post_proposal(group, body).await {
+            Ok(_) => break true,
+            Err(e) if e.is(409, "E_REMOVE_PENDING") => break true,
+            Err(e)
+                if e.is(422, "E_COMMIT_INVALID")
+                    && e.rule.as_deref() == Some("epoch")
+                    && rebuilds < LEAVE_REBUILDS =>
+            {
+                let (Some(catch_up), Some(built)) = (catch_up, built) else {
+                    break false;
+                };
+                // The timeout may cut the catch-up between a page's apply and the engine's apply hook (its cursor step,
+                // membership report and cursor timer). That is safe here only because this group is forgotten just
+                // below; do not reuse this cut for a group that lives on.
+                let _ = tokio::time::timeout(LEAVE_CATCH_UP, catch_up.catch_up(group)).await;
+                let now = row_of(core, group);
+                // State 4 is also the row of a group this core forgot, which would answer "acknowledged" with no
+                // Remove landed. Nothing forgets it meanwhile: `Voice::removed` is generation-gated and the join that
+                // could (`forget_stale`) waits for this leave (`Runtime::leave_done`). The row cannot tell the two
+                // apart, so this stays a comment rather than a guard.
+                if now.as_ref().is_some_and(|r| r.state == STATE_REMOVED) {
+                    log::info!(
+                        "calls: leave: the self-Remove built at epoch {built} was refused for its epoch; the \
+                         catch-up shows this leaf removed already"
+                    );
+                    break true;
+                }
+                let now = now.map(|r| r.epoch);
+                if now == Some(built) || now.is_none() {
+                    log::warn!(
+                        "calls: leave: the self-Remove built at epoch {built} was refused for its epoch and the \
+                         catch-up did not move it (rebuild {rebuilds} of {LEAVE_REBUILDS})"
+                    );
+                    break false;
+                }
+                rebuilds += 1;
+                log::info!(
+                    "calls: leave: the self-Remove built at epoch {built} was refused for its epoch; building it \
+                     again at epoch {} (rebuild {rebuilds} of {LEAVE_REBUILDS})",
+                    now.unwrap_or_default()
+                );
+            }
+            Err(_) => break false,
+        }
     };
     let _ = lock(core).map(|mut c| c.call_group_forget(group));
     Left { ended, proposed }
@@ -155,6 +238,7 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?
             status: None,
             code: Some("E_RANDOM".into()),
             retry_after_ms: None,
+            rule: None,
             detail: "no OS randomness for an idempotency key".into(),
         }
         .into());
@@ -181,6 +265,7 @@ pub async fn rotate_call<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?
                             status: None,
                             code: Some("E_OUTCOME_UNKNOWN".into()),
                             retry_after_ms: None,
+                            rule: None,
                             detail: "the rotation was not reconciled in time".into(),
                         })
                     })
@@ -233,6 +318,7 @@ async fn commit_that_took<R: CallRoutes + ?Sized>(
                     status: None,
                     code: Some("E_OUTCOME_UNKNOWN".into()),
                     retry_after_ms: None,
+                    rule: None,
                     detail: "the commit that took the epoch is not after the cursor".into(),
                 });
             }
@@ -247,6 +333,7 @@ async fn commit_that_took<R: CallRoutes + ?Sized>(
         status: None,
         code: Some("E_OUTCOME_UNKNOWN".into()),
         retry_after_ms: None,
+        rule: None,
         detail: "no commit within the pages read".into(),
     })
 }
@@ -313,6 +400,7 @@ async fn reconcile<C: CallCore, R: CallRoutes + ?Sized, S: CallCatchUp + ?Sized>
             status: None,
             code: Some("E_OUTCOME_UNKNOWN".into()),
             retry_after_ms: None,
+            rule: None,
             detail: if pending {
                 "the rotation's epoch was taken; the next catch-up settles it".into()
             } else {

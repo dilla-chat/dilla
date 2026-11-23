@@ -62,6 +62,8 @@ fn extra_channels(server: &ServerSpec) -> Vec<world::PlacedChannel<'_>> {
 
 /// internal/gateway/presence.go `presenceIdleAfter`: a device with no input for this long is idle.
 const PRESENCE_IDLE_S: u64 = 10 * 60;
+/// The Bot's `sent_at` window (core/dilla-bot-core command.rs `CLOCK_SKEW_SECS`): a command further than this from its wall clock is stale.
+const BOT_SENT_AT_WINDOW_S: u64 = 120;
 /// What the browser's sign-in may move the host clock by (shoot.mjs `nextCode` steps it 30 s at a time).
 const SIGN_IN_CLOCK_S: u64 = 5 * 60;
 
@@ -99,8 +101,12 @@ async fn main() {
     );
     // A fixture whose viewer joins a call in the browser needs the host's LiveKit (seed/calls.rs).
     let sfu = seed::needs_sfu(&f);
+    // A fixture whose server carries a Bot runs on the host that supervises dilla's (seed/bot.rs).
+    let bot = seed::needs_bot(&f);
     let host = tokio::task::spawn_blocking(move || {
-        if sfu {
+        if bot {
+            world::start_bot_host_with_web("parity", "127.0.0.1:0", &web)
+        } else if sfu {
             world::start_host_with_sfu("parity", Some(&web))
         } else {
             world::start_host("parity", "127.0.0.1:0", Some(&web))
@@ -123,6 +129,8 @@ async fn main() {
                 .members
                 .iter()
                 .filter(|m| **m != server.owner)
+                // The real Bot is the server's Bot member: the fixture's Bot person is only its name in the history.
+                .filter(|m| !(server.bot.is_some() && seed::is_bot_person(&f, m)))
                 .map(|m| person_of(m))
                 .collect();
             let channels = extra_channels(server);
@@ -141,7 +149,11 @@ async fn main() {
     // everyone who posts: an empty world has only the viewer's.
     let plan = f.seed_plan();
     let mut clients = Vec::new();
-    for id in &plan.clients {
+    for id in plan
+        .clients
+        .iter()
+        .filter(|id| !seed::is_server_bot(&f, id))
+    {
         clients.push((id.as_str(), world::start(person_of(id)).await));
     }
     // The real ids of every server and channel: by name within the server.
@@ -169,8 +181,13 @@ async fn main() {
     }
     // What the browser must find made before it signs in, with the ids its route names (the DMs, seed/dms.rs).
     seed::before_browser(&f, &clients, &mut ids).await;
+    // A DM's path (`dm/<id>`) is named `dm:<id>` in `ids`: a DM belongs to no server.
     let channel_real = |path: &str| -> ChannelId {
-        ChannelId(spec::unhex16(&ids[&format!("channel:{path}")]).expect("hex"))
+        let key = match path.strip_prefix("dm/") {
+            Some(dm) => format!("dm:{dm}"),
+            None => format!("channel:{path}"),
+        };
+        ChannelId(spec::unhex16(&ids[&key]).expect("hex"))
     };
     // Every channel the browser visits (the history's, and the route's own even when it is empty): each client opens it
     // (joins its group).
@@ -206,6 +223,16 @@ async fn main() {
     // (`fixture/members.rs`). Whether that input reached the gateway before its socket was ready used to decide it. Five
     // more minutes cover the clock the sign-in moves (the shooter steps it 30 s per authenticator code it needs).
     let shift = (host_now + 60 + PRESENCE_IDLE_S + SIGN_IN_CLOCK_S).saturating_sub(first_ts);
+    // A poll post the browser gives up on relies on the Bot refusing the page's reads as stale (seed/polls.rs): the page signs them
+    // with the instance clock, which must lead the Bot's wall clock by more than the window the Bot accepts (the sent_at window
+    // of core/dilla-bot-core, 120 s) from the first message on. Fail here, not as a card that verifies.
+    if seed::polls_give_up(&f) {
+        let lead = first_ts + shift - host_now;
+        assert!(
+            lead > BOT_SENT_AT_WINDOW_S,
+            "the clock leads the Bot's by {lead} s: a poll read would verify and its give-up would never come"
+        );
+    }
     let viewer = person_of(&f.viewer);
     let secrets = serde_json::json!({
         "publicUrl": host.public,
@@ -221,6 +248,10 @@ async fn main() {
         "window": [f.window.0, f.window.1],
         "now": f.clock + shift,
         "shift": shift,
+        // Whether the host supervises the Bot, which checks a command's `sent_at` against the wall clock (shoot.mjs).
+        "bot": bot,
+        // A poll post the browser gives up on: its read of the poll is left to be refused (shoot.mjs).
+        "pollGivesUp": seed::polls_give_up(&f),
         "ids": ids,
         "lastMessage": f.world.messages.iter().max_by_key(|m| m.ts).map(|m| m.body.clone()),
     });
@@ -230,6 +261,7 @@ async fn main() {
     std::io::stdin().read_line(&mut line).unwrap();
     assert_eq!(line.trim(), "post", "expected `post` on stdin");
     // History in time order (the file's order within a tie).
+    seed::before_history(&f, &clients, &ids).await;
     let mut order: Vec<&spec::MessageSpec> = f.world.messages.iter().collect();
     order.sort_by_key(|m| m.ts);
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -248,10 +280,12 @@ async fn main() {
             tokio::task::block_in_place(|| world::advance_clock(&host, at - now));
         }
         let channel = channel_real(&m.channel);
-        let client = &clients.iter().find(|(id, _)| *id == m.sender).unwrap().1;
-        let sent = match seed::post(m, client, channel, &posted).await {
+        let sent = match seed::post(&f, m, &clients, &ids, channel, &posted).await {
             Some(sent) => sent,
-            None => client.send_text(channel, m.body.clone()).await.unwrap(),
+            None => {
+                let client = &clients.iter().find(|(id, _)| *id == m.sender).unwrap().1;
+                client.send_text(channel, m.body.clone()).await.unwrap()
+            }
         };
         posted.insert(m.key.clone(), sent.expect("queued"));
         let n = counts.entry(&m.channel).or_default();
@@ -261,16 +295,28 @@ async fn main() {
             continue;
         }
         *n += 1;
-        let want = *n;
+        // A timeline holds the client's one page (`TIMELINE_PAGE` rows): past it, the count stays at the page and the
+        // newest row is this message.
+        let want = (*n).min(dilla_client::state::TIMELINE_PAGE as usize);
+        let newest = posted[&m.key];
         // Every client holds the message before the next one goes out, so the order is the fixture's.
-        for (_, c) in &clients {
+        // Only the members of a DM hold its messages.
+        let dm_members = m
+            .channel
+            .strip_prefix("dm/")
+            .and_then(|dm| f.world.dms.iter().find(|d| d.id == dm))
+            .map(|d| &d.members);
+        for (who, c) in &clients {
+            if dm_members.is_some_and(|members| !members.iter().any(|p| p == who)) {
+                continue;
+            }
             world::wait_for(c, Duration::from_secs(20), "the message", |s| {
                 s.timelines.get(&channel).is_some_and(|t| {
-                    t.items
-                        .iter()
-                        .filter(|i| i.state == TimelineItemState::Ok && i.seq.is_some())
-                        .count()
-                        >= want
+                    let ok = |i: &&dilla_client::state::TimelineItem| {
+                        i.state == TimelineItemState::Ok && i.seq.is_some()
+                    };
+                    t.items.iter().filter(ok).count() >= want
+                        && t.items.iter().filter(ok).any(|i| i.msg_id == Some(newest))
                 })
             })
             .await;
@@ -283,6 +329,7 @@ async fn main() {
     if target > now {
         tokio::task::block_in_place(|| world::advance_clock(&host, target - now));
     }
+    seed::at_frame(&f, &people, &clients, &host).await;
     let sidecar = spec::Shot {
         digest,
         shift,

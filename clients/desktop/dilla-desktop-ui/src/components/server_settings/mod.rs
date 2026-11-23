@@ -41,8 +41,16 @@ pub mod layout {
     /// A manage-list row (`.d-manage-list__row`): 48px and 16px across, in a card of one hairline edge.
     pub const LIST_ROW_H: Pixels = px(48.0);
     pub const LIST_PAD_X: Pixels = px(16.0);
-    /// The space between a group's head and its card (`--row-gap`).
-    pub const HEAD_GAP: Pixels = px(2.0);
+    /// The gap between the lines of a manage-list row's text (`.d-manage-list__text { display: grid; gap: 2px }`, packages/ui/src/ManageList/ManageList.css:7).
+    pub const BAN_TEXT_GAP: Pixels = px(2.0);
+    /// The width the ban-row wrapping test lays a row out in: the test's own chosen width, with no web source.
+    pub const BAN_TEST_W: Pixels = px(640.0);
+    /// The Bot pages' text areas (`.dw-bot-settings .d-settings-row__control > textarea`): `min(100%, 32rem)` wide, 8rem
+    /// tall at least, 0.5rem over and under the text and 0.625rem at its sides.
+    pub const TEXTAREA_MAX_W: Pixels = px(512.0);
+    pub const TEXTAREA_MIN_H: Pixels = px(128.0);
+    pub const TEXTAREA_PAD_X: Pixels = px(10.0);
+    pub const TEXTAREA_PAD_Y: Pixels = px(8.0);
     /// The gap between the blocks of the GIF settings (1.5rem).
     pub const GIFS_GAP: Pixels = px(24.0);
 
@@ -101,7 +109,7 @@ pub mod layout {
     /// How far up a text field is drawn so its label is out of sight: `.dw-overview-field` hides the label (it stays the
     /// accessible name), which on the web takes no room.
     pub fn hidden_label_offset() -> Pixels {
-        px(-(crate::text::line_height(crate::tokens::text::XS, 1.5) + LABEL_GAP_PX))
+        px(-(crate::text::root_line_height(crate::tokens::text::XS) + LABEL_GAP_PX))
     }
 
     /// The web font's average and widest glyph, per em (the fontsource `JetBrains Mono Variable` the web loads: OS/2

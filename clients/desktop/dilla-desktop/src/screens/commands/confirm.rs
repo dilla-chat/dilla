@@ -9,14 +9,15 @@
 //! [`Bot::moderate`]: dilla_client::features::bot::Bot::moderate
 
 use dilla_client::Client;
-use dilla_client::features::bot::{ModAction, Moderation, ModerationTexts};
+use dilla_client::features::bot::{Ask, Attempt, Builtin, ModAction, Moderation, ModerationTexts};
 use dilla_client::state::bot::Conversation;
 use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div, px};
 
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
+use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::{Dialog, DialogKind, InitialFocus};
-use dilla_desktop_ui::text::{line, line_height, paragraph};
+use dilla_desktop_ui::text::{line, paragraph, root_line_height};
 use dilla_desktop_ui::tokens::{color, radius, text};
 
 use super::copy;
@@ -41,6 +42,64 @@ pub struct Confirming {
 #[derive(Default)]
 struct Open(Option<Confirming>);
 
+/// A built-in command waiting for its answer, in one window (CommandHost.tsx's generic `ConfirmDialog`). `client` is
+/// `None` in a fixture, which has nothing to run (the dialog is still asked, so it can be shot).
+#[derive(Clone)]
+pub struct AskingBuiltin {
+    pub ask: Ask,
+    pub run: Builtin,
+    /// The command's pending private row (0 without a client).
+    pub row: u64,
+    /// The run's request id and draft (Task 30): what its answer settles in the command memory.
+    pub attempt: Attempt,
+    pub conversation: Conversation,
+    pub client: Option<std::rc::Rc<Client>>,
+}
+
+/// The question, and what the window last drew around it: `Some(true)` runs the command with that context (the
+/// answer comes from a click, which has no [`SlotCx`] of its own). `None` until the dialog was first drawn.
+#[derive(Default)]
+struct OpenBuiltin(Option<(AskingBuiltin, Option<SlotCx>)>);
+
+/// `window`'s built-in command asks a question (the composer's send of a command with a `confirm`).
+pub fn ask_builtin(window: gpui::WindowId, asking: AskingBuiltin, cx: &mut App) {
+    crate::per_window::get_mut::<OpenBuiltin>(window, cx).0 = Some((asking, None));
+}
+
+/// The person answered a built-in's question: `Some(true)` runs it, `Some(false)` (Cancel) and `None` (a click outside,
+/// the web's `abandonDialog`) dismiss its pending row (CommandHost.tsx:291: `cancel && !moderation`; a command that
+/// keeps its cancelled row says so in [`Builtin::dismissed_on_cancel`]).
+///
+/// A `Some(true)` before the dialog was first drawn is a no-op: nothing could have been clicked, and there is no
+/// context to run it with yet.
+pub fn answer_builtin(window: gpui::WindowId, choice: Option<bool>, cx: &mut App) {
+    let open = &mut crate::per_window::get_mut::<OpenBuiltin>(window, cx).0;
+    if choice == Some(true) && open.as_ref().is_some_and(|(_, ctx)| ctx.is_none()) {
+        return;
+    }
+    let Some((asking, ctx)) = open.take() else {
+        return;
+    };
+    if choice == Some(true)
+        && let Some(ctx) = ctx
+    {
+        super::builtins::run(
+            asking.run,
+            asking.row,
+            asking.attempt,
+            asking.conversation,
+            &ctx,
+            window,
+            cx,
+        );
+    } else if choice.is_none() || asking.run.dismissed_on_cancel() {
+        match &asking.client {
+            Some(client) => client.bot().dismiss(asking.conversation, asking.row),
+            None => super::dismiss_fixture_row(window, asking.row, cx),
+        }
+    }
+}
+
 /// `window`'s command asks for confirmation (the composer's send of a `/kick` or `/ban`).
 pub fn ask(window: gpui::WindowId, confirming: Confirming, cx: &mut App) {
     crate::per_window::get_mut::<Open>(window, cx).0 = Some(confirming);
@@ -50,6 +109,15 @@ pub fn ask(window: gpui::WindowId, confirming: Confirming, cx: &mut App) {
 /// confirmation it asks in any window goes, unanswered (nothing is sent or recorded), so the store can close though the
 /// window does not draw again.
 pub fn release(client: &std::rc::Rc<Client>, cx: &mut App) {
+    crate::per_window::each_mut::<OpenBuiltin>(cx, |_, open| {
+        if open.0.as_ref().is_some_and(|(a, _)| {
+            a.client
+                .as_ref()
+                .is_some_and(|c| std::rc::Rc::ptr_eq(c, client))
+        }) {
+            open.0 = None;
+        }
+    });
     crate::per_window::each_mut::<Open>(cx, |_, open| {
         if open
             .0
@@ -64,6 +132,7 @@ pub fn release(client: &std::rc::Rc<Client>, cx: &mut App) {
 /// Whether `window` shows the confirmation.
 pub fn is_open(window: gpui::WindowId, cx: &App) -> bool {
     crate::per_window::get::<Open>(window, cx).is_some_and(|o| o.0.is_some())
+        || crate::per_window::get::<OpenBuiltin>(window, cx).is_some_and(|o| o.0.is_some())
 }
 
 /// The person answered: `Some(true)` the action, `Some(false)` Cancel, `None` a click outside (nothing recorded).
@@ -101,7 +170,9 @@ pub fn handle(m: &Moderation) -> String {
 /// The dialog over the window (`slots::overlays`), while one is asked for.
 pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let w = window.window_handle().window_id();
-    let c = crate::per_window::get::<Open>(w, cx)?.0.clone()?;
+    let Some(c) = crate::per_window::get::<Open>(w, cx).and_then(|o| o.0.clone()) else {
+        return builtin_overlay(ctx, w, cx);
+    };
     // w2-bot-review M-B3 (CommandHost.tsx `isCurrent()`, else 'abandon'): the person left the conversation the command
     // was typed in; the dialog goes and nothing is sent or recorded.
     if !still_current(&c.conversation, ctx.channel) {
@@ -139,13 +210,13 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
         .child(line(
             handle(m),
             text::UI,
-            line_height(text::UI, 1.5),
+            root_line_height(text::UI),
             color::FG_3,
         ))
         .children(paragraph(
             &body,
             text::UI,
-            line_height(text::UI, 1.5),
+            root_line_height(text::UI),
             color::FG_2,
             440.0 - 36.0 - 54.0,
         ));
@@ -158,13 +229,13 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
             .child(div().w(px(CONFIRM_LABEL_W)).flex_none().child(line(
                 label.to_owned(),
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                root_line_height(text::BTN),
                 color::FG_3,
             )))
             .child(line(
                 value,
                 text::BTN,
-                line_height(text::BTN, 1.5),
+                root_line_height(text::BTN),
                 color::FG,
             ))
     };
@@ -218,6 +289,42 @@ pub fn overlay(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyEle
     )
 }
 
+/// The generic question's dialog (CommandHost.tsx: `ConfirmDialog` with Continue, Working…, Cancel).
+fn builtin_overlay(ctx: &SlotCx, w: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
+    let (asking, _) = crate::per_window::get::<OpenBuiltin>(w, cx)?.0.clone()?;
+    // As the moderation dialog: the person left the conversation it was typed in, so it goes, nothing run.
+    if !still_current(&asking.conversation, ctx.channel) {
+        answer_builtin(w, None, cx);
+        return None;
+    }
+    crate::per_window::get_mut::<OpenBuiltin>(w, cx).0 = Some((asking.clone(), Some(ctx.clone())));
+    Some(
+        ConfirmDialog::new(
+            "command-builtin-confirm",
+            asking.ask.title,
+            asking.ask.body,
+            copy::CONTINUE,
+            copy::WORKING,
+            copy::CANCEL,
+        )
+        .on_confirm(move |window, cx| {
+            answer_builtin(w, Some(true), cx);
+            window.refresh();
+        })
+        .on_close(move |window, cx| {
+            answer_builtin(w, Some(false), cx);
+            window.refresh();
+        })
+        .on_backdrop(move |window, cx| {
+            answer_builtin(w, None, cx);
+            window.refresh();
+        })
+        // Tracked as the moderation dialog's action is, so a pointer can find it.
+        .confirm_wrap(|button| crate::tracked_box("command-confirm", button).into_any_element())
+        .into_any_element(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +341,58 @@ mod tests {
             action: ModAction::Kick,
         };
         assert_eq!(handle(&m), "@troll");
+    }
+
+    /// A fixture window has no client: its question still opens (so the dialog can be shot), and once drawn any answer
+    /// closes it and runs nothing. Before its first draw there is no context to run it with, so a Continue is a no-op:
+    /// the question stays. The case with a client, where a pending row must go, is in tests/bot.rs
+    /// (`a_cancelled_builtin_question_leaves_no_row`).
+    #[gpui::test]
+    fn a_question_without_a_client_opens_and_every_answer_closes_it(cx: &mut gpui::TestAppContext) {
+        use dilla_client::features::bot::{Ask, Builtin};
+        use dilla_client::state::{ChannelId, MessageId};
+        let w = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let channel = ChannelId([1; 16]);
+        let drawn = SlotCx {
+            channel: Some(channel),
+            ..SlotCx::default()
+        };
+        for answer in [Some(true), Some(false), None] {
+            cx.update(|cx| {
+                ask_builtin(
+                    w,
+                    AskingBuiltin {
+                        ask: Ask {
+                            title: "Delete this message?".into(),
+                            body: "This permanently deletes your message.".into(),
+                        },
+                        run: Builtin::DeleteOwn {
+                            msg: MessageId([2; 16]),
+                        },
+                        row: 1,
+                        attempt: Attempt {
+                            request: [1; 16],
+                            invocation: String::new(),
+                            text: String::new(),
+                        },
+                        conversation: Conversation {
+                            channel,
+                            thread: None,
+                        },
+                        client: None,
+                    },
+                    cx,
+                );
+                assert!(is_open(w, cx));
+                answer_builtin(w, Some(true), cx);
+                assert!(is_open(w, cx), "Continue before the first draw");
+                assert!(builtin_overlay(&drawn, w, cx).is_some());
+                answer_builtin(w, answer, cx);
+                assert!(!is_open(w, cx), "answer {answer:?}");
+            });
+        }
     }
 
     /// w2-bot-review M-B3: a confirmation is answered only while its conversation is the window's; after a switch it is

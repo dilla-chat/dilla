@@ -211,6 +211,11 @@ struct ToleranceFile {
     /// shared limit; every entry carries its measurement in TOLERANCES.md.
     #[serde(default)]
     macos_screens: std::collections::BTreeMap<String, ToleranceOverride>,
+    /// Per-screen Linux limits, as `macos_screens` but for the picture and emoji screens whose raster resampling Skia and
+    /// GPUI do otherwise (Jonas 2026-11-19, "fix crop, tolerate emoji"); each entry carries its measurement in
+    /// TOLERANCES.md "Linux per-screen".
+    #[serde(default)]
+    linux_screens: std::collections::BTreeMap<String, ToleranceOverride>,
 }
 
 /// One screen's own macOS limits ([`tolerance_for_screen`]).
@@ -229,23 +234,24 @@ fn read_tolerance_file() -> Result<ToleranceFile, ParityFailure> {
     toml::from_str(&text).map_err(|e| ParityFailure::Tolerance(e.to_string()))
 }
 
-/// The tolerance of the screen fixture `name` on `os`: [`tolerance_for`], with the screen's own macOS limits
-/// (`[macos_screens."<name>"]` in `tolerance.toml`) in place on macOS.
+/// The tolerance of the screen fixture `name` on `os`: [`tolerance_for`], with the screen's own limits
+/// (`[macos_screens."<name>"]` or `[linux_screens."<name>"]` in `tolerance.toml`) in place on macOS and Linux.
 pub fn tolerance_for_screen(os: Os, name: &str) -> Result<Tolerance, ParityFailure> {
-    let file = read_tolerance_file()?;
-    let mut t = match os {
-        Os::Linux => file.linux,
-        Os::MacOs => file.macos,
-        Os::Windows => file.windows,
+    Ok(screen_tolerance(read_tolerance_file()?, os, name))
+}
+
+fn screen_tolerance(file: ToleranceFile, os: Os, name: &str) -> Tolerance {
+    let (mut t, own) = match os {
+        Os::Linux => (file.linux, file.linux_screens.get(name).copied()),
+        Os::MacOs => (file.macos, file.macos_screens.get(name).copied()),
+        Os::Windows => (file.windows, None),
     };
-    if os == Os::MacOs
-        && let Some(o) = file.macos_screens.get(name)
-    {
+    if let Some(o) = own {
         t.max_pct = o.max_pct.unwrap_or(t.max_pct);
         t.chrome_max_pct = o.chrome_max_pct.unwrap_or(t.chrome_max_pct);
         t.colour_max_pct = o.colour_max_pct.unwrap_or(t.colour_max_pct);
     }
-    Ok(t)
+    t
 }
 
 /// Reads `tolerance.toml` (next to this crate's manifest) for `os`.
@@ -496,4 +502,59 @@ pub fn chrome_difference_pct(
         }
     }
     Ok(percent(differing, total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FILE: &str = r#"
+[linux]
+max_delta = 64
+max_pct = 0.5
+chrome_max_delta = 16
+chrome_max_pct = 0.2
+colour_max_delta = 2
+colour_radius = 2
+colour_max_pct = 0.3
+[macos]
+max_delta = 96
+max_pct = 0.8
+chrome_max_delta = 16
+chrome_max_pct = 0.4
+colour_max_delta = 2
+colour_radius = 2
+colour_max_pct = 0.3
+[windows]
+max_delta = 0
+max_pct = 0.0
+chrome_max_delta = 0
+chrome_max_pct = 0.0
+colour_max_delta = 0
+colour_radius = 0
+colour_max_pct = 0.0
+[linux_screens."a/b"]
+chrome_max_pct = 0.9
+"#;
+
+    fn parsed() -> ToleranceFile {
+        toml::from_str(FILE).expect("the test tolerance file parses")
+    }
+
+    #[test]
+    fn linux_screen_override_applies() {
+        let own = screen_tolerance(parsed(), Os::Linux, "a/b");
+        assert_eq!(own.chrome_max_pct, 0.9);
+        // The other limits stay the shared Linux ones, and another screen keeps all of them.
+        assert_eq!((own.max_pct, own.colour_max_pct), (0.5, 0.3));
+        assert_eq!(
+            screen_tolerance(parsed(), Os::Linux, "a/c").chrome_max_pct,
+            0.2
+        );
+        // A Linux entry does not leak onto the other systems.
+        assert_eq!(
+            screen_tolerance(parsed(), Os::MacOs, "a/b").chrome_max_pct,
+            0.4
+        );
+    }
 }

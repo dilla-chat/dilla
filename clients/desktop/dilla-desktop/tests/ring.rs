@@ -1144,6 +1144,6 @@ macro_rules! parity {
 }
 
 parity! {
-    parity_ring_banner => "banner"; "parity after T6c: chrome 0.3675 % (R22, lane G: the web's new-device note under the empty channel, 'Messages sent before this browser joined are not shown', which the fixture's device has no counterpart of)",
+    parity_ring_banner => "banner",
     parity_ring_afk => "afk",
 }

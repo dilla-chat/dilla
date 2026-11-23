@@ -50,13 +50,17 @@ openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "e0
 openmls_serialization_helpers = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
 openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
 openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "e0b21a70a55a9014b8de2772b36bf3d638adad51" }
-# LiveKit's webrtc-sys 0.3.53 with the dilla-sframe/1 encoded-frame hook (Tasks 2 and 11): every
+# LiveKit's webrtc-sys 0.3.54 with the dilla-sframe/1 encoded-frame hook (Tasks 2 and 11): every
 # RtpSender and RtpReceiver gets dilla's transformer, and no PeerConnection is created without one
-# installed. core/vendor/README.md, "webrtc-sys 0.3.53".
+# installed. core/vendor/README.md, "webrtc-sys 0.3.54".
 webrtc-sys = { path = "core/vendor/webrtc-sys" }
-# LiveKit's libwebrtc 0.4.0 with a track's C++ handle public (Task 11), so a receiver is bound by
-# its own track object, never by a track id the SFU chose. core/vendor/README.md, "libwebrtc 0.4.0".
+# LiveKit's libwebrtc 0.4.1 with a track's C++ handle public (Task 11), so a receiver is bound by
+# its own track object, never by a track id the SFU chose. core/vendor/README.md, "libwebrtc 0.4.1".
 libwebrtc = { path = "core/vendor/libwebrtc" }
+# LiveKit's Rust SDK 0.11.0 whose fast-publish negotiation stops when its session closes: it waited up to 10 s for an
+# answer a closed room never gets, holding the closed PeerConnections and their frame transformers. core/vendor/README.md,
+# "livekit 0.11.0".
+livekit = { path = "core/vendor/livekit" }
 # GPUI's text system 0.3.12 with Noto Color Emoji allowed as a font family (R20): upstream skips any face whose cmap lacks
 # 'm', which drops the colour emoji face, so emoji drew as monochrome symbols. core/vendor/README.md, "gpui-pre-wgpu 0.3.12".
 gpui-pre-wgpu = { path = "core/vendor/gpui-pre-wgpu" }

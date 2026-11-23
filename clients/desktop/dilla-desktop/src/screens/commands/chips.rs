@@ -13,14 +13,25 @@
 //! id, which is what the command sends, so `/kick` and `/ban` never act on a name. `/unban`'s lists the server's banned
 //! members.
 //!
-//! Not ported yet: the other entity suggestions (what the Bot or the instance looks up: channels, roles, queue items,
-//! search results) and a DST fold's two `when` candidates.
+//! Task 9: the entity chips the web answers from its own state ([`provided_suggestions`]): the conversation's messages,
+//! `/join`'s voice channels, roles (a `/selfrole`'s from the self roles read, `/role add` and `/role remove`'s those
+//! assignable to the member picked) and `/dm`'s peers; `/timeout`, `/untimeout` and `/warn` list the members Moderate
+//! Members reaches and `/role add` and `/role remove` those a role is assignable to.
+//!
+//! Task 28: an `announcement` chip lists the schedules the Bot last listed ([`provided_suggestions`]), and reads them
+//! once when none are held.
+//!
+//! Not ported yet: what the Bot or the instance looks up (queue items, polls, reminders, search results)
+//! and a DST fold's two `when` candidates.
 
-use dilla_client::features::bot::registry::{ArgKind, CommandDefinition, CommandOption};
-use dilla_client::features::bot::room;
+use dilla_client::features::bot::announcements;
+use dilla_client::features::bot::registry::{ArgKind, Args, CommandDefinition, CommandOption};
+use dilla_client::features::bot::{assignable_role, room};
+use dilla_client::features::server_admin::hex_id;
 use dilla_client::features::utilities::time::{ReminderTime, ReminderZone, parse_reminder_time};
-use dilla_client::state::{AppState, CommunityId};
-use gpui::{AnyElement, App, IntoElement, ParentElement, Styled, Window, div};
+use dilla_client::state::dms::DM_KIND_PAIR;
+use dilla_client::state::{AppState, ChannelId, CommunityId, TimelineItemState, UserId};
+use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Styled, Window, div};
 
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::commands::chips::{
@@ -43,8 +54,9 @@ pub const FIELD_IDS: [&str; 8] = [
     "command-field-7",
 ];
 
-/// The chips of a picked command, per window (in [`super::PickerState`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The chips of a picked command, per window (in [`super::PickerState`]). Its Debug gives the command and the counts
+/// only: a moderation command's fields hold the member it acts on and its reason (`/warn`, `/ban`).
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Chips {
     /// The picked command's id.
     pub command: String,
@@ -70,6 +82,19 @@ pub struct Chips {
     pub member: bool,
     /// Each field's picked member id (CommandPicker.tsx `field.selected`), until its text changes.
     pub picked: Vec<Option<String>>,
+}
+
+impl std::fmt::Debug for Chips {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Chips")
+            .field("command", &self.command)
+            .field("values", &self.values.len())
+            .field("active", &self.active)
+            .field("fields", &self.fields)
+            .field("shown", &self.shown.len())
+            .field("member", &self.member)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Chips {
@@ -202,8 +227,9 @@ pub const WHEN_SUGGESTIONS: [&str; 5] = [
 /// CommandPicker.tsx `MAX_SUGGESTIONS`.
 pub const MAX_SUGGESTIONS: usize = 6;
 
-/// One suggestion (`Sug`): what its row shows, and what a pick puts in the field (its label, or a command's id).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One suggestion (`Sug`): what its row shows, and what a pick puts in the field (its label, or a command's id). Its
+/// Debug gives the lengths only: a `/ban` or `/warn` member field suggests the members it could act on.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Suggestion {
     pub label: String,
     pub value: String,
@@ -211,6 +237,19 @@ pub struct Suggestion {
     pub icon: IconName,
     /// A member suggestion's name: its row draws that member's avatar.
     pub avatar: Option<String>,
+}
+
+impl std::fmt::Debug for Suggestion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Suggestion({}, {}, {} bytes, avatar: {})",
+            self.label.len(),
+            self.value.len(),
+            self.sub.len(),
+            self.avatar.is_some()
+        )
+    }
 }
 
 /// The suggestions of the active field.
@@ -233,39 +272,61 @@ pub fn offered(
     listed: &[(String, Entry)],
     preview: &dyn Fn(&str) -> Option<String>,
 ) -> Offered {
-    offered_with(definition, option, text, listed, &[], false, preview)
+    offered_with(definition, option, text, listed, &[], &[], false, preview)
 }
 
 /// The members a member field may name (CommandHost.tsx `suggest` for a `user` option): the community's people but this
-/// account and the Bot, and for `/kick` and `/ban` only those this account may moderate (`eligibleModerationTarget`).
-/// All of them, never a truncated list. Nothing outside a community, and nothing for `/unban`, whose field lists the
-/// banned members instead ([`banned_members`]).
+/// account and the Bot, and for `/kick` and `/ban` only those this account may moderate (`eligibleModerationTarget`),
+/// for `/timeout`, `/untimeout` and `/warn` those it may moderate with Moderate Members, and for `/role add` and
+/// `/role remove` those for whom some role is assignable (`eligibleAssignableRole`). All of them, never a truncated
+/// list (read lazily, so a caller that takes 20 judges no more than it needs). Nothing outside a community, and nothing
+/// for `/unban`, whose field lists the banned members instead ([`banned_members`]).
 fn eligible_members<'a>(
     state: &'a AppState,
     community: Option<CommunityId>,
-    command: &str,
-) -> Vec<&'a dilla_client::state::members::Member> {
-    use dilla_client::features::bot::moderation_gate;
-    let Some(community) = community.filter(|_| command != "unban") else {
-        return Vec::new();
-    };
-    let Some(members) = state.members.get(&community) else {
-        return Vec::new();
-    };
+    command: &'a str,
+) -> impl Iterator<Item = &'a dilla_client::state::members::Member> + 'a {
+    use dilla_client::features::bot::{GateAction, moderation_gate_for};
+    let community = community.filter(|_| command != "unban");
+    let members = community
+        .and_then(|c| state.members.get(&c))
+        .map_or(&[][..], Vec::as_slice);
     // One gate for the whole list (w2-fix1 re-review): no per-member search, no id spelled out per member and frame.
-    let gate = match command {
-        "kick" | "ban" => match moderation_gate(state, community, command == "kick") {
-            Some(gate) => Some(gate),
-            None => return Vec::new(),
-        },
+    let action = match command {
+        "kick" => Some(GateAction::Kick),
+        "ban" => Some(GateAction::Ban),
+        "timeout" | "untimeout" | "warn" => Some(GateAction::Timeout),
         _ => None,
     };
+    let gate = community
+        .zip(action)
+        .map(|(c, a)| moderation_gate_for(state, c, a));
+    // A gated command with no gate (no permission, nothing loaded) offers nobody.
+    let blocked = matches!(gate, Some(None));
+    let gate = gate.flatten();
+    let assigning = matches!(command, "role add" | "role remove")
+        .then_some(community)
+        .flatten();
     let me = state.account.user_id;
     members
         .iter()
-        .filter(|m| Some(m.user_id) != me && m.kind != 1)
-        .filter(|m| gate.as_ref().is_none_or(|g| g.allows(m)))
-        .collect()
+        .filter(move |m| !blocked && Some(m.user_id) != me && m.kind != 1)
+        .filter(move |m| gate.as_ref().is_none_or(|g| g.allows(m)))
+        .filter(move |m| {
+            assigning.is_none_or(|c| {
+                let user = m.user_id.hex();
+                state.roles.roles_of(c).iter().any(|r| {
+                    assignable_role(
+                        state,
+                        c,
+                        &user,
+                        &dilla_client::features::server_admin::hex_id(&r.id),
+                        command == "role add",
+                    )
+                    .is_some()
+                })
+            })
+        })
 }
 
 /// CommandHost.tsx `suggest` for `/unban`'s user: the community's banned members as `loadBans` read them (none until
@@ -307,7 +368,6 @@ pub fn member_suggestions(
     let needle = query.to_lowercase();
     let needle = needle.trim_start_matches('@');
     eligible_members(state, community, command)
-        .into_iter()
         .filter(|m| {
             let name = if m.display.is_empty() {
                 &m.username
@@ -337,6 +397,139 @@ pub fn member_suggestions(
         .collect()
 }
 
+/// CommandHost.tsx `suggest` for the entity kinds the web answers from its own state (at most 20 each), by the option's
+/// kind: the last 20 stored messages of the conversation (`channel`) matching `query` or whose id it is, labelled with
+/// their first 100 characters (the account's own say "Your message"); `/join`'s voice channels (kind 1, mode 0);
+/// a `/selfrole` command's roles as `RoleState::self_roles` read them; `/role add` and `/role remove`'s roles
+/// assignable to the member already in `values` (`user`, the id of the picked member; none before one is); every
+/// other role of the community; `/dm`'s peers outside a community (the two-person DMs, named as the DM).
+/// Anything else offers nothing here.
+pub fn provided_suggestions(
+    state: &AppState,
+    community: Option<CommunityId>,
+    channel: Option<ChannelId>,
+    command: &CommandDefinition,
+    option: &CommandOption,
+    query: &str,
+    values: &Args,
+) -> Vec<Suggestion> {
+    let needle = query.to_lowercase();
+    let named = |id: String, label: &str, sub: &str, avatar: bool| Suggestion {
+        label: label.to_owned(),
+        value: id,
+        sub: sub.to_owned(),
+        icon: IconName::Hash,
+        avatar: avatar.then(|| label.to_owned()),
+    };
+    let matches = |id: &str, name: &str| id == query || name.to_lowercase().contains(&needle);
+    match (option.kind, community) {
+        (ArgKind::Message, _) => {
+            let me = state.account.user_id;
+            let Some(timeline) = channel.and_then(|c| state.timelines.get(&c)) else {
+                return Vec::new();
+            };
+            let mut rows: Vec<Suggestion> = timeline
+                .items
+                .iter()
+                .filter(|i| i.state == TimelineItemState::Ok)
+                .filter_map(|i| Some((i, i.msg_id?.hex())))
+                .filter(|(i, id)| id == query || i.body.to_lowercase().contains(&needle))
+                .map(|(i, id)| {
+                    let own = me.is_some() && i.sender_user == me;
+                    // `body.slice(0, 100)` in one line: HTML shows a line break as a space.
+                    let label: String = i
+                        .body
+                        .chars()
+                        .take(100)
+                        .map(|c| if matches!(c, '\r' | '\n') { ' ' } else { c })
+                        .collect();
+                    named(id, &label, if own { copy::YOUR_MESSAGE } else { "" }, false)
+                })
+                .collect();
+            rows.drain(..rows.len().saturating_sub(20));
+            rows
+        }
+        (ArgKind::Channel, Some(c)) if command.id == "join" => state
+            .channels
+            .iter()
+            .filter(|ch| ch.community_id == c && ch.kind == 1 && ch.mode == 0)
+            .filter(|ch| matches(&ch.id.hex(), &ch.name))
+            .take(20)
+            .map(|ch| named(ch.id.hex(), &ch.name, copy::VOICE_CHANNEL, false))
+            .collect(),
+        (ArgKind::Role, Some(c)) if command.id.starts_with("selfrole ") => state
+            .roles
+            .self_roles
+            .get(&c)
+            .into_iter()
+            .flatten()
+            .filter(|r| matches(&hex_id(&r.id), &r.name))
+            .take(20)
+            .map(|r| named(hex_id(&r.id), &r.name, "", false))
+            .collect(),
+        (ArgKind::Role, Some(c)) => {
+            let assigning = matches!(command.id.as_str(), "role add" | "role remove");
+            state
+                .roles
+                .roles_of(c)
+                .iter()
+                .filter(|r| matches(&hex_id(&r.id), &r.name))
+                .filter(|r| {
+                    !assigning
+                        || values.get("user").is_some_and(|user| {
+                            assignable_role(
+                                state,
+                                c,
+                                user,
+                                &hex_id(&r.id),
+                                command.id == "role add",
+                            )
+                            .is_some()
+                        })
+                })
+                .take(20)
+                .map(|r| named(hex_id(&r.id), &r.name, "", false))
+                .collect()
+        }
+        (ArgKind::User, None) if command.id == "dm" => {
+            let me = state.account.user_id;
+            let mut peers: Vec<(UserId, &str)> = Vec::new();
+            for dm in state.dms.all().iter().filter(|d| d.kind == DM_KIND_PAIR) {
+                for user in dm.members.iter().filter(|u| Some(**u) != me) {
+                    if !peers.iter().any(|(u, _)| u == user) {
+                        peers.push((*user, dm.name.as_str()));
+                    }
+                }
+            }
+            peers
+                .into_iter()
+                .filter(|(u, name)| matches(&u.hex(), name))
+                .take(20)
+                .map(|(u, name)| named(u.hex(), name, "", true))
+                .collect()
+        }
+        // CommandHost.tsx `suggest` for an `announcement` option (bot-handlers.ts:571-575): the schedules the Bot last
+        // listed whose id is the query or whose summary holds it, at most 25, labelled with the text's first 100
+        // characters.
+        (ArgKind::Announcement, Some(c)) => state
+            .bot
+            .announcements
+            .get(&c)
+            .into_iter()
+            .flatten()
+            .filter(|r| {
+                hex_id(&r.id) == query || announcements::summary(r).to_lowercase().contains(&needle)
+            })
+            .take(25)
+            .map(|r| {
+                let label: String = r.text.chars().take(100).collect();
+                named(hex_id(&r.id), &label, &announcements::summary(r), false)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The member a member field's typed `text` names when none was picked: a literal user id, or an `@username`, each
 /// unique by definition, among all [`eligible_members`]. A display name is never resolved, not even one that looks
 /// unique (w2-bot-review I-B1 and the coordinator's ruling, as the web): the person picks a member from the list.
@@ -356,27 +549,31 @@ pub fn resolve_member(
             .find(|b| as_id == Some(b.user_id.0))
             .map(|b| b.user_id.hex());
     }
-    let eligible = eligible_members(state, community, command);
-    eligible
-        .iter()
-        .find(|m| as_id == Some(m.user_id.0))
-        .or_else(|| {
-            let username = username.as_deref().filter(|u| !u.is_empty())?;
-            eligible
-                .iter()
-                .find(|m| m.username.to_lowercase() == username)
+    eligible_members(state, community, command)
+        .find(|m| {
+            as_id == Some(m.user_id.0)
+                || username
+                    .as_deref()
+                    .filter(|u| !u.is_empty())
+                    .is_some_and(|u| m.username.to_lowercase() == u)
         })
         .map(|m| m.user_id.hex())
 }
 
-/// [`offered`], with the members a member field offers ([`member_suggestions`]) and whether its member was `picked`:
-/// only a pick is an exact match there (a typed name never is, so Tab or Enter picks from the list).
+/// [`offered`], with the members a member field offers ([`member_suggestions`]), what a provider field offers
+/// (`provided`, [`provided_suggestions`]) and whether its member or entity was `picked`: only a pick is an exact match
+/// there (a typed name never is, so Tab or Enter picks from the list).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one source of a field's rows: the commands, the members, the provided entities"
+)]
 pub fn offered_with(
     definition: &CommandDefinition,
     option: &CommandOption,
     text: &str,
     listed: &[(String, Entry)],
     members: &[Suggestion],
+    provided: &[Suggestion],
     picked: bool,
     preview: &dyn Fn(&str) -> Option<String>,
 ) -> Offered {
@@ -431,12 +628,15 @@ pub fn offered_with(
                 .collect(),
         ),
         Suggest::Member => (copy::SUG_MEMBERS, members.to_vec()),
-        Suggest::Provider | Suggest::None => (copy::SUG_SUGGESTIONS, Vec::new()),
+        Suggest::Provider => (copy::SUG_SUGGESTIONS, provided.to_vec()),
+        Suggest::None => (copy::SUG_SUGGESTIONS, Vec::new()),
     };
     let items: Vec<Suggestion> = items.into_iter().take(MAX_SUGGESTIONS).collect();
     let typed = text.to_lowercase();
     let exact = if kind == Suggest::Member {
         picked
+    } else if kind == Suggest::Provider && picked {
+        true
     } else {
         items
             .iter()
@@ -683,6 +883,13 @@ pub fn typed(
             } else {
                 registry_duration(value).unwrap_or_else(|| value.clone())
             }
+        } else if suggest_for(definition, option) == Suggest::Provider {
+            // A provided entity (a message, a role, a voice channel) sends the id of the pick, else what was typed.
+            picked
+                .get(i)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| value.clone())
         } else if suggest_for(definition, option) == Suggest::Member {
             picked
                 .get(i)
@@ -706,7 +913,8 @@ fn definition(
     community: Option<CommunityId>,
     id: &str,
 ) -> Option<CommandDefinition> {
-    picker::definitions(state, community)
+    // A chip's command was offered when it was picked, `/giphy` with the GIFs on; it is found whatever they are now.
+    picker::definitions_in(state, community, true)
         .into_iter()
         .find(|d| d.id == id)
 }
@@ -729,8 +937,17 @@ fn zone_name() -> String {
         .unwrap_or_else(|| "UTC".to_owned())
 }
 
-/// What Enter sends while `window`'s composer shows chips: their typed form (`None` with no chips).
-pub fn draft(ctx: &SlotCx, window: gpui::WindowId, cx: &App) -> Option<String> {
+/// What Enter sends while `window`'s composer shows chips: their typed form (`None` with no chips, or when the chips belong
+/// to another composer than `owner`: a composer sends its own text, never the other's chips).
+pub fn draft(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: gpui::WindowId,
+    cx: &mut App,
+) -> Option<String> {
+    if !super::activate(window, owner, false, cx) {
+        return None;
+    }
     let chips = super::picker_state(window, cx).chips?;
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
     let member = |text: &str| resolve_member(&ctx.state, ctx.community, &chips.command, text);
@@ -782,6 +999,8 @@ fn read_bans(ctx: &SlotCx) {
 /// again.
 pub fn release(client: &std::rc::Rc<dilla_client::Client>) {
     bans_asked().forget(client.serial());
+    self_roles_asked().forget(client.serial());
+    announcements_asked().forget(client.serial());
 }
 
 /// How long after a failed bans read the next offer reads again.
@@ -819,6 +1038,24 @@ impl BansAsked {
     }
 }
 
+/// The process's marks of the self roles asked for, as [`bans_asked`].
+fn self_roles_asked() -> std::sync::MutexGuard<'static, BansAsked> {
+    static ASKED: std::sync::LazyLock<std::sync::Mutex<BansAsked>> =
+        std::sync::LazyLock::new(Default::default);
+    ASKED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The process's marks of the announcements asked for, as [`bans_asked`].
+fn announcements_asked() -> std::sync::MutexGuard<'static, BansAsked> {
+    static ASKED: std::sync::LazyLock<std::sync::Mutex<BansAsked>> =
+        std::sync::LazyLock::new(Default::default);
+    ASKED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The process's marks: a read's failure lands on the client's runtime, off the UI thread.
 fn bans_asked() -> std::sync::MutexGuard<'static, BansAsked> {
     static ASKED: std::sync::LazyLock<std::sync::Mutex<BansAsked>> =
@@ -829,7 +1066,7 @@ fn bans_asked() -> std::sync::MutexGuard<'static, BansAsked> {
 }
 
 /// The suggestions of `chips`' active field in the conversation of `ctx` (`None`: the command has no field, or went).
-pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
+pub fn offer(ctx: &SlotCx, chips: &Chips, gifs: bool) -> Option<Offered> {
     let definition = definition(&ctx.state, ctx.community, &chips.command)?;
     let last = definition.options.len().checked_sub(1)?;
     let option = &definition.options[chips.active.min(last)];
@@ -840,7 +1077,7 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         .unwrap_or_default();
     let listed: Vec<(String, Entry)> = if suggest_for(&definition, option) == Suggest::Command {
         let bot_name = picker::bot_name(&ctx.state, ctx.community);
-        picker::definitions(&ctx.state, ctx.community)
+        picker::definitions_in(&ctx.state, ctx.community, gifs)
             .iter()
             .map(|d| (d.id.clone(), picker::entry(d, &bot_name)))
             .collect()
@@ -859,11 +1096,66 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         )
         .and_then(Result::ok)
     };
-    let members = if suggest_for(&definition, option) == Suggest::Member {
+    let kind = suggest_for(&definition, option);
+    let members = if kind == Suggest::Member {
         if definition.id == "unban" {
             read_bans(ctx);
         }
-        member_suggestions(&ctx.state, ctx.community, &definition.id, &text)
+        if ctx.community.is_none() {
+            // `/dm` outside a community: the peers of the DMs, with their avatars.
+            provided_suggestions(
+                &ctx.state,
+                None,
+                ctx.channel,
+                &definition,
+                option,
+                &text,
+                &Args::new(),
+            )
+        } else {
+            member_suggestions(&ctx.state, ctx.community, &definition.id, &text)
+        }
+    } else {
+        Vec::new()
+    };
+    let provided = if kind == Suggest::Provider {
+        if definition.id.starts_with("selfrole ") {
+            read_self_roles(ctx);
+        }
+        if definition.id.starts_with("announcement ") {
+            read_announcements(ctx);
+        }
+        // The other fields' values, a pick as its id (`/role add`'s role needs the member picked).
+        let values: Args = definition
+            .options
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != chips.active.min(last))
+            .filter_map(|(i, o)| {
+                let value = chips
+                    .picked
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .or_else(|| chips.values.get(i).cloned())?;
+                Some((o.name.clone(), value))
+            })
+            .collect();
+        let mut rows = provided_suggestions(
+            &ctx.state,
+            ctx.community,
+            ctx.channel,
+            &definition,
+            option,
+            &text,
+            &values,
+        );
+        // CommandPicker.tsx:373: a provider's rows wear the command's own icon.
+        let icon = picker::entry(&definition, &picker::bot_name(&ctx.state, ctx.community)).icon;
+        for row in &mut rows {
+            row.icon = icon;
+        }
+        rows
     } else {
         Vec::new()
     };
@@ -873,12 +1165,63 @@ pub fn offer(ctx: &SlotCx, chips: &Chips) -> Option<Offered> {
         &text,
         &listed,
         &members,
+        &provided,
         chips
             .picked
             .get(chips.active.min(last))
             .is_some_and(Option::is_some),
         &preview,
     ))
+}
+
+/// CommandHost.tsx `suggest` for a `selfrole` chip (`listSelfRoles`): the community's self-assignable roles are read once
+/// per client and server when the chip is first offered and none are held yet (the field is offered on every frame, so
+/// the mark keeps the read to one; a failed read is tried again [`BANS_RETRY`] later, as the bans').
+fn read_self_roles(ctx: &SlotCx) {
+    let (Some(client), Some(community)) = (&ctx.client, ctx.community) else {
+        return;
+    };
+    let serial = client.serial();
+    if ctx.state.roles.self_roles.contains_key(&community)
+        || !self_roles_asked().ask(serial, community, std::time::Instant::now())
+    {
+        return;
+    }
+    // The read runs on the client's runtime; its answer is published as `RoleState::self_roles`.
+    drop(client.roles().run(move |r| async move {
+        let read = r.load_self_roles(community).await.map(|_| ());
+        if read.is_err() {
+            self_roles_asked().failed(serial, community, std::time::Instant::now());
+        }
+        read
+    }));
+}
+
+/// CommandHost.tsx `suggest` for an `announcement` chip: the schedules are read from the Bot once per client and
+/// community when the chip is first offered and none are held yet (the field is offered on every frame, so the mark keeps
+/// the read to one; a failed read is tried again [`BANS_RETRY`] later, as the bans'). The read's answer is published as
+/// `BotState::announcements`.
+fn read_announcements(ctx: &SlotCx) {
+    let (Some(client), Some(community)) = (&ctx.client, ctx.community) else {
+        return;
+    };
+    let serial = client.serial();
+    if ctx.state.bot.announcements.contains_key(&community)
+        || !announcements_asked().ask(serial, community, std::time::Instant::now())
+    {
+        return;
+    }
+    client.bot().read_announcements(
+        community,
+        dilla_client::features::roles::request_id(),
+        move || announcements_asked().failed(serial, community, std::time::Instant::now()),
+    );
+}
+
+/// A save or a deletion of `client` may have changed the Bot's schedules: the next offer of an `announcement` chip reads
+/// them again.
+pub fn announcements_changed(client: &std::rc::Rc<dilla_client::Client>) {
+    announcements_asked().forget(client.serial());
 }
 
 /// The first member field of `chips` that names nobody: typed, no member picked, and not a user id or `@username`
@@ -905,7 +1248,15 @@ pub fn unnamed_member(
 /// Enter while `window`'s chips hold a member field that names nobody (a display name typed, no member picked): nothing
 /// runs; that field becomes the active one, so its members are listed to pick from (coordinator's ruling on I-B1, as the
 /// web's "No member called …"). `true`: held.
-pub fn hold_unnamed_member(ctx: &SlotCx, window: gpui::WindowId, cx: &mut App) -> bool {
+pub fn hold_unnamed_member(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: gpui::WindowId,
+    cx: &mut App,
+) -> bool {
+    if !super::activate(window, owner, false, cx) {
+        return false;
+    }
     let Some(chips) = super::picker_state(window, cx).chips else {
         return false;
     };
@@ -933,10 +1284,16 @@ pub const SUGGESTION_IDS: [&str; MAX_SUGGESTIONS] = [
 
 /// The active chip's suggestions over the composer (`CommandSuggestions`, in `slots::composer_popup` while chips show):
 /// a row clicked goes in the field as Tab would put it; `None` with nothing to suggest.
-pub fn popup(ctx: &SlotCx, chips: &Chips, window: gpui::WindowId) -> Option<AnyElement> {
+pub fn popup(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    chips: &Chips,
+    gifs: bool,
+    window: gpui::WindowId,
+) -> Option<AnyElement> {
     use dilla_desktop_ui::components::commands::list::{PICKER_GAP, PICKER_INSET_X};
     use dilla_desktop_ui::components::commands::suggestions::{CommandSuggestions, SuggestionItem};
-    let offer = offer(ctx, chips)?;
+    let offer = offer(ctx, chips, gifs)?;
     if offer.items.is_empty() {
         return None;
     }
@@ -962,21 +1319,34 @@ pub fn popup(ctx: &SlotCx, chips: &Chips, window: gpui::WindowId) -> Option<AnyE
                     .into(),
             )
         })
-        .on_active(move |i, window, cx| {
-            if let Some(c) = super::picker_state_mut(window_id(window), cx)
-                .chips
-                .as_mut()
-                && c.sug != i
-            {
-                c.sug = i;
-                window.refresh();
+        .on_active({
+            let owner = owner.clone();
+            move |i, window, cx| {
+                // Each composer's list acts on its own picker state, not on whichever drew last.
+                if !super::activate(window_id(window), &owner, false, cx) {
+                    return;
+                }
+                if let Some(c) = super::picker_state_mut(window_id(window), cx)
+                    .chips
+                    .as_mut()
+                    && c.sug != i
+                {
+                    c.sug = i;
+                    window.refresh();
+                }
             }
         })
-        .on_pick(move |i, w, cx| {
-            if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
-                c.accept(i);
+        .on_pick({
+            let owner = owner.clone();
+            move |i, w, cx| {
+                if !super::activate(window, &owner, false, cx) {
+                    return;
+                }
+                if let Some(c) = super::picker_state_mut(window, cx).chips.as_mut() {
+                    c.accept(i);
+                }
+                w.refresh();
             }
-            w.refresh();
         });
     Some(
         div()
@@ -991,9 +1361,48 @@ fn window_id(window: &Window) -> gpui::WindowId {
     window.window_handle().window_id()
 }
 
-/// The chips in place of the composer's field (`None` while no command is picked).
-pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+/// A chip field was pressed (CommandField's `onFocus`): it becomes the active field, and the composer, whose keys the
+/// chips take, holds the focus.
+pub fn focus_field(
+    wid: gpui::WindowId,
+    owner: &gpui::FocusHandle,
+    i: usize,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !super::activate(wid, owner, false, cx) {
+        return;
+    }
+    let state = super::picker_state_mut(wid, cx);
+    if let Some(c) = state.chips.as_mut()
+        && c.active != i
+        && i < c.fields.max(1)
+    {
+        c.active = i;
+        c.sug = 0;
+    }
+    if let Some(focus) = state
+        .composer
+        .as_ref()
+        .and_then(gpui::WeakFocusHandle::upgrade)
+    {
+        focus.focus(window, cx);
+    }
+    window.refresh();
+}
+
+/// The chips in place of the field of the composer `owner` (`None` while no command is picked, or while another composer
+/// reported the draft: only that one shows them).
+pub fn view(
+    ctx: &SlotCx,
+    owner: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<ChipsView> {
     let wid = window.window_handle().window_id();
+    if !super::activate(wid, owner, false, cx) {
+        return None;
+    }
     let chips = super::picker_state(wid, cx).chips?;
     let Some(definition) = definition(&ctx.state, ctx.community, &chips.command) else {
         // The command went (the Bot's catalog changed): back to the typed draft.
@@ -1044,7 +1453,7 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
         None => (entry.description.clone(), BarTone::Info),
     };
     // The active field's suggestions, kept for the keys (`Chips::suggestion_key`); `popup` draws them.
-    let offer = offer(ctx, &chips);
+    let offer = offer(ctx, &chips, super::gifs_on(ctx, cx));
     if let Some(c) = super::picker_state_mut(wid, cx).chips.as_mut() {
         let text = c.values.get(c.active).cloned().unwrap_or_default();
         if c.sug_for != text {
@@ -1059,10 +1468,12 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
             .as_ref()
             .map(|o| o.items.iter().map(|s| s.label.clone()).collect())
             .unwrap_or_default();
-        c.member = definition
-            .options
-            .get(c.active)
-            .is_some_and(|o| suggest_for(&definition, o) == Suggest::Member);
+        c.member = definition.options.get(c.active).is_some_and(|o| {
+            matches!(
+                suggest_for(&definition, o),
+                Suggest::Member | Suggest::Provider
+            )
+        });
         c.sug = c.sug.min(c.shown.len().saturating_sub(1));
         c.can_accept = offer.as_ref().is_some_and(|o| o.can_accept);
         c.enter_accepts = offer.as_ref().is_some_and(|o| o.enter_accepts);
@@ -1087,29 +1498,67 @@ pub fn view(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElemen
         .optional(field.optional)
         .active(i == active)
         .invalid(invalid);
+        // CommandField's `onFocus`: a press makes the field the active one and keeps the typing in the composer (whose
+        // keys the chips take). Left to the shell, the press would take the focus and the keys would open its search.
+        let field = div().child(el).on_mouse_down(gpui::MouseButton::Left, {
+            let owner = owner.clone();
+            move |_, window, cx| {
+                cx.stop_propagation();
+                focus_field(wid, &owner, i, window, cx);
+            }
+        });
         row = row.field(crate::tracked_box(
             FIELD_IDS.get(i).copied().unwrap_or("command-field"),
-            div().child(el),
+            field,
         ));
     }
-    Some(
-        crate::tracked_box(
+    Some(ChipsView {
+        bar: crate::tracked_box("command-bar-slot", bar).into_any_element(),
+        row: crate::tracked_box(
             "command-chips",
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(bar)
-                .child(row),
+            div().flex_1().min_w_0().flex().flex_col().child(row),
         )
         .into_any_element(),
-    )
+    })
+}
+
+/// A picked command's composer parts: the bar goes over the composer's box (CommandPicker.tsx `PickerFrame.top`, in
+/// ComposerArea.tsx's `top`), the chips take the place of its field (`PickerFrame.input`).
+pub struct ChipsView {
+    pub bar: AnyElement,
+    pub row: AnyElement,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 10 fix round (CommandField's `onFocus`): a press on a chip field makes it the active field and gives the
+    /// composer the focus, so what is typed next reaches that field, not the shell.
+    #[gpui::test]
+    fn a_pressed_chip_field_is_active_and_the_composer_keeps_the_keys(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let vcx = cx.add_empty_window();
+        vcx.update(|window, cx| {
+            let wid = window.window_handle().window_id();
+            let composer = cx.focus_handle();
+            super::super::set_composer(wid, &composer, cx);
+            super::super::picker_state_mut(wid, cx).chips = Some(Chips {
+                command: "delete".into(),
+                values: vec![String::new(), String::new()],
+                fields: 2,
+                sug: 3,
+                ..Chips::default()
+            });
+            focus_field(wid, &composer, 1, window, cx);
+            let chips = super::super::picker_state(wid, cx).chips.unwrap();
+            assert_eq!((chips.active, chips.sug), (1, 0));
+            assert!(composer.is_focused(window), "the composer holds the focus");
+            focus_field(wid, &composer, 0, window, cx);
+            assert_eq!(super::super::picker_state(wid, cx).chips.unwrap().active, 0);
+        });
+    }
 
     /// Final review I6: the bans read is asked once per client and server; another client (another account on the same
     /// server, or a sign-in after a sign-out) asks for itself; a failed read and a release let it ask again.
@@ -1303,6 +1752,7 @@ mod tests {
             "",
             &[],
             &all,
+            &[],
             false,
             &|_| None,
         );
@@ -1315,6 +1765,7 @@ mod tests {
             "bea",
             &[],
             &all,
+            &[],
             false,
             &|_| None,
         );
@@ -1328,6 +1779,7 @@ mod tests {
             "bea",
             &[],
             &all,
+            &[],
             true,
             &|_| None,
         );
@@ -1870,5 +2322,297 @@ mod tests {
             vcx.debug_bounds("command-suggestion-avatar-1").is_none(),
             "a command's row keeps its icon"
         );
+    }
+
+    // ---- Task 9: the provider chips (CommandHost.tsx `suggest`) ----
+
+    fn timeline_item(
+        n: u8,
+        body: &str,
+        state: dilla_client::state::TimelineItemState,
+        sender: Option<dilla_client::state::UserId>,
+    ) -> dilla_client::state::TimelineItem {
+        let stored = state == dilla_client::state::TimelineItemState::Ok;
+        dilla_client::state::TimelineItem {
+            key: format!("s{n}"),
+            state,
+            reason: String::new(),
+            sender_user: sender,
+            sender_device: None,
+            own: false,
+            bot: false,
+            ts: 0,
+            body: body.into(),
+            msg_id: Some(dilla_client::state::MessageId([n; 16])),
+            seq: stored.then_some(u64::from(n)),
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        }
+    }
+
+    fn provided(
+        s: &AppState,
+        community: Option<CommunityId>,
+        channel: Option<dilla_client::state::ChannelId>,
+        id: &str,
+        option: &CommandOption,
+        query: &str,
+        values: &[(&str, String)],
+    ) -> Vec<Suggestion> {
+        let values = values
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect();
+        provided_suggestions(
+            s,
+            community,
+            channel,
+            &command(id, vec![option.clone()]),
+            option,
+            query,
+            &values,
+        )
+    }
+
+    /// CommandHost.tsx:333: the stored messages matching the query (or whose id it is), the last 20 of them, each
+    /// labelled with its first 100 characters; the account's own say "Your message". A pending row is not offered.
+    #[test]
+    fn message_chips_offer_the_last_twenty_matching_messages() {
+        use dilla_client::state::{
+            ChannelGroupState, ChannelId, Timeline, TimelineItemState, UserId,
+        };
+        let (mut s, c) = alexes();
+        let ch = ChannelId([4; 16]);
+        let mut items: Vec<_> = (0..25u8)
+            .map(|n| {
+                let sender = if n % 2 == 0 {
+                    UserId([1; 16])
+                } else {
+                    UserId([2; 16])
+                };
+                timeline_item(n, &format!("m{n}"), TimelineItemState::Ok, Some(sender))
+            })
+            .collect();
+        items.push(timeline_item(99, "m99", TimelineItemState::Pending, None));
+        s.timelines.insert(
+            ch,
+            Timeline {
+                channel_id: ch,
+                group: ChannelGroupState::Active,
+                items,
+                has_earlier: false,
+            },
+        );
+        let message = option("message", ArgKind::Message, None);
+        let all = provided(&s, Some(c), Some(ch), "reply", &message, "", &[]);
+        assert_eq!(all.len(), 20);
+        assert_eq!(all[0].label, "m5");
+        assert_eq!(all[19].label, "m24");
+        assert_eq!(
+            all[19].value,
+            dilla_client::state::MessageId([24; 16]).hex()
+        );
+        assert_eq!(all[0].sub, "", "m5 is Bea's");
+        assert_eq!(all[1].sub, "Your message", "m6 is this account's");
+        let some = provided(&s, Some(c), Some(ch), "reply", &message, "m2", &[]);
+        let names: Vec<&str> = some.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(names, ["m2", "m20", "m21", "m22", "m23", "m24"]);
+        let long = timeline_item(50, &"x".repeat(150), TimelineItemState::Ok, None);
+        s.timelines.get_mut(&ch).unwrap().items.push(long);
+        let last = provided(&s, Some(c), Some(ch), "reply", &message, "", &[]);
+        assert_eq!(last[19].label.chars().count(), 100);
+        // A row is one line: a line break in the body shows as a space (the web's HTML does so), never reaching the
+        // single-line shaper, which refuses it.
+        let lines = timeline_item(51, "first\nsecond", TimelineItemState::Ok, None);
+        s.timelines.get_mut(&ch).unwrap().items.push(lines);
+        let last = provided(&s, Some(c), Some(ch), "reply", &message, "", &[]);
+        assert_eq!(last[19].label, "first second");
+    }
+
+    /// CommandHost.tsx:374: `/join` offers the voice channels (kind 1, mode 0) and nothing else.
+    #[test]
+    fn join_offers_voice_channels_only() {
+        use dilla_client::state::{Channel, ChannelGroupState, ChannelId};
+        let (mut s, c) = alexes();
+        let channel = |n: u8, kind: u8, mode: u8, name: &str| Channel {
+            id: ChannelId([n; 16]),
+            community_id: c,
+            kind,
+            mode,
+            name: name.into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        };
+        s.channels = vec![
+            channel(1, 0, 0, "general"),
+            channel(2, 1, 0, "lounge"),
+            channel(3, 1, 1, "stage"),
+        ];
+        let option = option("channel", ArgKind::Channel, None);
+        let got = provided(&s, Some(c), None, "join", &option, "", &[]);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].label, "lounge");
+        assert_eq!(got[0].value, ChannelId([2; 16]).hex());
+        assert_eq!(got[0].sub, "Voice channel");
+    }
+
+    /// A community of Ada (owner, so she ranks above everyone), Bea and two roles of which Bea holds one.
+    fn with_roles() -> (AppState, CommunityId) {
+        use dilla_client::state::roles::RoleSummary;
+        let (mut s, c) = alexes();
+        let role = |n: u8, name: &str, position: u32| RoleSummary {
+            id: [n; 16],
+            name: name.into(),
+            color: 0,
+            position,
+            hoist: false,
+            mentionable: false,
+            allow: 0,
+            deny: 0,
+            members: 0,
+        };
+        s.roles.roles.insert(
+            c,
+            vec![
+                role(0x50, "@everyone", 0),
+                role(0x51, "Mods", 2),
+                role(0x52, "Pals", 1),
+            ],
+        );
+        // Bea (user 4) already holds Pals.
+        s.members.get_mut(&c).unwrap()[3].role_ids = vec![[0x52; 16]];
+        let mut access = s.roles.access_of(c);
+        access.manage_roles = true;
+        access.everyone_id = Some([0x50; 16]);
+        access.top = u32::MAX;
+        s.roles.access.insert(c, access);
+        (s, c)
+    }
+
+    /// CommandHost.tsx:366-370: `/role add` offers the roles assignable to the member picked in `user`; none while no
+    /// member is picked.
+    #[test]
+    fn role_add_offers_only_roles_assignable_to_the_picked_member() {
+        let (s, c) = with_roles();
+        let role = option("role", ArgKind::Role, None);
+        let bea = dilla_client::state::UserId([4; 16]).hex();
+        let add = provided(
+            &s,
+            Some(c),
+            None,
+            "role add",
+            &role,
+            "",
+            &[("user", bea.clone())],
+        );
+        let names: Vec<&str> = add.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(names, ["Mods"], "Pals is held, @everyone never");
+        let remove = provided(
+            &s,
+            Some(c),
+            None,
+            "role remove",
+            &role,
+            "",
+            &[("user", bea)],
+        );
+        let names: Vec<&str> = remove.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(names, ["Pals"]);
+        assert!(provided(&s, Some(c), None, "role add", &role, "", &[]).is_empty());
+        // The member field of `/role add` lists the members some role is assignable to, and nobody once none is.
+        assert_eq!(member_suggestions(&s, Some(c), "role add", "").len(), 3);
+        let mut none = s.clone();
+        none.roles.access.get_mut(&c).unwrap().manage_roles = false;
+        assert!(member_suggestions(&none, Some(c), "role add", "").is_empty());
+    }
+
+    /// CommandHost.tsx:357-360: `/selfrole` chips offer `self_roles` as read, by name.
+    #[test]
+    fn selfrole_chips_offer_the_self_roles_read() {
+        use dilla_client::state::roles::SelfRole;
+        let (mut s, c) = alexes();
+        let row = |n: u8, name: &str| SelfRole {
+            id: [n; 16],
+            name: name.into(),
+            position: 1,
+            self_selected: false,
+        };
+        s.roles
+            .self_roles
+            .insert(c, vec![row(1, "Gamers"), row(2, "Readers")]);
+        let role = option("role", ArgKind::Role, None);
+        let got = provided(&s, Some(c), None, "selfrole add", &role, "", &[]);
+        let names: Vec<&str> = got.iter().map(|x| x.label.as_str()).collect();
+        assert_eq!(names, ["Gamers", "Readers"]);
+        assert_eq!(
+            got[1].value,
+            dilla_client::features::server_admin::hex_id(&[2; 16])
+        );
+        let filtered = provided(&s, Some(c), None, "selfrole remove", &role, "read", &[]);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    /// CommandHost.tsx:350-355: `/dm` outside a community offers the peers of the two-person DMs, named as the DM.
+    #[test]
+    fn dm_in_a_dm_offers_dm_peers() {
+        use dilla_client::state::dms::{DM_KIND_GROUP, DM_KIND_PAIR, DmSummary};
+        use dilla_client::state::{ChannelGroupState, ChannelId, UserId};
+        let (mut s, _) = alexes();
+        let dm = |n: u8, kind: u8, members: &[u8], name: &str| DmSummary {
+            id: ChannelId([n; 16]),
+            kind,
+            members: members.iter().map(|m| UserId([*m; 16])).collect(),
+            name: name.into(),
+            group: ChannelGroupState::Active,
+        };
+        s.dms.list = Some(vec![
+            dm(0x60, DM_KIND_PAIR, &[1, 2], "Alex"),
+            dm(0x61, DM_KIND_PAIR, &[1, 4], "bea"),
+            dm(0x62, DM_KIND_GROUP, &[1, 2, 4], "Alex, bea"),
+        ]);
+        let user = option("user", ArgKind::User, None);
+        let got = provided(&s, None, None, "dm", &user, "", &[]);
+        let rows: Vec<(&str, String)> = got
+            .iter()
+            .map(|x| (x.label.as_str(), x.value.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("Alex", UserId([2; 16]).hex()),
+                ("bea", UserId([4; 16]).hex())
+            ]
+        );
+        let one = provided(&s, None, None, "dm", &user, "be", &[]);
+        assert_eq!(one.len(), 1);
+    }
+
+    /// builtin.ts:329 and CommandHost.tsx:347: `/timeout`, `/untimeout` and `/warn` list the members this account may
+    /// moderate with Moderate Members; without that permission nobody.
+    #[test]
+    fn timeout_members_need_moderate_members() {
+        let (mut s, c) = alexes();
+        assert!(member_suggestions(&s, Some(c), "timeout", "").is_empty());
+        let mut access = s.roles.access_of(c);
+        access.moderate_members = true;
+        s.roles.access.insert(c, access);
+        let all = member_suggestions(&s, Some(c), "timeout", "");
+        let names: Vec<&str> = all.iter().map(|m| m.label.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Alex", "Alex", "bea"],
+            "all but oneself and the Bot"
+        );
+        assert_eq!(member_suggestions(&s, Some(c), "warn", "").len(), 3);
+        assert_eq!(member_suggestions(&s, Some(c), "untimeout", "").len(), 3);
     }
 }

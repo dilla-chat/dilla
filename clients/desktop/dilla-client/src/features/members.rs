@@ -304,34 +304,9 @@ pub fn installation_bot_name(members: Option<&[Member]>, bot_user: Option<UserId
         .filter(|n| !n.is_empty())
 }
 
-/// `localeCompare` as the web sorts names: case and accents only break ties.
+/// `localeCompare` as the web sorts names, in the viewer's locale ([`super::collate`]): case and accents only break ties.
 pub fn by_name(a: &str, b: &str) -> Ordering {
-    let fold = |s: &str| -> String {
-        s.chars()
-            .flat_map(char::to_lowercase)
-            .map(|c| match c {
-                'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' => 'a',
-                'ç' => 'c',
-                'è' | 'é' | 'ê' | 'ë' => 'e',
-                'ì' | 'í' | 'î' | 'ï' => 'i',
-                'ñ' => 'n',
-                'ò' | 'ó' | 'ô' | 'õ' | 'ö' => 'o',
-                'ù' | 'ú' | 'û' | 'ü' => 'u',
-                'ý' | 'ÿ' => 'y',
-                c => c,
-            })
-            .collect()
-    };
-    // Lower case before upper case at an otherwise equal place, as ICU's default tertiary order.
-    let upper = |s: &str| {
-        s.chars()
-            .map(|c| u8::from(c.is_uppercase()))
-            .collect::<Vec<_>>()
-    };
-    fold(a)
-        .cmp(&fold(b))
-        .then_with(|| upper(a).cmp(&upper(b)))
-        .then_with(|| a.cmp(b))
+    super::collate::by_default(a, b).then_with(|| a.cmp(b))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

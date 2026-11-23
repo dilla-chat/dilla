@@ -188,6 +188,17 @@ pub fn reaction_bar(
         window,
         cx,
     );
+    // A reaction taken down is a chip gone, and the web's chip pops again when it comes back: what the pops remember of this
+    // message's chips is cut to the reactions it has now (none: the bar is not drawn, so it could not do this itself).
+    let scope = dilla_desktop_ui::motion::scope(cx);
+    let bar_id = SharedString::from(format!("reactions-{}", item.key));
+    let pop_prefix =
+        dilla_desktop_ui::components::reactions::bar::pop_prefix(&scope, &bar_id.clone().into());
+    dilla_desktop_ui::motion::forget_entered(cx, &pop_prefix, |k| {
+        item.reactions
+            .iter()
+            .any(|r| k.strip_prefix(&pop_prefix) == Some(r.emoji.as_str()))
+    });
     if item.reactions.is_empty() && grid.is_none() {
         return None;
     }
@@ -238,11 +249,12 @@ pub fn reaction_bar(
         let (toggle_key, add_key) = (key.clone(), key.clone());
         let id_key = key.clone();
         let bar = ReactionBar::new(
-            SharedString::from(format!("reactions-{key}")),
+            bar_id,
             t("shell.message.reactions"),
             t("shell.message.reactionAdd"),
             chips,
         )
+        .scope(scope)
         .on_toggle(move |emoji, _window, _cx| picker::toggle(&toggle_ctx, &toggle_key, emoji))
         .on_add(move |window, cx| {
             let back = window.focused(cx);
@@ -486,5 +498,55 @@ mod tests {
         let mut deleted = item(&[]);
         deleted.state = TimelineItemState::Deleted;
         assert!(message_actions(&deleted).is_empty());
+    }
+
+    /// A message's only reaction taken down and added again: the web's chip is a new element and pops again. The reactions
+    /// screen builds no bar for a message without reactions, so it is the screen that forgets the chip's pop.
+    #[gpui::test]
+    fn a_chip_pops_again_when_a_messages_only_reaction_goes_and_returns(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::install);
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let window = cx.add_empty_window();
+        let with = item(&[("👍", 1, false)]);
+        let without = item(&[]);
+        let key = |cx: &gpui::App| {
+            format!(
+                "{}👍",
+                dilla_desktop_ui::components::reactions::bar::pop_prefix(
+                    &dilla_desktop_ui::motion::scope(cx),
+                    &SharedString::from(format!("reactions-{}", with.key)).into(),
+                )
+            )
+        };
+        let pop = |window: &mut gpui::VisualTestContext| {
+            window.update(|_, cx| {
+                dilla_desktop_ui::motion::entered_age(
+                    cx,
+                    key(cx),
+                    dilla_desktop_ui::tokens::motion::SLOW,
+                )
+            })
+        };
+        // The chip draws (its pop starts), and the pop runs out.
+        assert!(pop(window).is_some(), "a new chip pops");
+        window
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        assert!(pop(window).is_none(), "its pop is over");
+        // Drawn again with its reaction still there: nothing is forgotten.
+        window.update(|window, cx| {
+            reaction_bar(&with, &SlotCx::default(), window, cx);
+        });
+        assert!(
+            pop(window).is_none(),
+            "a chip that stays does not pop again"
+        );
+        // The reaction is taken down (no bar is built), then added again: the chip pops.
+        window.update(|window, cx| {
+            assert!(reaction_bar(&without, &SlotCx::default(), window, cx).is_none());
+        });
+        assert!(pop(window).is_some(), "the returned chip pops again");
     }
 }

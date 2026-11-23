@@ -3,6 +3,8 @@
 .d-action-menu__trigger:hover, .d-action-menu__trigger[aria-expanded="true"] { color: var(--fg); background: var(--hover); }
 /* Task 9: every menu is the prototype's context menu (Signal §5.4): 4px in, --surface-2 in the --line-strong edge, 9px corners,
    the 0 18px 48px shadow, d-modal 160ms. A caller sets its width (the person menu's 236px, the status menu's 220px). */
+/* The `at` (context menu) path sets `right: auto` inline: the `right: 0` below is for the trigger's popup, and left with a fixed `left`
+   it stretched the box to the viewport, so every context menu sat at the 300px cap instead of its content (min 11rem). */
 .d-action-menu__popup {
   position: absolute; top: 100%; right: 0; z-index: 30; display: grid; min-width: 11rem; max-width: min(300px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; box-sizing: border-box;
   padding: 4px; font-family: var(--font-mono); background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-menu);

@@ -107,6 +107,12 @@ pub fn toolbar(
                 })
                 .cursor_pointer()
                 .hover(|s| s.bg(color::HOVER_HI))
+                // Reports its bounds (`message-action-<id>-<n>`) so a fixture can press it, as it hovers the row.
+                .relative()
+                .child(super::probe(super::id_of(
+                    &format!("message-action-{}", a.id),
+                    index,
+                )))
                 .child(Icon::new(direct_icon(a)).size(len(14.)).color(color::FG_2))
                 .on_click(move |_, window, cx| run(&ctx, window, cx)),
         );

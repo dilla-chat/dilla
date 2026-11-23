@@ -6,7 +6,7 @@
  * `node scripts/gen-gpui-strings.mjs` writes; `--check` writes nothing and exits 1 when the file is stale
  * (scripts/gen-gpui-strings.test.mjs runs it, and `npm run ci:local` runs that test).
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -150,12 +150,56 @@ mod tests {
     }
 
     #[test]
+    fn the_empty_log_says_device() {
+        assert_eq!(
+            t("shell.log.empty"),
+            "nothing here yet. Messages sent before this device joined are not shown."
+        );
+    }
+
+    #[test]
     fn the_table_is_sorted_and_has_no_empty_value() {
         assert!(STRINGS.windows(2).all(|w| w[0].0 < w[1].0));
         assert!(STRINGS.iter().all(|(_, v)| !v.trim().is_empty()));
     }
 }
 `;
+}
+
+/** Keys whose `en` copy says "browser" and means one: the device list names the browser a device runs in, and the
+ * second-factor copy was written for both clients (the sign-in finishes in the system's browser; a passkey is asked for
+ * by it). Task 32 found the second group; reviewing their wording for the desktop is a follow-up. */
+export const browserMeansBrowser = [
+  'devices.platform.browser', 'devices.platform.browserUnknown', 'devices.renameSuggestion',
+  'factor.error.desktopUnsupported', 'factorSignin.oidc.working', 'factorSignin.oidc.unsupported',
+  'factorSignin.passkey.body', 'factorSignin.passkey.unsupported',
+  'factorSettings.stepUp.passkeyUnsupported',
+];
+
+/** The keys the desktop quotes (outside strings.rs) whose web copy names the browser and that have no override: the
+ * desktop would say "browser" in a native window. */
+export async function browserLeaks() {
+  const { en } = await import(pathToFileURL(join(ROOT, 'packages', 'web', 'src', 'strings', 'en.ts')).href);
+  const { desktopOverrides } = await import(pathToFileURL(join(ROOT, 'packages', 'web', 'src', 'strings', 'desktopOverrides.ts')).href);
+  const src = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.rs') && p !== OUT) src.push(readFileSync(p, 'utf8'));
+    }
+  };
+  walk(join(dirname(OUT)));
+  return leaks(en, desktopOverrides, src.join('\n'));
+}
+
+/** The pure rule: a key whose copy matches /browser/i, that the Rust source quotes, and that has neither an override nor
+ * a place in `allowed`. */
+export function leaks(en, overrides, text, allowed = browserMeansBrowser) {
+  return Object.entries(en)
+    .filter(([k, v]) => typeof v === 'string' && /browser/i.test(v) && !(k in overrides) && !allowed.includes(k))
+    .map(([k]) => k)
+    .filter((k) => text.includes(`"${k}"`));
 }
 
 export async function stale() {
@@ -165,6 +209,8 @@ export async function stale() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv.includes('--check')) {
+    const leaks = await browserLeaks();
+    if (leaks.length > 0) { console.error('the desktop quotes keys whose copy says "browser" without an override in desktopOverrides.ts:\n  ' + leaks.join('\n  ')); process.exit(1); }
     if (await stale()) { console.error('stale generated file (run node scripts/gen-gpui-strings.mjs):\n  ' + OUT); process.exit(1); }
   } else {
     writeFileSync(OUT, await generate());

@@ -16,10 +16,32 @@ use jiff::{
 
 use crate::strings::{t, tf};
 
-/// The locale dates follow: the OS region as a BCP 47 tag, `en-GB` when the OS gives none (the web's fallback).
+/// The locale the app was pinned to ([`pin_locale`]): a drawn fixture's and the unit tests', which must not depend on the
+/// machine (`sys-locale` reads `LANGUAGE` before `LC_ALL` on Unix and no environment at all on macOS).
+static PINNED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Pins the locale dates and name order follow, whatever the OS says: `tag` is a BCP 47 tag (`en-US`, the web shooter's).
+pub fn pin_locale(tag: &str) {
+    *PINNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tag.to_owned());
+    dilla_client::features::collate::set_locale(tag);
+}
+
+/// The locale dates follow: the pinned one, else the OS region as a BCP 47 tag, `en-GB` when the OS gives none (the web's
+/// fallback).
 pub fn date_locale() -> String {
-    sys_locale::get_locale()
-        .map(|raw| canonical(&raw))
+    let pinned = PINNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    locale_of(pinned, sys_locale::get_locale())
+}
+
+/// [`date_locale`]'s rule: a pin wins over the OS, an OS tag over the fallback.
+fn locale_of(pinned: Option<String>, os: Option<String>) -> String {
+    pinned
+        .or_else(|| os.map(|raw| canonical(&raw)))
         .filter(|tag| !tag.is_empty())
         .unwrap_or_else(|| "en-GB".to_owned())
 }
@@ -37,6 +59,45 @@ pub type Zone<'a> = &'a dyn Fn(i64) -> Offset;
 /// The OS local zone: the offset the local rules give at that very instant.
 pub fn local_zone(secs: i64) -> Offset {
     Timestamp::from_second(secs).map_or(Offset::UTC, |t| TimeZone::system().to_offset(t))
+}
+
+/// utility-time.ts `localUtilityTime`: an instant as Intl `en-GB` draws it with `{weekday short, day, month short, hour and
+/// minute 2-digit, timeZoneName short}`, `Fri 15 Jan, 09:00 UTC`. The zone is its abbreviation (`CET`); a zone the tz
+/// database only names by its offset (`+03`) reads as Intl's `GMT+3`. `None` for an instant out of range, as the web's
+/// invalid date.
+pub fn local_utility_time(seconds: i64, zone: &TimeZone) -> Option<String> {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let at = Timestamp::from_second(seconds).ok()?;
+    let info = zone.to_offset_info(at);
+    let wall = info.offset().to_datetime(at);
+    let day = DAYS[usize::from(wall.date().weekday().to_monday_zero_offset().unsigned_abs())];
+    let month = MONTHS[usize::from(wall.month().unsigned_abs()) - 1];
+    let name = info.abbreviation();
+    let name = if name.starts_with(['+', '-']) {
+        gmt_offset(info.offset().seconds())
+    } else {
+        name.to_owned()
+    };
+    Some(format!(
+        "{day} {} {month}, {:02}:{:02} {name}",
+        wall.day(),
+        wall.hour(),
+        wall.minute()
+    ))
+}
+
+/// Intl's short name of a zone with no abbreviation: `GMT+3`, `GMT+5:30`, `GMT-3:30`, and `GMT` at the offset 0.
+fn gmt_offset(seconds: i32) -> String {
+    let sign = if seconds < 0 { '-' } else { '+' };
+    let minutes = seconds.unsigned_abs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "GMT".to_owned(),
+        (h, 0) => format!("GMT{sign}{h}"),
+        (h, m) => format!("GMT{sign}{h}:{m:02}"),
+    }
 }
 
 /// An instant (unix seconds) as the wall clock `offset` gives; an instant out of range reads as the epoch.
@@ -67,8 +128,13 @@ pub fn day(ts: u64) -> String {
 
 /// The date and the 24-hour time (the web's `formatDayTime`): `Oct 3, 2026, 14:05`.
 pub fn day_time(ts: u64) -> String {
-    let when = at(ts, &local_zone);
-    format!("{}, {}", fmt_day(&when, &date_locale()), fmt_time(&when))
+    day_time_in(ts, &local_zone, &date_locale())
+}
+
+/// [`day_time`] in `zone` and `locale`.
+pub fn day_time_in(ts: u64, zone: Zone, locale: &str) -> String {
+    let when = at(ts, zone);
+    format!("{}, {}", fmt_day(&when, locale), fmt_time(&when))
 }
 
 /// A diagnostics clock, 24-hour `HH:MM:SS` from milliseconds (the web's `formatClock`).
@@ -243,7 +309,36 @@ fn fmt_day(when: &DateTime, locale: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_pinned_locale_wins_over_whatever_the_os_says() {
+        let os = Some("sv_SE.UTF-8".to_owned());
+        assert_eq!(locale_of(Some("en-US".into()), os.clone()), "en-US");
+        assert_eq!(locale_of(None, os), "sv-SE");
+        assert_eq!(locale_of(None, None), "en-GB");
+        assert_eq!(
+            locale_of(Some(String::new()), Some("de_DE".into())),
+            "en-GB"
+        );
+    }
+
     const UTC: &dyn Fn(i64) -> Offset = &|_| Offset::UTC;
+
+    /// utility-time.ts: Intl `en-GB` with the zone's short name (values checked with node).
+    #[test]
+    fn utility_time_matches_intl_en_gb() {
+        assert_eq!(
+            local_utility_time(1_800_003_600, &TimeZone::UTC).as_deref(),
+            Some("Fri 15 Jan, 09:00 UTC")
+        );
+        let stockholm = TimeZone::get("Europe/Stockholm").expect("the tz database has Stockholm");
+        assert_eq!(
+            local_utility_time(1_800_003_600, &stockholm).as_deref(),
+            Some("Fri 15 Jan, 10:00 CET")
+        );
+        assert_eq!(gmt_offset(3 * 3600), "GMT+3");
+        assert_eq!(gmt_offset(-(3 * 3600 + 1800)), "GMT-3:30");
+        assert_eq!(local_utility_time(i64::MAX, &TimeZone::UTC), None);
+    }
 
     /// Unix seconds of a UTC wall-clock time.
     fn utc(y: i32, m: u32, d: u32, h: u32, min: u32) -> u64 {

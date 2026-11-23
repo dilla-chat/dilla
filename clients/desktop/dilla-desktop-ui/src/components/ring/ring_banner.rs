@@ -11,14 +11,14 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, BoxShadow, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, actions, div, point, px,
+    App, ElementId, FocusHandle, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, StatefulInteractiveElement, Styled, Window, actions, div, px,
 };
 
 use crate::a11y::{Accessible, Live, Role};
 use crate::components::avatar::{Avatar, AvatarSize};
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 actions!(ring_banner, [Answer, Decline]);
@@ -42,8 +42,6 @@ const ACTIONS_GAP: f32 = 0.375 * REM;
 const BUTTON_H: f32 = 2.0 * REM;
 const BUTTON_MIN_W: f32 = 2.75 * REM;
 const BUTTON_PAD_X: f32 = 0.875 * REM;
-/// The ring around an incoming caller's avatar: `box-shadow: 0 0 0 2px var(--ok)`.
-const WAVE: f32 = 2.0;
 
 /// What a ring's action does: called with the ring's key.
 pub type OnRing = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
@@ -158,11 +156,19 @@ fn button(
         .rounded(radius::MD)
         .cursor_pointer()
         .focus_visible(|s| s.shadow(focus_ring()))
-        .child(line(label, text::BTN, line_height(text::BTN, 1.5), fg).weight(weight))
+        .child(
+            line(
+                label,
+                text::BTN,
+                crate::text::root_line_height(text::BTN),
+                fg,
+            )
+            .weight(weight),
+        )
 }
 
 impl RenderOnce for RingBanner {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let rows = self.rows.into_iter().enumerate().map(|(i, ring)| {
             let key = ring.key.clone();
             let (answer_key, answer_click, answer_on) =
@@ -183,14 +189,14 @@ impl RenderOnce for RingBanner {
                     )
                     .size(AvatarSize::Row),
                 );
+            // The incoming ring's wave (`d-ring`): a 2px `--ok` ring that grows and fades, over and over; a busy ring has none.
             if !ring.busy {
-                glyph = glyph.shadow(vec![BoxShadow {
-                    color: color::OK,
-                    offset: point(px(0.0), px(0.0)),
-                    blur_radius: px(0.0),
-                    spread_radius: px(WAVE),
-                    inset: false,
-                }]);
+                glyph = glyph.child(crate::motion::ring_wave(
+                    SharedString::from(format!("ring-wave-{key}")),
+                    f32::from(AvatarSize::Row.metrics().0),
+                    radius::AVATAR,
+                    cx,
+                ));
             }
             // A ring is read out at once as it arrives (the web's ring region is `aria-live`; a ring interrupts).
             let mut row = div()
@@ -217,8 +223,13 @@ impl RenderOnce for RingBanner {
                         .flex_basis(px(TEXT_BASIS))
                         .min_w_0()
                         .child(
-                            line(ring.text, text::UI, line_height(text::UI, 1.5), color::FG)
-                                .weight(font::WEIGHT_LABEL),
+                            line(
+                                ring.text,
+                                text::UI,
+                                crate::text::root_line_height(text::UI),
+                                color::FG,
+                            )
+                            .weight(font::WEIGHT_LABEL),
                         ),
                 )
                 .child(

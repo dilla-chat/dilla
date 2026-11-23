@@ -16,7 +16,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, TRACKING_TAG};
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// The list's scroll box: 260px of rows (`max-height: 16.25rem`) inside 4px of padding.
 pub const LIST_MAX: f32 = 260.0;
@@ -117,9 +117,11 @@ impl CommandList {
 
     /// The list's height for `rows` matching rows (0: the no-match line), header and borders included.
     pub fn height(rows: usize) -> f32 {
-        let head = 2.0 * 8.0 + line_height(text::MICRO, 1.5) + 1.0;
+        let head = 2.0 * 8.0 + crate::text::root_line_height(text::MICRO) + 1.0;
         let body = if rows == 0 {
-            2.0 * 10.0 + 28.0
+            // The no-match line sits in the scroll's 4px padding too: 10 + the 28px button's content box with its 1px
+            // edges (`.d-cmd-list__send` is content-box) + 10.
+            2.0 * SCROLL_PAD + 2.0 * 10.0 + 28.0 + 2.0
         } else {
             (rows as f32 * ROW_HEIGHT).min(LIST_MAX) + 2.0 * SCROLL_PAD
         };
@@ -207,7 +209,7 @@ fn row(item: &ListItem, active: bool) -> impl IntoElement {
 }
 
 impl RenderOnce for CommandList {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let head = div()
             .flex()
             .items_center()
@@ -220,7 +222,7 @@ impl RenderOnce for CommandList {
                 line(
                     self.labels.title.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
@@ -231,7 +233,7 @@ impl RenderOnce for CommandList {
                 line(
                     self.labels.hint.clone(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_BTN)
@@ -275,7 +277,7 @@ impl RenderOnce for CommandList {
                 .child(div().flex_1().min_w_0().child(line(
                     self.labels.no_match.clone(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::FG_2,
                 )))
                 .child(
@@ -284,7 +286,8 @@ impl RenderOnce for CommandList {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .h(px(28.0))
+                        // `.d-cmd-list__send`: content-box, 28px high inside its 1px edges.
+                        .h(px(30.0))
                         .px(px(10.0))
                         .border_1()
                         .border_color(color::CONTROL_EDGE)
@@ -298,12 +301,13 @@ impl RenderOnce for CommandList {
                         .child(line(
                             self.labels.send_as_text.clone(),
                             text::UI,
-                            line_height(text::UI, 1.5),
+                            crate::text::root_line_height(text::UI),
                             color::FG,
                         )),
                 )
         });
-        div()
+        let enter_id = (self.id.clone(), "enter");
+        let list = div()
             .id(self.id)
             .overflow_hidden()
             .bg(color::SURFACE_2)
@@ -317,20 +321,12 @@ impl RenderOnce for CommandList {
                     .id("command-list-scroll")
                     .max_h(px(LIST_MAX + 2.0 * SCROLL_PAD))
                     .overflow_y_scroll()
-                    .when_some_rows(!rows.is_empty(), SCROLL_PAD)
+                    .p(px(SCROLL_PAD))
                     .children(rows)
                     .children(none),
-            )
-    }
-}
-
-trait PadWhen {
-    fn when_some_rows(self, rows: bool, pad: f32) -> Self;
-}
-
-impl PadWhen for gpui::Stateful<gpui::Div> {
-    fn when_some_rows(self, rows: bool, pad: f32) -> Self {
-        if rows { self.p(px(pad)) } else { self }
+            );
+        // CommandPicker.css:8: `d-modal` over `--duration-spin`.
+        crate::motion::modal_in(list, enter_id, motion::SPIN, cx)
     }
 }
 
@@ -343,6 +339,7 @@ mod tests {
         // Header: 8 + 15 + 8 + 1 border; rows 48 each to 260, plus 4+4 padding; plus the 1px borders.
         assert_eq!(CommandList::height(1), 2.0 + 32.0 + 48.0 + 8.0);
         assert_eq!(CommandList::height(10), 2.0 + 32.0 + 260.0 + 8.0);
-        assert_eq!(CommandList::height(0), 2.0 + 32.0 + 48.0);
+        // The no-match line: the scroll's 4px padding, 10 + a 30px button + 10.
+        assert_eq!(CommandList::height(0), 2.0 + 32.0 + 8.0 + 50.0);
     }
 }

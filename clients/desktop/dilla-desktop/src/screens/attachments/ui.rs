@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use dilla_client::Client;
 use dilla_client::features::attachments::{
-    ATTACHMENT_CAP, AttachmentKind, MAX_ATTACHMENTS, NewFile, Tray, attachment_kind, safe_name,
+    ATTACHMENT_CAP, AttachmentKind, NewFile, Tray, attachment_kind, safe_name,
 };
 use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
@@ -275,6 +275,15 @@ pub fn image_format(b: &[u8]) -> Option<ImageFormat> {
     } else {
         None
     }
+}
+
+/// A picture's pixel size from its header alone (no decode); `None` when the header does not say.
+pub(crate) fn dimensions(image: &Image) -> Option<(u32, u32)> {
+    image::ImageReader::new(std::io::Cursor::new(image.bytes()))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 /// A picture GPUI may decode: one of the four inline types whose headers say all its frames fit `DECODE_BUDGET` (a
@@ -538,8 +547,8 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
     }
     let tray = tray_of(&client, channel, cx);
     let owner = owner_of(&client);
-    let over = files.iter().any(|f| f.size > ATTACHMENT_CAP);
-    if over && tray.entries().len() + files.len() <= MAX_ATTACHMENTS {
+    let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
+    if super::raises_over_cap_toast(&sizes, tray.entries().len()) {
         dilla_desktop_ui::components::toast::show_toast_in(
             shown_in,
             t("shell.tray.overLimitToast"),
@@ -1266,6 +1275,20 @@ pub fn toggle_gifs(
         cx.refresh_windows();
         return;
     }
+    open_gifs(client, owner, channel, community, String::new(), cx);
+}
+
+/// Opens the GIF picker of `channel` in `community` with `query` in its search field and searches it (`/giphy`,
+/// CommandHost.tsx `openGif(query)`). Unlike [`toggle_gifs`] it never closes: one that is open is replaced, so the
+/// command always shows its search.
+pub fn open_gifs(
+    client: Rc<Client>,
+    owner: WindowId,
+    channel: ChannelId,
+    community: CommunityId,
+    query: String,
+    cx: &mut App,
+) {
     ui(cx).gif = Some(GifState {
         channel: Some(channel),
         community: Some(community),
@@ -1273,7 +1296,8 @@ pub fn toggle_gifs(
         owner: Some(owner),
         ..GifState::default()
     });
-    search_gifs(String::new(), false, cx);
+    // The field is made as the picker first draws, with this query in it (`gif_overlay`).
+    search_gifs(query, false, cx);
 }
 
 /// The DM GIF notice (DmGifPrivacy.test.tsx): it names the server a 1:1 DM's GIFs would go through; nothing is

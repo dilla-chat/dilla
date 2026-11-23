@@ -262,6 +262,14 @@ impl AppView {
         }
         #[cfg(feature = "automation")]
         if let Some(fixture) = this.launch.fixture.clone() {
+            // Task 36b: the web shoots its references with reduced motion, so a fixture draws still: no entrance, full bars.
+            cx.set_reduce_motion(true);
+            // Task 19b: a fixture draws at its own density (`"density"`), regular when it names none.
+            crate::density::set(
+                window,
+                crate::fixture::appearance::density_of(&fixture.spec),
+                cx,
+            );
             // The route decides the screen (`fixture::screen_of`): the fixture loader already refused any route the app
             // cannot draw, so this match is exhaustive over what it can.
             match fixture.screen {
@@ -270,16 +278,17 @@ impl AppView {
                         now: fixture.now,
                         utc: true,
                     };
+                    let state = Arc::new(fixture.state);
+                    // A fixture has no client and so no state loop: its dock and stage player read the feed seeded here.
+                    crate::screens::bot_admin::player::seed_fixture_feed(
+                        window.window_handle().window_id(),
+                        &state,
+                        clock,
+                        cx,
+                    );
                     let shell = cx.new(|cx| {
-                        ShellView::new(
-                            Arc::new(fixture.state),
-                            None,
-                            Some(channel),
-                            clock,
-                            window,
-                            cx,
-                        )
-                        .with_controls(crate::automation::fixture_window_controls())
+                        ShellView::new(state, None, Some(channel), clock, window, cx)
+                            .with_controls(crate::automation::fixture_window_controls())
                     });
                     this.attach_shell(&shell, window, cx);
                     this.focus_shell(&shell, window, cx);
@@ -311,6 +320,21 @@ impl AppView {
                         let mut shell =
                             ShellView::new(Arc::new(fixture.state), None, None, clock, window, cx);
                         shell.navigate(crate::router::Route::Dm(dm), cx);
+                        shell
+                    });
+                    this.attach_shell(&shell, window, cx);
+                    this.focus_shell(&shell, window, cx);
+                    this.screen = Screen::Shell(shell);
+                }
+                crate::fixture::FixtureScreen::ShellDms => {
+                    let clock = Clock::Fixed {
+                        now: fixture.now,
+                        utc: true,
+                    };
+                    let shell = cx.new(|cx| {
+                        let mut shell =
+                            ShellView::new(Arc::new(fixture.state), None, None, clock, window, cx);
+                        shell.navigate(crate::router::Route::Dms, cx);
                         shell
                     });
                     this.attach_shell(&shell, window, cx);
@@ -667,6 +691,8 @@ impl AppView {
                     this.focus_shell(&shell, window, cx);
                 }
                 if let ServerEvent::OpenUser(section) = e {
+                    // The user settings replace the server's: no entrance (SettingsFrame.css:6).
+                    dilla_desktop_ui::components::settings::frame::mark_handoff(window, cx);
                     this.open_route(&Route::Settings(Some(*section)), window, cx);
                 }
                 cx.notify();
@@ -721,6 +747,8 @@ impl AppView {
                 }
                 // A server section chosen in the nav opens that server's settings over the shell.
                 if matches!(route, Route::ServerSettings { .. }) {
+                    // The server settings replace the user's: no entrance (SettingsFrame.css:6).
+                    dilla_desktop_ui::components::settings::frame::mark_handoff(window, cx);
                     this.open_route(route, window, cx);
                 }
                 cx.notify();
@@ -1367,6 +1395,8 @@ impl AppView {
     fn show_shell(&mut self, client: Rc<Client>, window: &mut Window, cx: &mut Context<Self>) {
         let mut states = client.state();
         let first = states.borrow_and_update().clone();
+        crate::density::follow(window, &first, cx);
+        crate::motion::follow(&first, cx);
         let controls = self.launch.shipping;
         let shell = cx.new(|cx| {
             ShellView::new(first, Some(client.clone()), None, Clock::Local, window, cx)
@@ -1395,6 +1425,11 @@ impl AppView {
                     }
                     break;
                 }
+                // Task 19b: the window takes the density the account saved, at once (App.tsx:105).
+                let _ = this.update_in(cx, |_, window, cx| {
+                    crate::density::follow(window, &next, cx);
+                    crate::motion::follow(&next, cx);
+                });
                 // The settings host over the shell draws its sections with the same state (Task 1b).
                 let _ = this.update(cx, |this, cx| {
                     if let Screen::Settings { host, .. } = &this.screen {
@@ -1603,8 +1638,17 @@ pub fn card_window_height(card: f32) -> f32 {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Task 19b: this window's frame draws at its density's root line height.
+        dilla_desktop_ui::metrics::Density::enter(window, cx);
+        // Any screen but the shell draws no message log: its "started music" cards are off screen (Decision D10).
+        if !matches!(self.screen, Screen::Shell(_)) {
+            crate::screens::bot_admin::player::cards_off_screen(
+                window.window_handle().window_id(),
+                cx,
+            );
+        }
         let body = match &self.screen {
-            Screen::Starting => boot::loading(),
+            Screen::Starting => boot::loading(cx),
             Screen::Fatal(error, cfg) => {
                 let (this, cfg) = (cx.entity().downgrade(), cfg.clone());
                 let (retry, sign_in, confirming, reset) =
@@ -1636,9 +1680,10 @@ impl Render for AppView {
                             });
                         }),
                     },
+                    cx,
                 )
             }
-            Screen::Resetting => boot::resetting(),
+            Screen::Resetting => boot::resetting(cx),
             #[cfg(feature = "automation")]
             Screen::FixtureBoot(error) => {
                 let noop: boot::Press = Rc::new(|_, _| {});
@@ -1652,6 +1697,7 @@ impl Render for AppView {
                         on_confirming: Rc::new(|_, _, _| {}),
                         on_reset: noop,
                     },
+                    cx,
                 )
             }
             Screen::SignIn(view) => view.clone().into_any_element(),
@@ -1765,7 +1811,11 @@ impl Render for AppView {
                 // The quit question, when this window carries it (Package 7).
                 .children(crate::native::quit::overlay(window, cx))
                 // The window's live region (Package 11): what `a11y::announce` reads out.
-                .child(dilla_desktop_ui::a11y::announcer(window, cx)),
+                .child(dilla_desktop_ui::a11y::announcer(window, cx))
+                // The toast (Toast.tsx's `ToastHost`): last in the root, 24px over its bottom edge.
+                .child(dilla_desktop_ui::components::toast::ToastHost::new(
+                    "toast-host",
+                )),
         )
     }
 }

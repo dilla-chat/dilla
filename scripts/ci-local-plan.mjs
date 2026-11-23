@@ -319,7 +319,7 @@ export function classifyStep(step, job = {}) {
     return { kind: 'prereq', tool: 'llvm', version, reason: 'apt.llvm.org packages: the local LLVM of the same line stands in' };
   }
   if (APT_RUNS.some((re) => re.test(script))) return { kind: 'noop', reason: 'apt cache: no apt here' };
-  if (script === 'sccache --show-stats') return { kind: 'noop', reason: 'sccache: CI-only compiler cache' };
+  if (script === 'sccache --show-stats' || script === 'bash scripts/ci-sccache-start.sh') return { kind: 'noop', reason: 'sccache: CI-only compiler cache' };
   // The runner's AppArmor strips capabilities from unprivileged user namespaces; a local host either allows them,
   // and the Bot keeper's tests run, or they skip with that reason (internal/botsupervisor/keeper_linux_test.go).
   if (script === 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0') return { kind: 'noop', reason: 'runner AppArmor userns restriction: the keeper tests probe and skip locally' };

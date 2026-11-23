@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2220] = [
+pub static STRINGS: [(&str, &str); 2223] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -415,6 +415,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("botCommand.dialog.invalid", "Check the required fields and limits, then try again."),
     ("botCommand.rolepanel.emojiFor", "Reaction for {role}"),
     ("botCommand.rolepanel.invalid", "Choose a channel, at least one approved role, and a unique emoji for each role."),
+    ("botCommand.rolepanel.openChannel", "Open #{channel} once, then try again."),
     ("botCommand.rolepanel.publish", "Publish panel"),
     ("botCommand.rolepanel.roles", "Approved self-service roles"),
     ("botCommand.rolepanel.title", "Create a role panel"),
@@ -487,6 +488,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("callStage.share.native", "Source"),
     ("callStage.share.pickerCancel", "Cancel"),
     ("callStage.share.pickerEmpty", "Nothing to share here"),
+    ("callStage.share.pickerPermission", "Dilla needs Screen Recording to show your screens and windows. Allow it in System Settings → Privacy & Security → Screen Recording, then quit and reopen Dilla."),
     ("callStage.share.pickerScreens", "Screens"),
     ("callStage.share.pickerShare", "Share"),
     ("callStage.share.pickerWindows", "Windows"),
@@ -707,7 +709,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("factor.error.required", "Fill in this field."),
     ("factor.error.tooMany", "Too many attempts. Try again in {seconds} s."),
     ("factor.error.wrongAddress", "Passkeys do not work at this address of {instance}. Use an authenticator app, and tell the operator."),
-    ("factor.passkey.body", "Your browser asks where to keep the passkey: on this computer, your phone or a security key. Keep it on this computer only if no one else uses it."),
+    ("factor.passkey.body", "Your system asks where to keep the passkey: on this computer, your phone or a security key. Keep it on this computer only if no one else uses it."),
     ("factor.passkey.defaultName", "Passkey {n}"),
     ("factor.passkey.name", "Passkey name"),
     ("factor.passkey.nameHint", "So you can tell your passkeys apart later. Up to 64 characters."),
@@ -809,7 +811,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("factorSignin.passkey.title", "Use your passkey"),
     ("factorSignin.passkey.unknown", "{instance} does not know this passkey. It may belong to another account or another server."),
     ("factorSignin.passkey.unsupported", "This Dilla instance needs an update before the desktop app can use passkeys. Use a backup code, or sign in from your browser."),
-    ("factorSignin.passkey.unusable", "This browser cannot use passkeys here. Use a backup code instead, or sign in from a browser that can."),
+    ("factorSignin.passkey.unusable", "This device cannot use passkeys here. Use a backup code instead, or sign in from a device that can."),
     ("factorSignin.passkey.working", "Waiting for your passkey…"),
     ("factorSignin.useBackup", "Use a backup code"),
     ("factorSignin.usePasskey", "Sign in with a passkey"),
@@ -1698,6 +1700,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("shell.channels.empty", "no channels you can see"),
     ("shell.channels.label", "channels"),
     ("shell.channels.loading", "loading channels…"),
+    ("shell.channels.markRead", "Mark as read"),
     ("shell.channels.rowLabel", "{name}, unread {unread}, mentions {mentions}"),
     ("shell.channels.rowLabelMuted", "{name}, muted, mentions {mentions}"),
     ("shell.code.copied", "Copied"),
@@ -1793,7 +1796,7 @@ pub static STRINGS: [(&str, &str); 2220] = [
     ("shell.lightbox.previous", "Previous image"),
     ("shell.lightbox.save", "Save"),
     ("shell.log.earlier", "load earlier"),
-    ("shell.log.empty", "nothing here yet. Messages sent before this browser joined are not shown."),
+    ("shell.log.empty", "nothing here yet. Messages sent before this device joined are not shown."),
     ("shell.log.emptyMade", "nothing here yet."),
     ("shell.log.label", "messages in #{channel}"),
     ("shell.log.loading", "loading messages…"),
@@ -2303,6 +2306,14 @@ mod tests {
         // The web's t() replaces only a brace pair around letters: a brace around anything else is text.
         assert_eq!(tf("activity.newCount", &[("n", "3"), ("x", "y")]), "3 new");
         assert_eq!(tf("activity.mentionOne", &[]), "1 mention");
+    }
+
+    #[test]
+    fn the_empty_log_says_device() {
+        assert_eq!(
+            t("shell.log.empty"),
+            "nothing here yet. Messages sent before this device joined are not shown."
+        );
     }
 
     #[test]

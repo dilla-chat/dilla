@@ -13,7 +13,13 @@ use dilla_client::state::{
 use dilla_client::testing::spec::WorldSpec;
 
 /// Maps the facet into `state`.
-pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state: &mut AppState) {
+pub(super) fn apply(
+    world: &WorldSpec,
+    viewer: &str,
+    shift: u64,
+    ids: super::Ids<'_>,
+    state: &mut AppState,
+) {
     state.trust.loaded = true;
     if world.dms.is_empty() {
         return;
@@ -43,11 +49,13 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state:
         let Some(channel) = id("dm", &dm.id).map(ChannelId) else {
             continue;
         };
-        let members: Vec<UserId> = dm
+        // The instance lists a DM's members in id order (internal/api/dms.go sorts them), and the DMs newest first, then by channel id (the parity world makes them all in one second, so: by channel id).
+        let mut members: Vec<UserId> = dm
             .members
             .iter()
             .filter_map(|m| id("person", m).map(UserId))
             .collect();
+        members.sort_by_key(|u| u.0);
         list.push(DmSummary {
             id: channel,
             kind: if dm.members.len() > 2 {
@@ -72,7 +80,7 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state:
                 sender_device: None,
                 own: m.sender == viewer,
                 bot: world.people.iter().any(|p| p.id == m.sender && p.bot),
-                ts: m.ts,
+                ts: m.ts + shift,
                 body: m.body.clone(),
                 msg_id: id("message", &m.key).map(MessageId),
                 seq: None,
@@ -95,5 +103,6 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state:
             },
         );
     }
+    list.sort_by_key(|d| d.id.0);
     state.dms.list = Some(list);
 }

@@ -3,14 +3,15 @@
 //! channel last. The rows are Task 6's `Row`. One tab stop with roving focus over the rows and the category heads; a row
 //! has a context menu (right click, the Menu key, Shift+F10).
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
 use dilla_client::features::notify::{self, SettingsSource};
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId};
 use gpui::{
-    App, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    App, Bounds, ClickEvent, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, Point, SharedString, StatefulInteractiveElement, Styled, Window, div,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
@@ -119,7 +120,7 @@ pub const SERVER_MUTE: &str = "mute";
 pub const SERVER_MODE: &str = "mode:";
 
 /// Shell.tsx `NOTIFY_MODES`: a server's own notify mode, `default` deletes the stored value.
-const NOTIFY_MODES: [(&str, &str); 4] = [
+pub const NOTIFY_MODES: [(&str, &str); 4] = [
     ("default", "signalSettings.menu.notifyDefault"),
     ("all", "signalSettings.menu.notifyAll"),
     ("mentions", "signalSettings.menu.notifyMentions"),
@@ -143,6 +144,23 @@ pub fn server_menu_items(settings: &dyn SettingsSource, community: CommunityId) 
         MenuItem::new(format!("{SERVER_MODE}{value}"), t(key)).checked(mode == *value)
     }));
     items
+}
+
+/// A channel row menu's item id prefix (Shell.tsx `mode:`): `mode:<value>` per notify mode.
+pub const ROW_MODE: &str = "mode:";
+
+/// A channel's or DM's own notify mode in its row menu (Shell.tsx `rowMenu`): the four modes as single-choice items, the
+/// stored one checked, `default` when none is stored (the same key Settings writes).
+pub fn row_mode_items(settings: &dyn SettingsSource, channel: ChannelId) -> Vec<MenuItem> {
+    let mode = settings
+        .get(&notify::key_channel_mode(channel))
+        .unwrap_or_else(|| "default".to_owned());
+    NOTIFY_MODES
+        .iter()
+        .map(|(value, key)| {
+            MenuItem::new(format!("{ROW_MODE}{value}"), t(key)).checked(mode == *value)
+        })
+        .collect()
 }
 
 /// Whether `c` is the server's AFK channel (the built-in voice channel; the slice's state does not mark it).
@@ -261,6 +279,12 @@ pub fn row_badge_keys(state: &AppState, c: &Channel) -> Vec<&'static str> {
         keys.push("slow.badge");
     }
     keys
+}
+
+/// Where a row's menu opens from the keyboard (Shift+F10, the menu key): at the row's left edge plus 8px and its bottom, as
+/// the web's does (measured: the row's box at x 64, y 126.25, 28px tall, its menu at x 72, y 154.25).
+pub fn keyboard_menu_at(row: Bounds<Pixels>) -> Point<Pixels> {
+    gpui::point(row.origin.x + Pixels::from(8.0), row.bottom())
 }
 
 /// The element id of a channel's row: `channel-<name>`.
@@ -391,8 +415,15 @@ fn row(
     let focus = roves.handles[index].clone().tab_stop(index == stop);
     let (on_menu, on_menu_key) = (handlers.on_menu.clone(), handlers.on_menu.clone());
     let roves = roves.clone();
+    // The row's painted bounds, for the menu its keyboard opens (the pointer may be anywhere).
+    let laid_out: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+    let record = laid_out.clone();
     let wrapper = div()
         .id(SharedString::from(format!("channel-focus-{}", c.id.hex())))
+        .debug_selector({
+            let selector = format!("channel-row-{}", c.name);
+            move || selector.clone()
+        })
         .a11y(
             Role::Link,
             row_label(&named, badge.0, badge.1, muted, voice.1),
@@ -413,11 +444,24 @@ fn row(
         .on_key_down(move |event, window, cx| {
             match roves.key(index, event, window, cx) {
                 Key::Press => on_select(id, window, cx),
-                // The keyboard asks for the menu where the pointer last was (the row's own box is not known here).
-                Key::Menu => on_menu_key(id, window.mouse_position(), window, cx),
+                // The keyboard opens the menu under the row (ChannelList.tsx anchors it to the row's box), else where the
+                // pointer last was.
+                Key::Menu => {
+                    let at = laid_out
+                        .get()
+                        .map_or_else(|| window.mouse_position(), keyboard_menu_at);
+                    on_menu_key(id, at, window, cx)
+                }
                 Key::Moved | Key::None => {}
             }
         })
+        .child(
+            gpui::canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+        )
         .child(row);
     #[cfg(feature = "automation")]
     let wrapper = wrapper.child(crate::automation::focus_probe(
@@ -496,6 +540,7 @@ fn category(
     stop: usize,
     can_add: bool,
     handlers: &ListHandlers,
+    lh: f32,
 ) -> gpui::AnyElement {
     let id = c.id;
     let (on_toggle, on_key_toggle, on_add) = (
@@ -541,7 +586,7 @@ fn category(
             line(
                 c.name.to_uppercase(),
                 text::MICRO,
-                line_height(text::MICRO, 1.5),
+                line_height(text::MICRO, lh),
                 color::FG_3,
             )
             .weight(font::WEIGHT_LABEL)
@@ -624,6 +669,9 @@ pub fn render(
         .community
         .and_then(|id| state.communities.iter().find(|c| c.id == id));
     let title = community.map_or_else(String::new, |c| c.name.clone());
+    // The stats and the category labels set no line height of their own (ChannelList.css; the title keeps its 1.5): the
+    // root's `--line-height`, the window's density.
+    let lh = dilla_desktop_ui::metrics::Density::of(window, cx).line_height();
     let on_add = handlers.on_add.clone();
     let on_server_settings = handlers.on_server_settings.clone();
     let on_server_menu_open = handlers.on_server_menu_open.clone();
@@ -713,7 +761,7 @@ pub fn render(
                     }
                 }),
         ));
-    let meta = |s: String| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
+    let meta = |s: String| line(s, text::META, line_height(text::META, lh), color::FG_3);
     let stats = div()
         .flex_none()
         .flex()
@@ -768,6 +816,7 @@ pub fn render(
                 stop,
                 model.can_add_in_category,
                 handlers,
+                lh,
             ),
             Item::Channel(ch) => row(
                 ch,
@@ -816,6 +865,17 @@ mod tests {
     use dilla_client::state::{BadgeState, ChannelGroupState, Community};
 
     use super::*;
+
+    /// The web's keyboard anchor, measured in its row-menu shot: the row at (64, 126.25) 227x28, the menu at (72, 154.25).
+    #[test]
+    fn a_keyboard_opened_row_menu_sits_under_the_row_8px_in() {
+        let row = Bounds {
+            origin: gpui::point(Pixels::from(64.0), Pixels::from(126.25)),
+            size: gpui::size(Pixels::from(227.0), Pixels::from(28.0)),
+        };
+        let at = keyboard_menu_at(row);
+        assert_eq!((f32::from(at.x), f32::from(at.y)), (72.0, 154.25));
+    }
 
     fn ch(n: u8, kind: u8, name: &str, parent: Option<u8>, position: u32) -> Channel {
         Channel {

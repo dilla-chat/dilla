@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use dilla_client::calls::CallPhase;
-use dilla_client::state::voice::{OwnCall, VoiceParticipant, flags};
+use dilla_client::state::voice::{OwnCall, SfuRemote, VoiceParticipant, flags};
 use dilla_client::state::{
     AppState, Channel, ChannelGroupState, ChannelId, CommunityId, DeviceId, Member, UserId,
 };
@@ -76,6 +76,16 @@ fn state(n: u8) -> Arc<AppState> {
         call_id: Some(VOICE.0),
         ..OwnCall::default()
     };
+    // Everyone is in the call group, in the SFU room and heard, and person 1 shares a screen: a stage tile is a device of
+    // the call (VoiceView.tsx `callTiles`).
+    s.voice.call.roster = (1..n)
+        .map(|i| (UserId([i; 16]), DeviceId([100 + i; 16]), u16::from(i)))
+        .collect();
+    s.voice.sfu_remotes = (1..n)
+        .map(|i| SfuRemote::Device(DeviceId([100 + i; 16])))
+        .collect();
+    s.voice.verified_peers = (1..n).map(|i| DeviceId([100 + i; 16])).collect();
+    s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
 
@@ -125,22 +135,19 @@ fn stage_tile_per_stream_focuses_share(cx: &mut TestAppContext) {
     let cx = host(cx, state(3));
     let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
     assert_eq!(tiles.len(), 4, "three people and one screen");
-    assert!(tiles[3].screen);
+    assert!(tiles[0].screen, "the shared screen leads (callTiles)");
     let focus = stage_focus(cx);
     cx.update(|window, cx| focus.focus(window, cx));
-    for _ in 0..3 {
-        press(cx, "right");
-    }
-    assert_eq!(area(cx, |ui| ui.selected), 3);
+    assert_eq!(area(cx, |ui| ui.selected), 0);
     press(cx, "enter");
     let focused = area(cx, |ui| ui.focused.clone());
     assert_eq!(
         focused,
-        Some(tiles[3].clone()),
+        Some(tiles[0].clone()),
         "the screen share is focused"
     );
-    press(cx, "left");
-    assert_eq!(area(cx, |ui| ui.selected), 2);
+    press(cx, "right");
+    assert_eq!(area(cx, |ui| ui.selected), 1);
     press(cx, "escape");
     assert_eq!(area(cx, |ui| ui.focused.clone()), None);
 }
@@ -157,7 +164,11 @@ fn the_tile_menu_opens_with_the_person_s_items(cx: &mut TestAppContext) {
     s.channels.push(other);
     let cx = host(cx, Arc::new(s));
     let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
-    let bounds = area(cx, |ui| ui.menu.bounds.borrow().get(&tiles[1]).copied())
+    let person1 = tiles
+        .iter()
+        .find(|k| !k.screen && k.device == DeviceId([101; 16]))
+        .expect("person 1's tile");
+    let bounds = area(cx, |ui| ui.menu.bounds.borrow().get(person1).copied())
         .expect("person 1's tile was laid out");
     cx.simulate_event(gpui::MouseDownEvent {
         button: gpui::MouseButton::Right,
@@ -187,7 +198,13 @@ fn the_tile_menu_opens_with_the_person_s_items(cx: &mut TestAppContext) {
     let focus = stage_focus(cx);
     cx.update(|window, cx| focus.focus(window, cx));
     cx.run_until_parked();
-    assert_eq!(area(cx, |ui| ui.selected), 0);
+    assert_eq!(area(cx, |ui| ui.selected), 0, "the shared screen leads");
+    press(cx, "right");
+    assert_eq!(
+        tiles[area(cx, |ui| ui.selected)].device,
+        DeviceId([100; 16]),
+        "the next tile is this device's own"
+    );
     press(cx, "shift-f10");
     assert!(cx.update(|window, cx| voice::menu::is_open(voice::wid(window), cx)));
     let upstairs: &'static str = format!("menu-item-move:{}", ChannelId([10; 16]).hex()).leak();
@@ -595,6 +612,11 @@ fn dm_state() -> Arc<AppState> {
         call_id: Some(DM.0),
         ..OwnCall::default()
     };
+    // Bob is in the call group, the room and heard, with his screen (a stage tile is a device of the call).
+    s.voice.call.roster = vec![(UserId([1; 16]), DeviceId([101; 16]), 1)];
+    s.voice.sfu_remotes = vec![SfuRemote::Device(DeviceId([101; 16]))];
+    s.voice.verified_peers = [DeviceId([101; 16])].into_iter().collect();
+    s.voice.screen_streams = [DeviceId([101; 16])].into_iter().collect();
     Arc::new(s)
 }
 
@@ -1223,55 +1245,9 @@ struct CallWorld {
 
 const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 
-/// The process's one media slot. `dilla_media`'s frame hook routes one live call per process (N2): a second window's
-/// media in the same process fails with `E_CALL_BUSY`, and the desktop then leaves that call (its media did not
-/// start). The real-instance tests here run on parallel threads of one test binary, so a test whose media lost the
-/// slot to another test's left its own call; alone in it, the leave ended the call and closed its group, and bob's join
-/// built on that group was refused (`E_COMMIT_INVALID`: the delivery service refuses a commit to a closed group). Each
-/// real-instance test holds the slot for its whole run, and first waits for an earlier test's media to be gone (a
-/// window's media session can outlive its test's world).
-static MEDIA_SLOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// How long a test waits for an earlier test's call media to end.
-const MEDIA_FREE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// A held [`MEDIA_SLOT`].
-struct MediaSlot {
-    _guard: std::sync::MutexGuard<'static, ()>,
-}
-
-/// Takes the process's media slot ([`MEDIA_SLOT`]) once no call media is live in this process.
-fn media_slot() -> MediaSlot {
-    let guard = MEDIA_SLOT.lock().unwrap_or_else(|p| p.into_inner());
-    assert!(
-        media_free_within(MEDIA_FREE_WAIT),
-        "an earlier test's call media is still live in this process after {MEDIA_FREE_WAIT:?}"
-    );
-    MediaSlot { _guard: guard }
-}
-
-/// True once no call is current in this process's media router, polled until `wait` has passed. The probe is the
-/// router's own claim, released at once: only a holder of [`MEDIA_SLOT`] probes, and every test of this binary that
-/// starts call media holds it.
-fn media_free_within(wait: std::time::Duration) -> bool {
-    let router = dilla_media::transform::Router::get().expect("the dilla frame hook installs");
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        let probe = dilla_media::transform::CallMedia::new();
-        match router.begin(probe.clone()) {
-            Ok(()) => {
-                router.end(&probe);
-                return true;
-            }
-            Err(dilla_media::MediaError::Busy) => {}
-            Err(e) => panic!("the media router refused the probe: {e}"),
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
+#[path = "support/media.rs"]
+mod media_slot;
+use media_slot::{MediaSlot, media_free_within, media_slot};
 
 /// A call's media made current in the process's router for a test, ended when it drops (review M M6: an assert that
 /// fails while it is live would otherwise leave it current for every later test of the binary).
@@ -1578,6 +1554,57 @@ fn closing_the_window_leaves_its_call(cx: &mut TestAppContext) {
     );
     assert!(session.upgrade().is_none(), "the media session is dropped");
     assert!(cx.update(|cx: &mut App| voice::ui_of(wa, cx).is_none()));
+}
+
+/// A call left from the dock releases its media in this process: its room is closed, so its PeerConnection and every
+/// transceiver's frame transformer go with it (`dilla_media::ffi::live_transformers`). Before livekit 0.11 a closed
+/// room's remote participants kept the engine and its PeerConnection alive for the life of the process.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn leaving_from_the_dock_releases_the_call_media(cx: &mut TestAppContext) {
+    let w = call_world("t-dock-leave");
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    // No other call: the handover starts the join in its first turn.
+    cx.run_until_parked();
+    let s = w.rt.block_on(until(
+        &w.alice,
+        "alice's media is up (its ping is read)",
+        |s| s.voice.call.phase == CallPhase::In && s.voice.call.ping_ms.is_some(),
+    ));
+    assert!(
+        dilla_media::ffi::live_transformers() > 0,
+        "the call's PeerConnection holds its transformers"
+    );
+    let vcx = &mut VisualTestContext::from_window(a.into(), cx);
+    vcx.update(|window, cx| {
+        voice::sync(wa, s, Some(&w.alice), cx);
+        window.refresh();
+    });
+    vcx.run_until_parked();
+    let leave = vcx
+        .debug_bounds("voice-leave")
+        .expect("the dock's leave")
+        .center();
+    vcx.simulate_click(leave, gpui::Modifiers::none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        vcx.run_until_parked();
+        let live = dilla_media::ffi::live_transformers();
+        if live == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{live} frame transformers still alive 5 s after the dock's leave"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    w.rt.block_on(until(&w.alice, "alice's call is left", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    }));
 }
 
 /// Review N3: one call per device. Alice's window is in the call; a join in bob's window (another instance's) leaves
@@ -1947,6 +1974,61 @@ fn a_join_error_after_the_handover_is_shown(cx: &mut TestAppContext) {
     assert!(!did.undone.get());
 }
 
+/// The router-busy flake of `a_join_in_another_window_leaves_this_window_s_call`: the other window's leave answered,
+/// but its call's media (here a join still connecting) holds the process's media router until its own session's
+/// runtime drops it. The join waits for that media to end; started before, its media failed with `E_CALL_BUSY`.
+#[gpui::test]
+fn the_handover_waits_for_the_left_call_s_media_to_end(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (leave_tx, leave_rx) = answer_pair();
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    let live = Rc::new(std::cell::Cell::new(true));
+    let media = live.clone();
+    cx.update(|cx| {
+        voice::handover_after_media(id, vec![leave_rx], move || media.get(), start, undo, cx)
+    });
+    leave_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "the leave answered, but the left call's media is still live: no join yet"
+    );
+    live.set(false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get(), "the join starts once that media ended");
+    assert_eq!(toast_in(cx, id), None);
+}
+
+/// A left call's media that never ends holds the join for [`voice::HANDOVER_WAIT`] only, as a leave that never
+/// answers does: the join is dropped and the window says it could not join.
+#[gpui::test]
+fn media_that_never_ends_drops_the_join_after_the_handover_wait(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| voice::handover_after_media(id, Vec::new(), || true, start, undo, cx));
+    cx.run_until_parked();
+    cx.executor()
+        .advance_clock(voice::HANDOVER_WAIT + std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "no join while the other call's media is live"
+    );
+    assert_eq!(
+        toast_in(cx, id).as_deref(),
+        Some(dilla_desktop::strings::t("voice.failed")),
+        "the window says the join failed"
+    );
+}
+
 /// Task 28 item 2: a window that closes while another window's leave is pending starts no join.
 #[gpui::test]
 fn a_window_closed_before_the_handover_starts_no_join(cx: &mut TestAppContext) {
@@ -2233,14 +2315,19 @@ fn the_tile_menu_sets_volume_and_mute_for_me(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice is in the call", |s| {
         s.voice.call.phase == CallPhase::In
     }));
-    // Bob joins with his media (a `call-peer`): a device is in the call's roster once its media is in the room.
+    // Bob joins with his media (a `call-peer`). His tile follows the media session (the call group's roster, the SFU
+    // room), not the instance's voice list, which may list him before alice's roster poll has read his join commit: the
+    // wait is for his tile, and for his voice-list row the gains check below reads.
     let bob_media = bob_with_media(&w);
     let bob = w.bob.state().borrow().account.user_id.unwrap();
-    w.rt.block_on(until(&w.alice, "alice sees bob in the call", |s| {
-        s.voice
-            .participants(w.voice)
+    w.rt.block_on(until(&w.alice, "alice has bob's tile", |s| {
+        voice::tiles(s, w.voice)
             .iter()
-            .any(|p| p.user_id == bob)
+            .any(|k| k.user == bob && !k.screen)
+            && s.voice
+                .participants(w.voice)
+                .iter()
+                .any(|p| p.user_id == bob)
     }));
     resync(&mut vcx, &w.alice);
     let key = vcx.update(|window, cx| {
@@ -2561,7 +2648,254 @@ macro_rules! parity {
 parity! {
     parity_voice_stage => "stage",
     parity_voice_stage_b => "stage-b",
+    parity_voice_stage_group => "stage-group",
+    parity_voice_stage_group_b => "stage-group-b",
     parity_voice_dm_call => "dm-call",
     parity_voice_stage_focused => "stage-focused",
     parity_voice_person_menu => "person-menu",
+}
+
+/// VoiceChannelRow.css: a voice row's `margin: var(--list-gap) 0` stays inside its `flow-root` item, so the people list
+/// starts `--list-gap` (1px) below the row, as the web's sidebar draws it (the stage-group references hold the same
+/// rule); the list takes that pixel back at its end, so the next row sits where it did.
+#[gpui::test]
+fn the_people_list_starts_a_list_gap_under_the_row(cx: &mut TestAppContext) {
+    struct Item;
+    impl Render for Item {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .child(div().h(gpui::px(28.)).debug_selector(|| "row".to_owned()))
+                .children(voice::channel_people(&channel(), window, cx))
+                .child(div().h(gpui::px(28.)).debug_selector(|| "next".to_owned()))
+        }
+    }
+    cx.update(dilla_desktop::install);
+    let (_, cx) = cx.add_window_view(|_, _| Item);
+    cx.update(|window, cx| {
+        voice::sync(voice::wid(window), state(3), None, cx);
+        window.refresh();
+    });
+    cx.run_until_parked();
+    let row = cx.debug_bounds("row").expect("the row");
+    let people = cx.debug_bounds("voice-people").expect("the people");
+    let next = cx.debug_bounds("next").expect("the next row");
+    assert_eq!(
+        f32::from(people.origin.y - row.bottom()),
+        1.0,
+        "the people start one list gap under the row"
+    );
+    assert_eq!(
+        f32::from(next.origin.y - people.bottom()),
+        -1.0,
+        "the list takes the pixel back at its end (the item's own 1px bottom padding then restores it)"
+    );
+}
+
+// ---- parity: the group call's GPUI-only golden shots (parity/references/linux/native/) ---------------------------------
+//
+// Speaking rings, camera tiles and shared-screen pixels need media, which a web reference cannot hold still (the parity
+// world seeds the others of a call as `voice_state` frames only). These references are the app's own frame of
+// `voice/stage-group` with `voice-sim` giving a person media, looked at by eye against the Signal design's CallTile
+// (`packages/ui/src/CallTile` and the VoiceStage stories) when they were made. Remake them with `DILLA_PARITY_BLESS=1`
+// after a deliberate change, and look at them again (parity/references/linux/README.md, "GPUI-only references").
+
+/// Everybody else of the group call has media (the tiles the web shows once their streams connect).
+const ALL_MEDIA: &[&str] = &["media mira", "media bjorn", "media lin", "media sam"];
+
+fn shoot_group(golden: &str, sims: &[&str]) {
+    shoot_fixture("stage-group", golden, sims)
+}
+
+fn shoot_fixture(fixture: &str, golden: &str, sims: &[&str]) {
+    dilla_parity::screen::assert_native_screen(&parity_fixture(fixture), golden, |driver| {
+        for sim in sims {
+            let reply = driver.request(&format!("voice-sim {sim}"));
+            assert_eq!(reply, "ok", "voice-sim {sim}: {reply}");
+        }
+    })
+    .unwrap_or_else(|e| panic!("native/{golden} differs from its golden shot: {e}"));
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_speaking() {
+    // Mira is heard speaking; Björn's and Lin's tiles keep their muted and deafened marks.
+    shoot_group("voice-speaking", &[ALL_MEDIA, &["speaking mira"]].concat());
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_camera_tile() {
+    shoot_group(
+        "voice-camera-tile",
+        &[ALL_MEDIA, &["camera mira test-pattern"]].concat(),
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_screen_tile() {
+    shoot_group(
+        "voice-screen-tile",
+        &[ALL_MEDIA, &["screen sam test-pattern"]].concat(),
+    );
+}
+
+/// RV-3 (CallStage stories `Paused`): the call is paused by Mira's changed identity (`RefusedEpoch::Pause`). The stage
+/// says `voice.paused` with the comparison in CallStage's pause notice (the pause glyph, the `--warn` edge), and no tile
+/// shows media: Sam's screen tile and Mira's camera frame are gone and nobody speaks, while every person tile stays.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_stage_paused() {
+    shoot_group(
+        "voice-stage-paused",
+        &[
+            ALL_MEDIA,
+            &[
+                "camera mira test-pattern",
+                "screen sam test-pattern",
+                "speaking mira",
+                "paused mira",
+            ],
+        ]
+        .concat(),
+    );
+}
+
+/// Eight people with media at 1440x900 (`voice/stage-group-b`): the grid wraps. The web has no reference of it (the parity
+/// world holds no media), so the wrapped grid is checked here, by eye against CallStage's grid.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_stage_wrap() {
+    shoot_fixture(
+        "stage-group-b",
+        "voice-stage-wrap",
+        &[
+            "media mira",
+            "media bjorn",
+            "media lin",
+            "media sam",
+            "media eva",
+            "media ola",
+            "media kai",
+            "speaking eva",
+        ],
+    );
+}
+
+/// CallTile.tsx `voiceStateWords`: a tile whose device is not heard says so beside its name, "connecting" (a roster member
+/// not in the room yet), "not heard yet" (in the room and the roster, no frame verified) and "unverified stream" (in the
+/// room, not in the roster); a muted person who is not heard shows the muted glyph alone (`silentByChoice`); an `ok` tile
+/// says nothing. The words are session.ts `tiles()`' states.
+#[gpui::test]
+fn a_tile_that_is_not_heard_says_why(cx: &mut TestAppContext) {
+    let mut s = (*state(5)).clone();
+    // Person 1: ok. 2: connecting (roster only). 3: not heard (room and roster). 4: unverified (room only).
+    let dev = |i: u8| DeviceId([100 + i; 16]);
+    s.voice.sfu_remotes = [1, 3, 4].map(|i| SfuRemote::Device(dev(i))).to_vec();
+    s.voice.verified_peers = [1].map(dev).into_iter().collect();
+    s.voice.call.roster = [1, 2, 3]
+        .map(|i| (UserId([i; 16]), dev(i), u16::from(i)))
+        .to_vec();
+    let cx = host(cx, Arc::new(s));
+    let word = |cx: &mut VisualTestContext, i: u8| {
+        cx.debug_bounds(selector(format!("voice-tile-state-{}", dev(i).hex())))
+            .is_some()
+    };
+    assert!(!word(cx, 1), "an ok tile says nothing");
+    assert!(word(cx, 2), "connecting");
+    assert!(word(cx, 3), "not heard yet");
+    assert!(word(cx, 4), "unverified stream");
+}
+
+/// `silentByChoice`: a person who says they are muted and sends no camera or screen is not expected to send a frame, so
+/// their not-heard tile shows the muted glyph alone; an unverified stream keeps its word whoever the person is; a stranger's
+/// stream (an identity that is no device id) has a tile with the unverified word and no name.
+#[gpui::test]
+fn a_muted_person_who_is_not_heard_says_nothing_and_a_stranger_is_unverified(
+    cx: &mut TestAppContext,
+) {
+    let mut s = (*state(4)).clone();
+    let dev = |i: u8| DeviceId([100 + i; 16]);
+    s.voice.place(
+        VOICE,
+        Some(VOICE.0),
+        (0..4u8)
+            .map(|i| VoiceParticipant {
+                user_id: UserId([i; 16]),
+                device_id: dev(i),
+                flags: flags::IN_CALL | if i == 2 { flags::SELF_MUTE } else { 0 },
+                own: i == 0,
+            })
+            .collect(),
+    );
+    // 1: not heard, unmuted. 2: not heard, muted. 3: in the room only (unverified), unmuted.
+    s.voice.sfu_remotes = [1, 2, 3].map(|i| SfuRemote::Device(dev(i))).to_vec();
+    s.voice
+        .sfu_remotes
+        .push(SfuRemote::Other("guest-7".to_owned()));
+    s.voice.verified_peers.clear();
+    s.voice.screen_streams.clear();
+    s.voice.call.roster = [1, 2]
+        .map(|i| (UserId([i; 16]), dev(i), u16::from(i)))
+        .to_vec();
+    let stranger = SfuRemote::Other("guest-7".to_owned()).device();
+    let cx = host(cx, Arc::new(s));
+    let word = |cx: &mut VisualTestContext, d: DeviceId| {
+        cx.debug_bounds(selector(format!("voice-tile-state-{}", d.hex())))
+            .is_some()
+    };
+    assert!(word(cx, dev(1)), "not heard yet");
+    assert!(!word(cx, dev(2)), "muted and not heard: the glyph alone");
+    assert!(word(cx, dev(3)), "unverified stream");
+    assert!(word(cx, stranger), "a stranger's stream is unverified too");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_tile_states() {
+    // Mira is not heard yet (in the room and the roster), Björn (muted) is connecting, Lin (deafened) is not heard but
+    // says it with the glyph alone, Sam's stream is unverified; Ada's own tile is ok.
+    shoot_group(
+        "voice-tile-states",
+        &[
+            "not-heard mira",
+            "connecting bjorn",
+            "not-heard lin",
+            "unverified sam",
+        ],
+    );
+}
+
+/// Task 36 (Decision D9): the now-playing bar on top of the voice stage (`voice/music-stage-bar`: Ada in the Lounge with Glenn,
+/// the pinned Bot, whose player holds a playing track and two queued). The web's frame of it needs a Bot playing real audio
+/// in a real call, so the bar is checked here, by eye against NowPlaying.css `.d-np--stage`: 48px, the Bot's square, the
+/// bars, the title and meta over the 3px bar, the three controls and "2 up next", first in the body above the tiles.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_music_stage_bar() {
+    shoot_fixture("music-stage-bar", "music-stage-bar", &[]);
 }

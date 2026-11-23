@@ -15,9 +15,12 @@ use gpui::{
 use crate::components::icon_button::{IconButton, IconButtonSize};
 use crate::components::row::{Person, Row, RowKind};
 use crate::icon_names::IconName;
-use crate::metrics::LABEL_TRACKING_WIDE;
+use crate::metrics::{Density, LABEL_TRACKING_WIDE};
 use crate::text::{Face, line, line_height};
 use crate::tokens::{color, font, layout, text};
+
+/// `.d-channel-list__empty`: `padding: 1rem var(--row-pad-x)`.
+const EMPTY_PAD_Y: f32 = 16.0;
 
 /// One DM as the list draws it.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,6 +50,7 @@ pub struct DmList {
     items: Vec<DmItem>,
     on_select: Select,
     on_new: Click,
+    wrap_new: Option<fn(gpui::AnyElement) -> gpui::AnyElement>,
     on_menu: Option<Menu>,
     menu: Option<gpui::AnyElement>,
 }
@@ -72,6 +76,7 @@ impl DmList {
             items,
             on_select: Rc::new(|_, _, _| {}),
             on_new: Rc::new(|_, _, _| {}),
+            wrap_new: None,
             on_menu: None,
             menu: None,
         }
@@ -98,6 +103,12 @@ impl DmList {
         self
     }
 
+    /// Wraps the head's "message someone" button (the screen's automation probe).
+    pub fn wrap_new(mut self, wrap: fn(gpui::AnyElement) -> gpui::AnyElement) -> Self {
+        self.wrap_new = Some(wrap);
+        self
+    }
+
     /// The head's "message someone" button.
     pub fn on_new(
         mut self,
@@ -108,8 +119,13 @@ impl DmList {
     }
 }
 
+/// The rows' step: a person row (42px) carries its own 1px margins (`.d-chrow[data-person] { margin: 1px 0 }` in a flow-root
+/// `li`), and the cells add no gap of their own, so the first row starts 1px under the section label and rows step 44px.
+pub const ROW_PITCH: f32 = crate::components::row::PERSON_HEIGHT + 2.0;
+
 impl RenderOnce for DmList {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let density = Density::of(window, cx);
         let on_new = self.on_new.clone();
         let head = div()
             .flex_none()
@@ -132,13 +148,25 @@ impl RenderOnce for DmList {
                     .clip(),
                 ),
             )
-            .child(
-                IconButton::new("dm-new", IconName::SquarePen, self.new_label)
+            .child({
+                let new = IconButton::new("dm-new", IconName::SquarePen, self.new_label)
                     .size(IconButtonSize::S28)
-                    .on_click(move |e, w, cx| on_new(e, w, cx)),
-            )
+                    .on_click(move |e, w, cx| on_new(e, w, cx))
+                    .into_any_element();
+                match self.wrap_new {
+                    Some(wrap) => wrap(new),
+                    None => new,
+                }
+            })
             .children(self.menu);
-        let meta = |s: SharedString| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
+        let meta = |s: SharedString| {
+            line(
+                s,
+                text::META,
+                crate::text::root_line_height(text::META),
+                color::FG_3,
+            )
+        };
         let mut stats = div()
             .flex_none()
             .flex()
@@ -173,33 +201,41 @@ impl RenderOnce for DmList {
                 line(
                     self.section.to_uppercase(),
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::FG_3,
                 )
                 .weight(font::WEIGHT_LABEL)
                 .tracking(LABEL_TRACKING_WIDE),
             );
-        let rows: Vec<_> = if self.items.is_empty() {
-            vec![
-                div()
-                    .px(px(8.0))
-                    .child(line(
-                        self.empty,
-                        text::SM,
-                        line_height(text::SM, 1.5),
-                        color::FG_3,
-                    ))
-                    .into_any_element(),
-            ]
-        } else {
+        // ChannelList.tsx: with no DMs the list's body is `.d-channel-list__empty` alone (no section label), `1rem
+        // var(--row-pad-x)` around a line in the root's `--line-height`, both with the window's density.
+        if self.items.is_empty() {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(head)
+                .child(stats)
+                .child(
+                    div()
+                        .id("dm-list")
+                        .py(px(EMPTY_PAD_Y))
+                        .px(density.row_pad_x())
+                        .child(line(
+                            self.empty,
+                            text::SM,
+                            line_height(text::SM, density.line_height()),
+                            color::FG_3,
+                        )),
+                );
+        }
+        let rows: Vec<_> = {
             self.items
                 .into_iter()
                 .enumerate()
                 .map(|(i, item)| {
                     let select = self.on_select.clone();
-                    let mut cell = div()
-                        .debug_selector(move || format!("dm-row-{i}"))
-                        .mt(layout::LIST_GAP);
+                    let mut cell = div().debug_selector(move || format!("dm-row-{i}"));
                     if let Some(menu) = self.on_menu.clone() {
                         cell = cell.on_mouse_down(
                             MouseButton::Right,
@@ -237,5 +273,15 @@ impl RenderOnce for DmList {
                     .flex_col()
                     .children(rows),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn person_rows_step_by_their_own_44px() {
+        assert_eq!(ROW_PITCH, 44.0);
     }
 }

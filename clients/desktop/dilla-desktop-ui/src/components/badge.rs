@@ -1,8 +1,10 @@
 //! `Badge` (packages/ui/src/Pill): the unread and mention count pill.
 
+use std::time::Duration;
+
 use gpui::{
     App, BoxShadow, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, point, px,
+    SharedString, Stateful, Styled, Window, div, point, px,
 };
 
 use crate::text::line;
@@ -16,11 +18,16 @@ pub enum BadgeKind {
 
 /// `box-shadow: 0 0 0 2.5px var(--bg-2)`: the mention pill's ring, which sets it off from what it sits on.
 pub fn mention_ring() -> Vec<BoxShadow> {
+    ring(1.0)
+}
+
+/// The mention pill's ring at `scale`.
+fn ring(scale: f32) -> Vec<BoxShadow> {
     vec![BoxShadow {
         color: color::BG_2,
         offset: point(px(0.0), px(0.0)),
         blur_radius: px(0.0),
-        spread_radius: px(2.5),
+        spread_radius: px(2.5 * scale),
         inset: false,
     }]
 }
@@ -34,6 +41,13 @@ pub fn capped(count: u32) -> String {
     }
 }
 
+/// How a badge pops in (`d-pop`): over `run`, on `curve`.
+#[derive(Clone, Copy, Debug)]
+struct Pop {
+    run: Duration,
+    curve: [f32; 4],
+}
+
 #[derive(IntoElement)]
 pub struct Badge {
     id: ElementId,
@@ -41,6 +55,7 @@ pub struct Badge {
     count: u32,
     text: Option<SharedString>,
     in_row: bool,
+    pop: Option<Pop>,
 }
 
 impl Badge {
@@ -51,6 +66,7 @@ impl Badge {
             count,
             text: None,
             in_row: false,
+            pop: None,
         }
     }
 
@@ -65,40 +81,81 @@ impl Badge {
         self.in_row = true;
         self
     }
+
+    /// The badge pops in with `d-pop` over `run` on `curve` when it appears (ChannelRow.css:35, CommunityRail.css:25), once
+    /// per mount of its id.
+    pub fn pop(mut self, run: Duration, curve: [f32; 4]) -> Self {
+        self.pop = Some(Pop { run, curve });
+        self
+    }
+}
+
+/// The pill at `scale`: 1.0 is its size, and every length in it and its text are multiplied by the scale, which is how a CSS
+/// `scale()` of the whole pill, ring included, draws.
+fn pill(
+    id: ElementId,
+    kind: BadgeKind,
+    label: SharedString,
+    in_row: bool,
+    scale: f32,
+) -> Stateful<gpui::Div> {
+    let (bg, fg) = match kind {
+        BadgeKind::Unread => (color::ACCENT, color::ACCENT_INK),
+        BadgeKind::Mention => (color::MENTION, color::MENTION_INK),
+    };
+    let pill = div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .h(px(16.0 * scale))
+        .bg(bg);
+    let size = if in_row { text::MICRO } else { text::CHIP };
+    let pill = pill.child(
+        line(
+            label,
+            size * scale,
+            crate::text::root_line_height(size) * scale,
+            fg,
+        )
+        .weight(font::WEIGHT_DISPLAY),
+    );
+    if in_row {
+        pill.px(px(5.0 * scale)).rounded(radius::SM * scale)
+    } else {
+        let pill = pill
+            .min_w(px(16.0 * scale))
+            .px(px(4.0 * scale))
+            .rounded(radius::PILL * scale);
+        if kind == BadgeKind::Mention {
+            pill.shadow(ring(scale))
+        } else {
+            pill
+        }
+    }
 }
 
 impl RenderOnce for Badge {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let root = div().id(self.id);
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         if self.count == 0 {
-            return root.size_0();
+            return div().id(self.id).size_0().into_any_element();
         }
-        let (bg, fg) = match self.kind {
-            BadgeKind::Unread => (color::ACCENT, color::ACCENT_INK),
-            BadgeKind::Mention => (color::MENTION, color::MENTION_INK),
-        };
         let label = self.text.unwrap_or_else(|| capped(self.count).into());
-        let pill = root
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .h(px(16.0))
-            .bg(bg);
-        let size = if self.in_row { text::MICRO } else { text::CHIP };
-        let pill = pill.child(
-            line(label, size, crate::text::line_height(size, 1.5), fg).weight(font::WEIGHT_DISPLAY),
-        );
-        if self.in_row {
-            pill.px(px(5.0)).rounded(radius::SM)
-        } else {
-            let pill = pill.min_w(px(16.0)).px(px(4.0)).rounded(radius::PILL);
-            if self.kind == BadgeKind::Mention {
-                pill.shadow(mention_ring())
-            } else {
-                pill
-            }
-        }
+        let (kind, in_row, id) = (self.kind, self.in_row, self.id);
+        let Some(pop) = self.pop else {
+            return pill(id, kind, label, in_row, 1.0).into_any_element();
+        };
+        let pop_id = (id.clone(), "pop");
+        crate::motion::pop_in(pop_id, pop.run, pop.curve, cx, move |pop| {
+            // The badge is the full-size drawing at rest and the scaled one while it pops; the hidden copy that holds its place
+            // is inert and has an id of its own.
+            let id = match pop {
+                crate::motion::Pop::Rest | crate::motion::Pop::Scaled(_) => id.clone(),
+                crate::motion::Pop::Layout => (id.clone(), "layout").into(),
+            };
+            pill(id, kind, label.clone(), in_row, pop.scale()).into_any_element()
+        })
     }
 }
 

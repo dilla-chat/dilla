@@ -23,7 +23,7 @@ use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring, shadow_menu, shadow_status
 use crate::roving::menu_next;
 pub use crate::roving::opens_context_menu;
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 use gpui::accesskit::HasPopup;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -391,7 +391,7 @@ impl RenderOnce for ActionMenu {
                 None => div().child(line(
                     "⋯",
                     text::BASE,
-                    line_height(text::BASE, 1.5),
+                    crate::text::root_line_height(text::BASE),
                     if open { color::FG } else { color::FG_2 },
                 )),
             };
@@ -559,6 +559,12 @@ impl RenderOnce for ActionMenu {
             ));
         }
 
+        // ActionMenu.css:11: `d-modal` over `--duration-focus`; the status menu is `--duration-popover` (UserPanel.css:20).
+        let run = match self.look {
+            MenuLook::Context => motion::FOCUS,
+            MenuLook::Status => motion::POPOVER,
+        };
+        let popup = crate::motion::modal_in(popup, (self.id.clone(), "enter"), run, cx);
         let popup: AnyElement = match self.at {
             Some(at) if self.no_trigger => anchored()
                 .position(at)
@@ -648,17 +654,22 @@ fn menu_row(
         );
     }
     row = row.child(
-        div()
-            .flex_1()
-            .min_w_0()
-            .child(line(item.label.clone(), text::UI, line_height(text::UI, 1.5), fg).ellipsis()),
+        div().flex_1().min_w_0().child(
+            line(
+                item.label.clone(),
+                text::UI,
+                crate::text::root_line_height(text::UI),
+                fg,
+            )
+            .ellipsis(),
+        ),
     );
     if let Some(hint) = &item.hint {
         let size = if item.room { text::META } else { text::MICRO };
         row = row.child(div().flex_none().child(line(
             hint.clone(),
             size,
-            line_height(size, 1.5),
+            crate::text::root_line_height(size),
             color::FG_FAINT,
         )));
     }

@@ -28,6 +28,9 @@
 //!                                                                the first call switches accessibility on, as a reader does)
 //! log                     -> ok [<entry>[;<entry>]...]          (the harness view's received events; see `--harness`)
 //! screenshot <path>       -> ok <width> <height>                (PNG of the rendered frame, device pixels)
+//! connection <status>     -> ok | err <why>                     (a fixture's shell takes the gateway status `reconnecting` (the
+//!                                                                link dropped: the banner "Offline. Reconnecting…"),
+//!                                                                `connecting` or `online`: the `offline` step's GPUI side)
 //! quit-dialog <state>     -> ok <dialog> | err <why>            (asks to quit with one guard in `active-call`,
 //!                                                                `unsent-draft` or `not-responding`: the quit dialog
 //!                                                                over the screen, `native::quit::show_state`)
@@ -129,6 +132,11 @@ pub fn followed(window: AnyWindowHandle) -> AnyWindowHandle {
 fn with_bounds<R>(f: impl FnOnce(&mut HashMap<&'static str, Bounds<Pixels>>) -> R) -> R {
     let mut guard = BOUNDS.lock().expect("bounds registry");
     f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// The bounds the probe `id` recorded when it last painted: what the driver's `element` answers, for an in-process test.
+pub fn probed(id: &str) -> Option<Bounds<Pixels>> {
+    with_bounds(|map| map.get(id).copied())
 }
 
 /// An invisible overlay that records the bounds of its parent under `id` each time it paints.
@@ -454,7 +462,11 @@ impl Session {
 
     /// Lets pending work run, then repaints so the registries describe the current frame.
     fn frame(&mut self) {
+        // Every window the driver draws is still, not only at a shot: a click made while an entrance runs would hit a row that
+        // is still moving (the account's own motion setting, applied when its state moves, would turn motion back on).
         self.cx.run_until_parked();
+        // After the parked work: the account's motion setting is applied when its state moves, which that work may do.
+        self.cx.update(|cx| cx.set_reduce_motion(true));
         with_bounds(HashMap::clear);
         TEXT.lock().expect("text registry").clear();
         FOCUS.with(|f| f.borrow_mut().clear());
@@ -689,6 +701,9 @@ impl Session {
     }
 
     fn screenshot(&mut self, path: &str) -> Result<(u32, u32), String> {
+        // A shot is the end state, as the web's are shot with reduced motion (Task 36): every capture through the driver
+        // freezes the animations, whatever launched the app (a live account's own motion setting included).
+        self.cx.update(|cx| cx.set_reduce_motion(true));
         self.frame();
         let window = self.window();
         let image = self
@@ -887,6 +902,73 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
                 Err(why) => format!("err {why}"),
             }
         }
+        (Some("voice-sim"), Some(what), Some(person)) => {
+            let pattern = parts.next();
+            let window = session.window();
+            let done = session
+                .cx
+                .update_window(window, |_, window: &mut Window, cx: &mut App| {
+                    crate::screens::voice::simulate(
+                        crate::screens::voice::wid(window),
+                        what,
+                        person,
+                        pattern,
+                        cx,
+                    )
+                });
+            session.frame();
+            match done {
+                Ok(Ok(())) => "ok".to_owned(),
+                Ok(Err(why)) => format!("err {why}"),
+                Err(e) => format!("err {e}"),
+            }
+        }
+        (Some("attach"), Some(name), Some(bytes)) => {
+            let window = session.window();
+            let done = session
+                .cx
+                .update_window(window, |root, w: &mut Window, cx: &mut App| {
+                    let app = root
+                        .downcast::<crate::app::AppView>()
+                        .map_err(|_| "the window is not the app's".to_owned())?;
+                    let shell = app
+                        .read(cx)
+                        .shell()
+                        .ok_or_else(|| "the window shows no shell".to_owned())?;
+                    let bytes: u64 = bytes.parse().map_err(|_| "bytes is a number".to_owned())?;
+                    let window_id = w.window_handle().window_id();
+                    shell.update(cx, |shell, cx| {
+                        shell.simulate_attach(window_id, name, bytes, cx)
+                    })
+                });
+            session.frame();
+            match done {
+                Ok(Ok(())) => "ok".to_owned(),
+                Ok(Err(why)) => format!("err {why}"),
+                Err(e) => format!("err {e}"),
+            }
+        }
+        (Some("connection"), Some(status), None) => {
+            let window = session.window();
+            let done = session
+                .cx
+                .update_window(window, |root, _: &mut Window, cx: &mut App| {
+                    let app = root
+                        .downcast::<crate::app::AppView>()
+                        .map_err(|_| "the window is not the app's".to_owned())?;
+                    let shell = app
+                        .read(cx)
+                        .shell()
+                        .ok_or_else(|| "the window shows no shell".to_owned())?;
+                    shell.update(cx, |shell, cx| shell.simulate_connection(status, cx))
+                });
+            session.frame();
+            match done {
+                Ok(Ok(())) => "ok".to_owned(),
+                Ok(Err(why)) => format!("err {why}"),
+                Err(e) => format!("err {e}"),
+            }
+        }
         (Some("rest"), None, None) => {
             session.rest();
             "ok".to_owned()
@@ -978,7 +1060,19 @@ pub fn run(args: Vec<String>) {
         family: std::env::var_os(FALLBACK_FONT_VAR).map(|_| "Dilla Parity Missing Font"),
         hidden: std::env::var_os(HIDE_TEXT_VAR).is_some(),
     });
+    let drawn_fixture = matches!(&mode, Mode::App(launch) if launch.fixture.is_some());
+    // A drawn fixture runs under the web shooter's locale (en-US), pinned in the app, not through the environment: the
+    // environment is bypassed by `LANGUAGE` on Unix and not read at all on macOS.
+    if drawn_fixture {
+        crate::format::pin_locale("en-US");
+    }
     let mut session = Session::open(mode);
+    // A drawn fixture's clock is frozen (the web shooter's is): a toast stays on screen for the frame.
+    if drawn_fixture {
+        session
+            .cx
+            .update(dilla_desktop_ui::components::toast::freeze);
+    }
     let mut out = std::io::stdout().lock();
     writeln!(out, "ready {AUTOMATION_MARKER}")
         .and_then(|()| out.flush())

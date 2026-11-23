@@ -11,9 +11,11 @@
 //! - Private results ([`private`]) live only in [`BotState::private_results`]: no store, no transport, no timeline. A
 //!   finished row goes away [`crate::state::bot::PRIVATE_RESULT_TTL_MS`] after it finished; the area sweeps itself on a timer.
 
+pub mod announcements;
 pub mod catalog;
 pub mod hints;
 mod io;
+pub mod memory;
 pub mod private;
 pub mod registry;
 pub mod room;
@@ -24,9 +26,10 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::client::{Client, Inner};
+use crate::features::moderation::{Evidence, Removal, RemovalOutcome};
 use crate::gateway::frames::{self, Frame, Op};
 use crate::state::bot::{Conversation, ResultProvider, ResultStatus};
-use crate::state::{AppState, CommunityId};
+use crate::state::{AppState, ChannelId, CommunityId, MessageId, TimelineItem, TimelineItemState};
 use crate::sync::route::AreaFrames;
 
 use registry::{CommandDefinition, Parsed, Provider};
@@ -86,8 +89,8 @@ impl Bot {
     }
 }
 
-/// What running a draft did.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What running a draft did. Its Debug is redacted like [`Plan`]'s.
+#[derive(Clone, PartialEq, Eq)]
 pub enum RunOutcome {
     /// Post this text in the conversation (a literal draft, or a built-in that posts); the draft is cleared.
     Post(String),
@@ -102,6 +105,8 @@ pub enum RunOutcome {
     },
     /// A moderation command (`/kick`, `/ban`): the caller asks for confirmation, then runs it with [`Bot::moderate`].
     Moderate(Moderation),
+    /// A built-in that acts on another area ([`Plan::Builtin`]): the caller asks first when `confirm` is set, then runs it.
+    Builtin { run: Builtin, confirm: Option<Ask> },
 }
 
 /// `privateResultCopy.author`: who a private result names as its author.
@@ -111,9 +116,6 @@ pub const BUILTIN_AUTHOR: &str = "dilla";
 pub fn not_a_command(name: &str) -> String {
     format!("/{name} isn’t a command here. To post it as text, start with //.")
 }
-
-/// privateResultCopy `unavailable`.
-pub const UNAVAILABLE: &str = "This command is temporarily unavailable.";
 
 static NEXT_RESULT: AtomicU64 = AtomicU64::new(1);
 
@@ -135,6 +137,36 @@ pub fn definitions(state: &AppState, community: Option<CommunityId>) -> Vec<Comm
 /// What `draft` does in `community` without running it (the picker's and the composer's reading of a draft). Pure:
 /// [`Bot::run`] applies it.
 pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Plan {
+    plan_in(state, community, None, draft)
+}
+
+/// [`plan`] for a draft typed in `channel`: the built-ins that read the channel's timeline (`/delete`, `/edit`, ...) need
+/// it. `None` where no conversation is open (the picker's reading of a draft).
+pub fn plan_in(
+    state: &AppState,
+    community: Option<CommunityId>,
+    channel: Option<ChannelId>,
+    draft: &str,
+) -> Plan {
+    plan_at(
+        state,
+        community,
+        channel.map(|channel| Conversation {
+            channel,
+            thread: None,
+        }),
+        draft,
+    )
+}
+
+/// [`plan_in`] for a draft typed in `conversation`: a channel, or one of its threads. In a thread the message lookups
+/// read the thread's replies ([`exact_message_in`]) and `/pin` and `/unpin` refuse (ThreadView.tsx:237, builtin.ts:434).
+pub fn plan_at(
+    state: &AppState,
+    community: Option<CommunityId>,
+    conversation: Option<Conversation>,
+    draft: &str,
+) -> Plan {
     let defs = definitions(state, community);
     let refs: Vec<&CommandDefinition> = defs.iter().collect();
     match registry::parse_command(draft, &refs) {
@@ -204,6 +236,14 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
                     registry::classic_message(&command_id, arg("text")).unwrap_or_default(),
                 ),
                 "kick" | "ban" => moderation_plan(state, community, &command_id, &args),
+                "timeout" | "untimeout" | "warn" | "unban" => {
+                    member_builtin_plan(state, community, &command_id, &args)
+                }
+                "reply" | "edit" | "delete" | "pin" | "unpin" | "topic" => {
+                    message_plan(state, community, conversation, &command_id, &args)
+                }
+                "role add" | "role remove" | "selfrole list" | "selfrole add"
+                | "selfrole remove" => role_plan(state, community, &command_id, &args),
                 "code" => {
                     let language = arg("language").unwrap_or_default().trim().to_owned();
                     let text = arg("text").unwrap_or_default();
@@ -227,23 +267,38 @@ pub fn plan(state: &AppState, community: Option<CommunityId>, draft: &str) -> Pl
                         Plan::Post(format!("```{language}\n{text}\n```"))
                     }
                 }
-                // The other built-ins act on another area (voice, members, search, ...): those areas run them.
-                _ => Plan::Private(
-                    ResultStatus::Failed,
-                    UNAVAILABLE.to_owned(),
-                    ResultProvider::Builtin,
-                ),
+                "giphy" | "invite" | "search" | "thread" | "dm" | "modlog" | "join" | "leave"
+                | "mute" | "unmute" | "deafen" | "undeafen" => {
+                    navigation_plan(state, community, conversation, &command_id, &args)
+                }
+                // `registry::commands()` is closed and `every_builtin_has_a_handler` walks it: a built-in added there
+                // without an arm above does not parse there, which fails that test. Nothing answers "unavailable".
+                _ => Plan::Incomplete,
             }
         }
     }
 }
 
 /// The copy of a moderation command's private row (copy.ts `privateResultCopy`, `mod.*.done`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Its Debug gives only lengths: the copy names the member acted on ("{name} was banned.").
+#[derive(Clone, PartialEq, Eq)]
 pub struct ModerationTexts {
     pub cancelled: String,
     pub pending: String,
     pub done: String,
+}
+
+impl std::fmt::Debug for ModerationTexts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ModerationTexts({}, {}, {} bytes)",
+            self.cancelled.len(),
+            self.pending.len(),
+            self.done.len()
+        )
+    }
 }
 
 /// builtin.ts `mutationError`: a definitive refusal names its code; anything else is an uncertain outcome.
@@ -274,8 +329,110 @@ pub fn mutation_error(e: &crate::sync::api::ApiError) -> String {
     )
 }
 
+/// [`mutation_error`] as the run's [`Outcome`]: a definitive refusal is a failure, anything else is uncertain (builtin.ts
+/// `mutationError`'s `status`).
+pub fn mutation_outcome(e: &crate::sync::api::ApiError) -> Outcome {
+    refusal_or_uncertain(mutation_error(e))
+}
+
+/// [`mutation_error_of`] as the run's [`Outcome`].
+pub fn mutation_outcome_of(e: &crate::ClientError) -> Outcome {
+    refusal_or_uncertain(mutation_error_of(e))
+}
+
+fn refusal_or_uncertain(text: String) -> Outcome {
+    if text.starts_with("Command was refused") {
+        Outcome::Failure(text)
+    } else {
+        Outcome::Uncertain(text)
+    }
+}
+
+/// [`removal_error`] as the run's [`Outcome`]: a refusal removed nothing, anything else may have.
+pub fn removal_outcome(e: &crate::sync::api::ApiError) -> Outcome {
+    let text = removal_error(e);
+    if text.starts_with("Message removal outcome is uncertain") {
+        Outcome::Uncertain(text)
+    } else {
+        Outcome::Failure(text)
+    }
+}
+
+/// The memory key of a draft (CommandHost.tsx:243 `invocationKey`): for a complete invocation, its command id, then each
+/// `name=value` of its arguments (sorted: [`registry::Args`] is a `BTreeMap`), joined by `\0`; `None` for anything else.
+/// The web's key also leads with its `contextKey`; here that is the memory's own scope (one memory per client, a row per
+/// conversation).
+pub fn invocation_key(
+    state: &AppState,
+    community: Option<CommunityId>,
+    draft: &str,
+) -> Option<String> {
+    let defs = definitions(state, community);
+    let refs: Vec<&CommandDefinition> = defs.iter().collect();
+    match registry::parse_command(draft, &refs) {
+        Parsed::Invocation { command_id, args } => Some(
+            std::iter::once(command_id)
+                .chain(args.iter().map(|(k, v)| format!("{k}={v}")))
+                .collect::<Vec<_>>()
+                .join("\0"),
+        ),
+        _ => None,
+    }
+}
+
+/// How a command's run ended (CommandHost.tsx `CommandResult.status`): a definitive answer, or one that may or may not
+/// have taken effect. Its Debug gives the text's length only (it may name a member or quote a sealed answer).
+#[derive(Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Success(String),
+    Failure(String),
+    Uncertain(String),
+}
+
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (name, text) = match self {
+            Self::Success(t) => ("Success", t),
+            Self::Failure(t) => ("Failure", t),
+            Self::Uncertain(t) => ("Uncertain", t),
+        };
+        f.debug_tuple(name)
+            .field(&crate::state::Redacted(text))
+            .finish()
+    }
+}
+
+impl Outcome {
+    /// The row this outcome leaves: an uncertain answer reads failed (CommandHost.tsx:280-284).
+    pub fn row(&self) -> (ResultStatus, &str) {
+        match self {
+            Self::Success(t) => (ResultStatus::Success, t),
+            Self::Failure(t) | Self::Uncertain(t) => (ResultStatus::Failed, t),
+        }
+    }
+}
+
+/// One run of a command (CommandHost.tsx:243-246): the request id it sends ([`memory::CommandMemory::attempt`]), its
+/// invocation key ([`invocation_key`]) and the draft it was typed as. Its Debug gives lengths only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Attempt {
+    pub request: [u8; 16],
+    pub invocation: String,
+    pub text: String,
+}
+
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attempt")
+            .field("request", &self.request)
+            .field("invocation", &crate::state::Redacted(&self.invocation))
+            .field("text", &crate::state::Redacted(&self.text))
+            .finish()
+    }
+}
+
 /// What a draft does ([`plan`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Plan {
     Post(String),
     Private(ResultStatus, String, ResultProvider),
@@ -286,12 +443,452 @@ pub enum Plan {
     },
     /// A moderation command, to confirm first (CommandHost.tsx: the moderation dialog), then [`Bot::moderate`].
     Moderate(Moderation),
+    /// A built-in that acts on another area: asks first when `confirm` is set (CommandHost.tsx's generic `Dialog`), then
+    /// the caller runs `run`. Its row is pending from the start (CommandHost.tsx:236).
+    Builtin {
+        run: Builtin,
+        confirm: Option<Ask>,
+    },
     Incomplete,
 }
 
+/// R21: a post is a message body, a private row's text may quote a sealed answer, and a Bot command's argument values
+/// are sealed: Debug gives their lengths and the argument names only.
+impl std::fmt::Debug for Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Post(text) => write!(f, "Post({:?})", crate::state::Redacted(text)),
+            Self::Private(status, text, provider) => write!(
+                f,
+                "Private({status:?}, {:?}, {provider:?})",
+                crate::state::Redacted(text)
+            ),
+            Self::Bot { definition, args } => f
+                .debug_struct("Bot")
+                .field("command", &definition.id)
+                .field("args", &registry::ArgNames(args))
+                .finish(),
+            Self::Moderate(m) => f.debug_tuple("Moderate").field(m).finish(),
+            Self::Builtin { run, confirm } => f
+                .debug_struct("Builtin")
+                .field("run", run)
+                .field("confirm", confirm)
+                .finish(),
+            Self::Incomplete => write!(f, "Incomplete"),
+        }
+    }
+}
+
+impl std::fmt::Debug for RunOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Post(text) => write!(f, "Post({:?})", crate::state::Redacted(text)),
+            Self::Private(id) => write!(f, "Private({id})"),
+            Self::Incomplete => write!(f, "Incomplete"),
+            Self::Bot { definition, args } => f
+                .debug_struct("Bot")
+                .field("command", &definition.id)
+                .field("args", &registry::ArgNames(args))
+                .finish(),
+            Self::Moderate(m) => f.debug_tuple("Moderate").field(m).finish(),
+            Self::Builtin { run, confirm } => f
+                .debug_struct("Builtin")
+                .field("run", run)
+                .field("confirm", confirm)
+                .finish(),
+        }
+    }
+}
+
+/// The question a built-in asks before it runs: the dialog's title and body (`ConfirmDialog`). Its `Debug` gives only
+/// their lengths: the body may carry a moderation reason ("…Reason: {reason}") and the title the member it acts on
+/// ("Unban {name}?").
+#[derive(Clone, PartialEq, Eq)]
+pub struct Ask {
+    pub title: String,
+    pub body: String,
+}
+
+impl std::fmt::Debug for Ask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Ask({} bytes, {} bytes)",
+            self.title.len(),
+            self.body.len()
+        )
+    }
+}
+
+/// A built-in command that acts on another area, with what it needs from the draft. The commands move here from the
+/// "unavailable" catch-all of [`plan_in`] as their areas land (Tasks 10, 11, 24, 25). The text a command carries is the
+/// composer's encoded text once `on_send` has prepared it (`Reply`, `Edit`), and `RemoveOther`'s excerpt is filled there
+/// too; its `Debug` never prints any of it (E2EE content stays out of logs).
+#[derive(Clone, PartialEq, Eq)]
+pub enum Builtin {
+    /// `/reply`: posts `text` in the conversation as a reply to `to` (builtin.ts `publish`).
+    Reply { to: MessageId, text: String },
+    /// `/edit`: replaces the text of this account's message `msg`.
+    Edit { msg: MessageId, text: String },
+    /// `/delete` of this account's own message.
+    DeleteOwn { msg: MessageId },
+    /// `/delete` of another person's message (builtin.ts `removeOtherMessage`): removed for everyone with `reason`, the
+    /// message's `excerpt` kept as moderation evidence ([`removal_step`]).
+    RemoveOther {
+        msg: MessageId,
+        seq: u64,
+        reason: String,
+        excerpt: String,
+    },
+    /// `/pin` (`on`) and `/unpin`.
+    Pin { msg: MessageId, on: bool },
+    /// `/topic`: sets `channel`'s topic to `text`.
+    Topic { channel: ChannelId, text: String },
+    /// `/timeout`: restricts `user` (`name` is shown) for `seconds` from when it runs.
+    Timeout {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+        seconds: u64,
+    },
+    /// `/untimeout`: reads the member's timeout first, then asks ([`Self::UntimeoutConfirmed`]) only when there is one.
+    Untimeout {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+    },
+    /// `/untimeout` once its question was answered: lifts the timeout.
+    UntimeoutConfirmed {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+    },
+    /// `/warn`: warns `user` with `reason` (moderation evidence: never printed).
+    Warn {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+        reason: String,
+    },
+    /// `/unban`: lifts the ban of `user`, `name` as the ban row names them.
+    Unban {
+        community: CommunityId,
+        user: crate::state::UserId,
+        name: String,
+    },
+    /// `/role add` (`add`) and `/role remove`: grants or revokes `role` of `user`, checked again as it runs
+    /// ([`assignable_role`]). `role_name` and `member_name` are what its question shows.
+    Role {
+        community: CommunityId,
+        user: crate::state::UserId,
+        role: crate::state::roles::RoleId,
+        add: bool,
+        role_name: String,
+        member_name: String,
+    },
+    /// `/selfrole list`: reads the self-assignable roles and lists them.
+    SelfRoleList { community: CommunityId },
+    /// `/selfrole add` (`add`) and `/selfrole remove` of the self-assignable role whose id is `role` (hex, as typed):
+    /// the roles are read first, and only one that is offered is picked or dropped.
+    SelfRole {
+        community: CommunityId,
+        role: String,
+        add: bool,
+    },
+    /// `/giphy`: opens the GIF picker of the conversation, searching `query` (`query` is search text: never printed).
+    Giphy { query: String },
+    /// `/invite`: opens the invite flow of `community` and answers once it shows a link (or is closed).
+    Invite { community: CommunityId },
+    /// `/search`: opens the search palette with `query` in its field (the scope is checked, not carried: the palette has
+    /// none, Shell.tsx:2175).
+    Search { query: String },
+    /// `/thread`: opens the thread of the stored message `root` of this conversation.
+    Thread { root: MessageId },
+    /// `/dm`: opens (or makes) the direct message with `user`.
+    Dm { user: crate::state::UserId },
+    /// `/modlog`: opens the moderation history of `community` (Decision D1).
+    Modlog { community: CommunityId },
+    /// `/join`: joins the voice channel `channel` of this community.
+    Join { channel: ChannelId },
+    /// `/leave`: leaves this device's call.
+    Leave,
+    /// `/mute`, `/unmute`, `/deafen`, `/undeafen`: the settings this device's call ends with (builtin.ts `setVoice`).
+    /// One variant for the four, as the interface fixes; its row's pending text names none of them, and never shows (the
+    /// run answers in the frame that adds it).
+    Voice { muted: bool, deafened: bool },
+}
+
+impl std::fmt::Debug for Builtin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Only the ids and the lengths: the texts are message bodies, reasons and excerpts. A moderation command names no
+        // member (neither id nor name): who it acts on is moderation content.
+        match self {
+            Self::Reply { to, text } => write!(f, "Reply({to:?}, {} bytes)", text.len()),
+            Self::Edit { msg, text } => write!(f, "Edit({msg:?}, {} bytes)", text.len()),
+            Self::DeleteOwn { msg } => write!(f, "DeleteOwn({msg:?})"),
+            Self::RemoveOther { msg, seq, .. } => write!(f, "RemoveOther({msg:?}, {seq})"),
+            Self::Pin { msg, on } => write!(f, "Pin({msg:?}, {on})"),
+            Self::Topic { channel, text } => {
+                write!(f, "Topic({channel:?}, {} bytes)", text.len())
+            }
+            Self::Timeout {
+                community, seconds, ..
+            } => write!(f, "Timeout({community:?}, {seconds})"),
+            Self::Untimeout { community, .. } => write!(f, "Untimeout({community:?})"),
+            Self::UntimeoutConfirmed { community, .. } => {
+                write!(f, "UntimeoutConfirmed({community:?})")
+            }
+            Self::Warn {
+                community, reason, ..
+            } => write!(f, "Warn({community:?}, {} bytes)", reason.len()),
+            Self::Unban { community, .. } => write!(f, "Unban({community:?})"),
+            // Who gains or loses which role is a role action's content: neither the member nor the role shows.
+            Self::Role { community, add, .. } => write!(f, "Role({community:?}, {add})"),
+            Self::SelfRoleList { community } => write!(f, "SelfRoleList({community:?})"),
+            Self::SelfRole { community, add, .. } => write!(f, "SelfRole({community:?}, {add})"),
+            // A search or GIF query is what the person is looking for: its length only. Whom a `/dm` opens is not printed.
+            Self::Giphy { query } => write!(f, "Giphy({} bytes)", query.len()),
+            Self::Invite { community } => write!(f, "Invite({community:?})"),
+            Self::Search { query } => write!(f, "Search({} bytes)", query.len()),
+            Self::Thread { root } => write!(f, "Thread({root:?})"),
+            Self::Dm { .. } => write!(f, "Dm"),
+            Self::Modlog { community } => write!(f, "Modlog({community:?})"),
+            Self::Join { channel } => write!(f, "Join({channel:?})"),
+            Self::Leave => write!(f, "Leave"),
+            Self::Voice { muted, deafened } => write!(f, "Voice({muted}, {deafened})"),
+        }
+    }
+}
+
+impl Builtin {
+    /// The command's id, for its pending row's copy (`privateResultCopy.pending(id)`).
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Reply { .. } => "reply",
+            Self::Edit { .. } => "edit",
+            Self::DeleteOwn { .. } | Self::RemoveOther { .. } => "delete",
+            Self::Pin { on: true, .. } => "pin",
+            Self::Pin { on: false, .. } => "unpin",
+            Self::Topic { .. } => "topic",
+            Self::Timeout { .. } => "timeout",
+            Self::Untimeout { .. } | Self::UntimeoutConfirmed { .. } => "untimeout",
+            Self::Warn { .. } => "warn",
+            Self::Unban { .. } => "unban",
+            Self::Role { add: true, .. } => "role add",
+            Self::Role { add: false, .. } => "role remove",
+            Self::SelfRoleList { .. } => "selfrole list",
+            Self::SelfRole { add: true, .. } => "selfrole add",
+            Self::SelfRole { add: false, .. } => "selfrole remove",
+            Self::Giphy { .. } => "giphy",
+            Self::Invite { .. } => "invite",
+            Self::Search { .. } => "search",
+            Self::Thread { .. } => "thread",
+            Self::Dm { .. } => "dm",
+            Self::Modlog { .. } => "modlog",
+            Self::Join { .. } => "join",
+            Self::Leave => "leave",
+            Self::Voice { .. } => "voice",
+        }
+    }
+
+    /// Whether cancelling its question removes its pending row (CommandHost.tsx:291, :322: `cancel && !moderation`). A
+    /// command that wants its cancelled row kept answers `false` in its own arm; the match has no wildcard so a new
+    /// command must decide.
+    pub fn dismissed_on_cancel(&self) -> bool {
+        match self {
+            // CommandHost's `moderation` is `/kick` and `/ban` only (:233): a cancelled `/delete`, even of another
+            // person's message, and a cancelled `/timeout`, `/untimeout`, `/warn`, `/unban` or `/role remove` leave no
+            // row.
+            Self::Reply { .. }
+            | Self::Edit { .. }
+            | Self::DeleteOwn { .. }
+            | Self::RemoveOther { .. }
+            | Self::Pin { .. }
+            | Self::Topic { .. }
+            | Self::Timeout { .. }
+            | Self::Untimeout { .. }
+            | Self::UntimeoutConfirmed { .. }
+            | Self::Warn { .. }
+            | Self::Unban { .. }
+            | Self::Role { .. }
+            | Self::SelfRoleList { .. }
+            | Self::SelfRole { .. }
+            | Self::Giphy { .. }
+            | Self::Invite { .. }
+            | Self::Search { .. }
+            | Self::Thread { .. }
+            | Self::Dm { .. }
+            | Self::Modlog { .. }
+            | Self::Join { .. }
+            | Self::Leave
+            | Self::Voice { .. } => true,
+        }
+    }
+}
+
+/// What the `/delete` of another person's message does next, after its one `remove_message` (builtin.ts:355-379). The
+/// removal is never sent again, so no step would. Its Debug gives the row's text by length, as [`PrivateResult`]'s does.
+///
+/// [`PrivateResult`]: crate::state::bot::PrivateResult
+#[derive(Clone, PartialEq, Eq)]
+pub enum RemovalStep {
+    /// The removal may have landed: settle the same proof (`Moderation::resolve_removal`).
+    Resolve([u8; 16]),
+    /// Accepted, its evidence not stored yet: send it once more (`Moderation::send_removal_evidence`).
+    SendEvidence([u8; 16]),
+    /// The row's answer. `uncertain` marks the web's `result('uncertain', …)` lines.
+    Done {
+        status: ResultStatus,
+        text: String,
+        uncertain: bool,
+    },
+}
+
+impl std::fmt::Debug for RemovalStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Resolve(p) => f.debug_tuple("Resolve").field(p).finish(),
+            Self::SendEvidence(p) => f.debug_tuple("SendEvidence").field(p).finish(),
+            Self::Done {
+                status,
+                text,
+                uncertain,
+            } => f
+                .debug_struct("Done")
+                .field("status", status)
+                .field("text", &crate::state::Redacted(text))
+                .field("uncertain", uncertain)
+                .finish(),
+        }
+    }
+}
+
+/// The next [`RemovalStep`] for `o`, the outcome so far: `resolved` once it was resolved (`o` is then the resolved
+/// outcome), `evidence_sent` once its evidence was sent again (`o.evidence` is then that answer).
+pub fn removal_step(o: &RemovalOutcome, resolved: bool, evidence_sent: bool) -> RemovalStep {
+    let proof = o.proof_request_id;
+    let done = |status, text: String, uncertain| RemovalStep::Done {
+        status,
+        text,
+        uncertain,
+    };
+    match o.removal {
+        Removal::Rejected => done(
+            ResultStatus::Failed,
+            "The message could not be removed.".to_owned(),
+            false,
+        ),
+        Removal::Unknown if !resolved => RemovalStep::Resolve(proof),
+        Removal::Unknown => done(
+            ResultStatus::Failed,
+            format!(
+                "Message removal is unresolved. Recovery proof: {}.",
+                crate::state::hex(&proof)
+            ),
+            true,
+        ),
+        Removal::Accepted if o.evidence == Evidence::Accepted => done(
+            ResultStatus::Success,
+            "Message removed and moderation evidence recorded.".to_owned(),
+            false,
+        ),
+        // builtin.ts sends the evidence again only with the removal's evidence request id.
+        Removal::Accepted if !evidence_sent && o.evidence_request_id.is_some() => {
+            RemovalStep::SendEvidence(proof)
+        }
+        Removal::Accepted => {
+            let evidence = match o.evidence {
+                Evidence::Pending => "pending",
+                Evidence::Rejected => "rejected",
+                Evidence::Accepted | Evidence::Unknown => "unknown",
+            };
+            let hex = crate::state::hex(&proof);
+            let text = if resolved {
+                format!(
+                    "Message removal was accepted; moderation evidence is {evidence}. Recovery proof: {hex}."
+                )
+            } else {
+                format!(
+                    "Message removed; moderation evidence is {evidence}. Recovery proof: {hex}."
+                )
+            };
+            done(ResultStatus::Failed, text, true)
+        }
+    }
+}
+
+/// builtin.ts:344-349: why the one `remove_message` failed. A refusal (E_BAD_INPUT, E_FORBIDDEN, E_NOT_FOUND, or HTTP
+/// 400, 403 or 404) removed nothing; anything else may have.
+pub fn removal_error(e: &crate::sync::api::ApiError) -> String {
+    if ["E_BAD_INPUT", "E_FORBIDDEN", "E_NOT_FOUND"].contains(&e.code.as_str())
+        || [400, 403, 404].contains(&e.status)
+    {
+        "The message could not be removed with the current permissions or message state.".to_owned()
+    } else {
+        "Message removal outcome is uncertain. Check the conversation before retrying.".to_owned()
+    }
+}
+
+/// builtin.ts:62-64: the stored message of `channel` whose id is `id` (hex): `Ok`, with a seq. An outbox row is not
+/// addressable yet.
+pub fn exact_message<'a>(
+    state: &'a AppState,
+    channel: ChannelId,
+    id: &str,
+) -> Option<&'a TimelineItem> {
+    exact_message_in(
+        state,
+        Conversation {
+            channel,
+            thread: None,
+        },
+        id,
+    )
+}
+
+/// [`exact_message`] in `conversation`: a thread's lookups read its replies, without the root (ThreadView.tsx:94, :237),
+/// when that thread belongs to the conversation's channel.
+pub fn exact_message_in<'a>(
+    state: &'a AppState,
+    conversation: Conversation,
+    id: &str,
+) -> Option<&'a TimelineItem> {
+    let items = match conversation.thread {
+        Some(root) => {
+            let data = state.threads.threads.get(&root)?;
+            if data.channel != conversation.channel {
+                return None;
+            }
+            &data.replies
+        }
+        None => &state.timelines.get(&conversation.channel)?.items,
+    };
+    items.iter().find(|i| {
+        i.state == TimelineItemState::Ok
+            && i.seq.is_some()
+            && i.msg_id.is_some_and(|m| m.hex() == id)
+    })
+}
+
+/// [`mutation_error`] for a sync step's failure: a refusal names its code (read as an API error of that code); any other
+/// failure is an uncertain outcome without a code.
+pub fn mutation_error_of(e: &crate::ClientError) -> String {
+    let code = match e {
+        crate::ClientError::Sync(code) => code.clone(),
+        _ => String::new(),
+    };
+    mutation_error(&crate::sync::api::ApiError {
+        status: 0,
+        code,
+        detail: String::new(),
+        retry_after_ms: None,
+        extra: Vec::new(),
+    })
+}
+
 /// A checked moderation command (builtin.ts `kick`, `ban`): its member, the name and `@username` the dialog shows, and
-/// what it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// what it does. Its Debug names no member and no reason (moderation content): only the community and the action.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Moderation {
     pub community: CommunityId,
     pub user: crate::state::UserId,
@@ -300,8 +897,14 @@ pub struct Moderation {
     pub action: ModAction,
 }
 
-/// What a [`Moderation`] does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl std::fmt::Debug for Moderation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Moderation({:?}, {:?})", self.community, self.action)
+    }
+}
+
+/// What a [`Moderation`] does. Its Debug gives a ban's length, never its reason.
+#[derive(Clone, PartialEq, Eq)]
 pub enum ModAction {
     Kick,
     /// `seconds` is `None` for a permanent ban; `duration` is the length as typed (`1d`, `permanent`).
@@ -310,6 +913,17 @@ pub enum ModAction {
         duration: String,
         reason: String,
     },
+}
+
+impl std::fmt::Debug for ModAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kick => write!(f, "Kick"),
+            Self::Ban {
+                seconds, reason, ..
+            } => write!(f, "Ban({seconds:?}, {} bytes)", reason.len()),
+        }
+    }
 }
 
 impl ModAction {
@@ -322,12 +936,19 @@ impl ModAction {
     }
 }
 
-/// A member [`moderation_target`] names: their id, the name to show and their username.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A member [`moderation_target`] names: their id, the name to show and their username. Its Debug names none of them:
+/// the member a moderation command acts on is moderation content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Target {
     pub user: crate::state::UserId,
     pub name: String,
     pub username: String,
+}
+
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target").finish_non_exhaustive()
+    }
 }
 
 /// builtin.ts `eligibleModerationTarget` read once for a community: this account's permission for the action and its
@@ -353,6 +974,15 @@ impl ModerationGate<'_> {
     }
 }
 
+/// What a [`ModerationGate`] is read for (builtin.ts `ModerationAction`): the permission it needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateAction {
+    Kick,
+    Ban,
+    /// `/timeout`, `/untimeout` and `/warn`: Moderate Members.
+    Timeout,
+}
+
 /// The [`ModerationGate`] of `community` for a kick (`kick`) or a ban: `None` when the access is not loaded, the
 /// permission is not held, or this account is not a member there.
 pub fn moderation_gate(
@@ -360,12 +990,29 @@ pub fn moderation_gate(
     community: CommunityId,
     kick: bool,
 ) -> Option<ModerationGate<'_>> {
+    moderation_gate_for(
+        state,
+        community,
+        if kick {
+            GateAction::Kick
+        } else {
+            GateAction::Ban
+        },
+    )
+}
+
+/// [`moderation_gate`] by action: the permission is Kick Members, Ban Members or Moderate Members (builtin.ts:329).
+pub fn moderation_gate_for(
+    state: &AppState,
+    community: CommunityId,
+    action: GateAction,
+) -> Option<ModerationGate<'_>> {
     use crate::features::roles::rank;
     let access = state.roles.access_of(community);
-    let permitted = if kick {
-        access.kick_members
-    } else {
-        access.ban_members
+    let permitted = match action {
+        GateAction::Kick => access.kick_members,
+        GateAction::Ban => access.ban_members,
+        GateAction::Timeout => access.moderate_members,
     };
     if !access.loaded || !permitted {
         return None;
@@ -395,22 +1042,85 @@ pub fn moderation_target(
     who: &str,
     kick: bool,
 ) -> Option<Target> {
+    moderation_target_for(
+        state,
+        community,
+        who,
+        if kick {
+            GateAction::Kick
+        } else {
+            GateAction::Ban
+        },
+    )
+}
+
+/// [`moderation_target`] by action.
+pub fn moderation_target_for(
+    state: &AppState,
+    community: CommunityId,
+    who: &str,
+    action: GateAction,
+) -> Option<Target> {
     let who = crate::state::UserId(crate::features::server_admin::unhex_id(who.trim())?);
-    let gate = moderation_gate(state, community, kick)?;
+    let gate = moderation_gate_for(state, community, action)?;
     let target = state
         .members
         .get(&community)?
         .iter()
         .find(|m| m.user_id == who)?;
-    gate.allows(target).then(|| Target {
-        user: target.user_id,
-        name: if target.display.is_empty() {
-            target.username.clone()
+    gate.allows(target).then(|| member_target(target))
+}
+
+fn member_target(member: &crate::state::members::Member) -> Target {
+    Target {
+        user: member.user_id,
+        name: if member.display.is_empty() {
+            member.username.clone()
         } else {
-            target.display.clone()
+            member.display.clone()
         },
-        username: target.username.clone(),
-    })
+        username: member.username.clone(),
+    }
+}
+
+/// builtin.ts `eligibleAssignableRole`: the role named `role` (hex) and the member `user` (hex) when this account may
+/// grant (`add`) or revoke it: roles are managed and loaded, both members are known, the member is neither this account
+/// nor the owner, the role is neither @everyone nor at or above this account's rank, it is not held (`add`) or held
+/// (revoke), and it carries no bit this account lacks ([`roles::assign_lock`]).
+pub fn assignable_role(
+    state: &AppState,
+    community: CommunityId,
+    user: &str,
+    role: &str,
+    add: bool,
+) -> Option<(crate::state::roles::RoleSummary, Target)> {
+    use crate::features::roles;
+    let user = crate::state::UserId(crate::features::server_admin::unhex_id(user.trim())?);
+    let role_id = crate::features::server_admin::unhex_id(role.trim())?;
+    let access = state.roles.access_of(community);
+    let everyone = access.everyone_id?;
+    if !access.loaded || !access.manage_roles {
+        return None;
+    }
+    let owner = state.communities.iter().find(|c| c.id == community)?.owner;
+    let all = state.roles.roles_of(community);
+    let members = state.members.get(&community)?;
+    let me = state.account.user_id?;
+    let target = members.iter().find(|m| m.user_id == user)?;
+    let mine = members.iter().find(|m| m.user_id == me)?;
+    let role = all.iter().find(|r| r.id == role_id)?;
+    if target.user_id == me
+        || target.user_id == owner
+        || role.id == everyone
+        || role.position == 0
+        || target.role_ids.contains(&role.id) == add
+    {
+        return None;
+    }
+    let held = roles::held_bits(access.owner, owner.0, everyone, all, &mine.role_ids, me.0);
+    roles::assign_lock(role, &access, held)
+        .is_none()
+        .then(|| (role.clone(), member_target(target)))
 }
 
 /// builtin.ts `reasonProblem`: more than 512 bytes, or a control character.
@@ -419,6 +1129,422 @@ fn reason_problem(reason: &str) -> bool {
         || reason
             .chars()
             .any(|c| matches!(c as u32, 0..=8 | 0x0b..=0x1f | 0x7f..=0x9f))
+}
+
+/// builtin.ts `reply`, `edit`, `delete`, `pin`/`unpin` (`pinMessage`) and `topic`: the checks made before anything is
+/// sent, against the message of `channel` the draft names ([`exact_message`]) and the reader's bits in that channel. In a
+/// DM (`community` is `None`) no bit is needed to pin, and no topic is set.
+fn message_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    conversation: Option<Conversation>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    use crate::features::roles::{perm, viewer_channel_bits};
+    let channel = conversation.map(|c| c.channel);
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let has = |bit: u32| {
+        channel
+            .and_then(|c| viewer_channel_bits(state, c))
+            .is_some_and(|b| b & u64::from(bit) != 0)
+    };
+    let run = |run: Builtin, confirm: Option<Ask>| Plan::Builtin { run, confirm };
+    if command_id == "topic" {
+        return match channel {
+            Some(channel) if community.is_some() && has(perm::MANAGE_CHANNELS) => run(
+                Builtin::Topic {
+                    channel,
+                    text: arg("text").to_owned(),
+                },
+                None,
+            ),
+            _ => failed("You cannot manage this channel."),
+        };
+    }
+    let item = conversation.and_then(|c| exact_message_in(state, c, arg("message")));
+    // `exact_message_in` finds only a stored message: it has its id and its seq.
+    let found = item.and_then(|i| Some((i, i.msg_id?, i.seq?)));
+    match command_id {
+        "reply" => match found {
+            Some((_, to, _)) => run(
+                Builtin::Reply {
+                    to,
+                    text: arg("text").to_owned(),
+                },
+                None,
+            ),
+            None => failed("That message is not available in this conversation."),
+        },
+        "edit" => match found.filter(|(i, ..)| i.own) {
+            Some((_, msg, _)) => run(
+                Builtin::Edit {
+                    msg,
+                    text: arg("text").to_owned(),
+                },
+                None,
+            ),
+            None => failed("You can edit only your own loaded message."),
+        },
+        "delete" => {
+            let Some((item, msg, seq)) = found else {
+                return failed("That message is not available in this conversation.");
+            };
+            let title = "Delete this message?".to_owned();
+            if item.own {
+                return run(
+                    Builtin::DeleteOwn { msg },
+                    Some(Ask {
+                        title,
+                        body: "This permanently deletes your message.".to_owned(),
+                    }),
+                );
+            }
+            let reason = arg("reason").trim();
+            if !has(perm::MANAGE_MESSAGES) || reason.is_empty() {
+                return failed(DELETE_OTHER_REFUSED);
+            }
+            run(
+                Builtin::RemoveOther {
+                    msg,
+                    seq,
+                    reason: reason.to_owned(),
+                    excerpt: String::new(),
+                },
+                Some(Ask {
+                    title,
+                    body: format!("Remove this message from everyone? Reason: {reason}"),
+                }),
+            )
+        }
+        _ => {
+            let on = command_id == "pin";
+            let Some((item, msg, _)) = found else {
+                return failed("That message is not available in this channel.");
+            };
+            if conversation.is_some_and(|c| c.thread.is_some()) {
+                return failed("Messages in threads cannot be pinned from the command composer.");
+            }
+            if community.is_some() && !has(perm::PIN_MESSAGES) {
+                return failed("You cannot pin messages here.");
+            }
+            if item.pinned == on {
+                return Plan::Private(
+                    ResultStatus::Success,
+                    if on {
+                        "Message is already pinned."
+                    } else {
+                        "Message is already unpinned."
+                    }
+                    .to_owned(),
+                    ResultProvider::Builtin,
+                );
+            }
+            run(Builtin::Pin { msg, on }, None)
+        }
+    }
+}
+
+/// builtin.ts `delete`: another person's message needs Manage Messages and a reason (checked again as it runs).
+pub const DELETE_OTHER_REFUSED: &str =
+    "Deleting another person’s message requires Manage Messages and a reason.";
+
+/// builtin.ts `timeout`, `untimeout`, `warn` (:204-264) and `unban` (:168-182): the checks made before anything is
+/// asked. `/unban` reads the bans this device has (the member chip read them, Task 9); its run reads them again.
+fn member_builtin_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let Some(community) = community else {
+        return failed("This command needs a community channel.");
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let run = |run: Builtin, confirm: Option<Ask>| Plan::Builtin { run, confirm };
+    if command_id == "unban" {
+        if !may_unban(state, community) {
+            return failed("You cannot unban members here.");
+        }
+        let ban = crate::features::server_admin::unhex_id(arg("user").trim()).and_then(|who| {
+            state
+                .people
+                .bans
+                .get(&community)?
+                .iter()
+                .find(|b| b.user_id.0 == who)
+        });
+        let Some(ban) = ban else {
+            return failed("That member is not currently banned.");
+        };
+        return run(
+            Builtin::Unban {
+                community,
+                user: ban.user_id,
+                name: ban.name.clone(),
+            },
+            Some(Ask {
+                title: format!("Unban {}?", ban.name),
+                body: "This restores the member’s ability to join the community.".to_owned(),
+            }),
+        );
+    }
+    let Some(Target { user, name, .. }) =
+        moderation_target_for(state, community, arg("user"), GateAction::Timeout)
+    else {
+        return failed(if command_id == "warn" {
+            "This member cannot be warned with your current permissions and rank."
+        } else {
+            "This member cannot be timed out with your current permissions and rank."
+        });
+    };
+    match command_id {
+        "timeout" => {
+            let duration = arg("duration");
+            let Some(seconds) =
+                run::duration_seconds(duration).filter(|s| (60..=2_419_200).contains(s))
+            else {
+                return failed("Timeout duration must be from 1m to 28d.");
+            };
+            let ask = Ask {
+                title: format!("Timeout {name}?"),
+                body: format!("Restrict this member for {duration}."),
+            };
+            run(
+                Builtin::Timeout {
+                    community,
+                    user,
+                    name,
+                    seconds,
+                },
+                Some(ask),
+            )
+        }
+        "untimeout" => run(
+            Builtin::Untimeout {
+                community,
+                user,
+                name,
+            },
+            None,
+        ),
+        _ => {
+            let reason = arg("reason").trim();
+            if reason.is_empty() || reason_problem(reason) {
+                return failed(
+                    "Enter a reason of at most 512 UTF-8 bytes without control characters.",
+                );
+            }
+            let ask = Ask {
+                title: format!("Warn {name}?"),
+                body: reason.to_owned(),
+            };
+            run(
+                Builtin::Warn {
+                    community,
+                    user,
+                    name,
+                    reason: reason.to_owned(),
+                },
+                Some(ask),
+            )
+        }
+    }
+}
+
+/// builtin.ts `giphy` (:88-92), `invite` (:93-97), `dm` (:98-106), `search` (:108-115), `thread` (:121-127), `join`
+/// (:128-130), `leave` (:153-158), `mute`/`unmute`/`deafen`/`undeafen` (:159-162, `setVoice`) and `modlog` (:272-277):
+/// the checks made before the command opens something or changes the call. What a draft in a DM (`community` is `None`)
+/// may do is what the web's `binding.communityId === null` allows.
+fn navigation_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    conversation: Option<Conversation>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    use crate::features::roles::{perm, viewer_channel_bits};
+    let channel = conversation.map(|c| c.channel);
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let has = |bit: u32| {
+        channel
+            .and_then(|c| viewer_channel_bits(state, c))
+            .is_some_and(|b| b & u64::from(bit) != 0)
+    };
+    let run = |run: Builtin| Plan::Builtin { run, confirm: None };
+    let call = &state.voice;
+    let in_call = call.phase() == crate::calls::CallPhase::In;
+    match command_id {
+        "giphy" => match community {
+            Some(_) => run(Builtin::Giphy {
+                query: arg("query").to_owned(),
+            }),
+            None => failed("GIF search is available only in a community channel."),
+        },
+        "invite" => match community {
+            Some(community) if has(perm::CREATE_INVITE) => run(Builtin::Invite { community }),
+            _ => failed("You cannot create invites here."),
+        },
+        "search" => {
+            let scope = args.get("scope").map_or("channel", String::as_str);
+            if !["channel", "community", "all"].contains(&scope) {
+                failed("Scope must be channel, community, or all.")
+            } else if scope == "community" && community.is_none() {
+                failed("Community search is unavailable here.")
+            } else {
+                run(Builtin::Search {
+                    query: arg("query").to_owned(),
+                })
+            }
+        }
+        "thread" => {
+            let root = conversation
+                .and_then(|c| exact_message_in(state, c, arg("message")))
+                .and_then(|i| i.msg_id);
+            match (community, root) {
+                (Some(_), Some(root)) => run(Builtin::Thread { root }),
+                _ => failed("That message is not available in this channel."),
+            }
+        }
+        "dm" => match crate::features::server_admin::unhex_id(arg("user").trim()) {
+            Some(user) => run(Builtin::Dm {
+                user: crate::state::UserId(user),
+            }),
+            None => failed("Could not open that direct message."),
+        },
+        "modlog" => match community {
+            Some(community) if has(perm::VIEW_AUDIT_LOG) => run(Builtin::Modlog { community }),
+            _ => failed("Moderation history needs a community and View Audit Log permission."),
+        },
+        "join" => {
+            let Some(community) = community else {
+                return failed("This command needs a community channel.");
+            };
+            // The community's own voice channel (`kind == 1`): a category, a text channel, another server's or an
+            // unreadable id is none.
+            let target = crate::features::server_admin::unhex_id(arg("voice-channel"))
+                .map(ChannelId)
+                .and_then(|id| state.channel(id))
+                .filter(|c| c.community_id == community && c.kind == 1);
+            match target {
+                Some(c) => run(Builtin::Join { channel: c.id }),
+                None => failed("Choose an accessible voice channel."),
+            }
+        }
+        "leave" => {
+            if call.call.channel.is_none() {
+                failed("You are not in a voice call.")
+            } else {
+                run(Builtin::Leave)
+            }
+        }
+        // mute, unmute, deafen, undeafen: the setting each leaves alone keeps what this device has now.
+        "mute" | "unmute" | "deafen" | "undeafen" if !in_call => failed("Join a voice call first."),
+        "mute" => run(Builtin::Voice {
+            muted: true,
+            deafened: call.self_deaf,
+        }),
+        "unmute" => run(Builtin::Voice {
+            muted: false,
+            deafened: call.self_deaf,
+        }),
+        "deafen" => run(Builtin::Voice {
+            muted: true,
+            deafened: true,
+        }),
+        "undeafen" => run(Builtin::Voice {
+            muted: call.self_mute,
+            deafened: false,
+        }),
+        // `plan_in` sends only the ids above; a new one fails `every_builtin_has_a_handler` rather than being read as one.
+        _ => Plan::Incomplete,
+    }
+}
+
+/// builtin.ts `role add`, `role remove` (`updateMemberRole`, :395-404) and the `selfrole` commands (:267-271, :405-413):
+/// a role is granted or revoked only where [`assignable_role`] allows it, and removing one asks first. The self roles
+/// are read as the command runs, so planning one checks only that it is typed in a community.
+fn role_plan(
+    state: &AppState,
+    community: Option<CommunityId>,
+    command_id: &str,
+    args: &registry::Args,
+) -> Plan {
+    let failed = |text: &str| {
+        Plan::Private(
+            ResultStatus::Failed,
+            text.to_owned(),
+            ResultProvider::Builtin,
+        )
+    };
+    let Some(community) = community else {
+        return failed("This command needs a community channel.");
+    };
+    let arg = |n: &str| args.get(n).map_or("", String::as_str);
+    let run = |run: Builtin, confirm: Option<Ask>| Plan::Builtin { run, confirm };
+    match command_id {
+        "selfrole list" => run(Builtin::SelfRoleList { community }, None),
+        "selfrole add" | "selfrole remove" => run(
+            Builtin::SelfRole {
+                community,
+                role: arg("role").trim().to_owned(),
+                add: command_id == "selfrole add",
+            },
+            None,
+        ),
+        _ => {
+            let add = command_id == "role add";
+            let Some((role, member)) =
+                assignable_role(state, community, arg("user"), arg("role"), add)
+            else {
+                return failed(
+                    "This member or role is not assignable with your current permissions and rank.",
+                );
+            };
+            let confirm = (!add).then(|| Ask {
+                title: format!("Remove {} from {}?", role.name, member.name),
+                body: "This changes the member’s roles.".to_owned(),
+            });
+            run(
+                Builtin::Role {
+                    community,
+                    user: member.user,
+                    role: role.id,
+                    add,
+                    role_name: role.name,
+                    member_name: member.name,
+                },
+                confirm,
+            )
+        }
+    }
+}
+
+/// builtin.ts `unban`'s `canBan`: this device knows its access in `community` and it holds Ban Members.
+pub fn may_unban(state: &AppState, community: CommunityId) -> bool {
+    let access = state.roles.access_of(community);
+    access.loaded && access.ban_members
 }
 
 fn moderation_plan(
@@ -498,7 +1624,12 @@ impl Bot {
         community: Option<CommunityId>,
         draft: &str,
     ) -> RunOutcome {
-        match plan(&self.inner.snapshot(), community, draft) {
+        match plan_in(
+            &self.inner.snapshot(),
+            community,
+            Some(conversation.channel),
+            draft,
+        ) {
             Plan::Post(text) => RunOutcome::Post(text),
             Plan::Incomplete => RunOutcome::Incomplete,
             Plan::Private(status, text, provider) => {
@@ -506,6 +1637,7 @@ impl Bot {
             }
             Plan::Bot { definition, args } => RunOutcome::Bot { definition, args },
             Plan::Moderate(m) => RunOutcome::Moderate(m),
+            Plan::Builtin { run, confirm } => RunOutcome::Builtin { run, confirm },
         }
     }
 
@@ -592,6 +1724,44 @@ impl Bot {
         provider: ResultProvider,
     ) -> u64 {
         self.runs().add_result(conversation, status, text, provider)
+    }
+
+    /// A built-in's row says how it ended (`status` and `text`): the pending row of [`Plan::Builtin`] becomes its result.
+    pub fn finish(&self, conversation: Conversation, row: u64, status: ResultStatus, text: String) {
+        self.runs().patch(
+            conversation,
+            row,
+            private::Patch {
+                status: Some(status),
+                text: Some(text),
+                hold: None,
+            },
+        );
+    }
+
+    /// The command memory of this client ([`memory`]).
+    pub fn memory(&self) -> Arc<Mutex<memory::CommandMemory>> {
+        self.sealed().memory()
+    }
+
+    /// A run of `attempt` in `at` ended as `outcome`: its row `row` says so, and the memory learns it (CommandHost.tsx
+    /// :280-298). A definitive answer retires the request id; an uncertain one keeps it and the draft, which the composer
+    /// shows again ([`memory::CommandMemory::take_reopen`]), and its row reads failed.
+    pub fn settle(&self, at: Conversation, row: u64, attempt: &Attempt, outcome: Outcome) {
+        {
+            let memory = self.memory();
+            let mut memory = memory
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &outcome {
+                Outcome::Success(_) | Outcome::Failure(_) => memory.settled(at, attempt.request),
+                Outcome::Uncertain(_) => {
+                    memory.uncertain(at, &attempt.text, attempt.request, &attempt.invocation);
+                }
+            }
+        }
+        let (status, text) = outcome.row();
+        self.finish(at, row, status, text.to_owned());
     }
 
     /// The Dismiss button: the row goes, and a held run behind it is forgotten (its reply secret too).
@@ -811,17 +1981,19 @@ fn on_state_changed(
 }
 
 /// The voice channel whose player op 63 asks to read again: a call scope (kind 2, its id the voice channel) of the call
-/// this device is in, where the dock shows the player (music.tsx reads only a shown player).
+/// this device is in, where the dock shows the player, or of a channel whose music card is on screen
+/// (`bot_admin.music_watched`; music.tsx reads only a shown player).
 fn music_hint(
     state: &AppState,
     frame: &frames::BotStateChangedFrame,
 ) -> Option<crate::state::ChannelId> {
+    if frame.scope_kind != 2 {
+        return None;
+    }
+    let channel = crate::state::ChannelId(frame.scope_id);
     let call = &state.voice.call;
-    let channel = call.channel?;
-    (frame.scope_kind == 2
-        && call.phase == crate::calls::CallPhase::In
-        && channel.0 == frame.scope_id)
-        .then_some(channel)
+    let in_call = call.phase == crate::calls::CallPhase::In && call.channel == Some(channel);
+    (in_call || state.bot_admin.music_watched.contains(&channel)).then_some(channel)
 }
 
 impl AreaFrames for Bot {
@@ -845,6 +2017,13 @@ impl AreaFrames for Bot {
                 let Ok(frame) = frames::bot_state_changed_of(f) else {
                     return;
                 };
+                // PollCard.tsx: a pushed hint of a channel reads its given-up polls again.
+                if frame.scope_kind == 1 {
+                    crate::features::utilities::retry_gave_up_in(
+                        inner,
+                        crate::state::ChannelId(frame.scope_id),
+                    );
+                }
                 let runtime = inner.clone();
                 let spawn =
                     move |wait: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>| {
@@ -886,6 +2065,919 @@ mod tests {
     use super::*;
     use crate::gateway::frames::Value;
     use crate::state::bot::{BotCatalogView, BotStatus, BotStatusState};
+
+    /// builtin.ts:62-64: a message is found by its id only when it is stored (`Ok` with a seq); an outbox row, a bad id
+    /// and another channel's message are not.
+    #[test]
+    fn plan_in_reads_the_channels_timeline() {
+        use crate::state::{
+            ChannelGroupState, ChannelId, MessageId, Timeline, TimelineItem, TimelineItemState,
+        };
+        let ch = ChannelId([1; 16]);
+        let item = |msg: u8, state, seq| TimelineItem {
+            key: format!("o{msg}"),
+            state,
+            reason: String::new(),
+            sender_user: None,
+            sender_device: None,
+            own: true,
+            bot: false,
+            ts: 0,
+            body: String::new(),
+            msg_id: Some(MessageId([msg; 16])),
+            seq,
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let (m, p) = (MessageId([7; 16]), MessageId([8; 16]));
+        let mut s = AppState::default();
+        s.timelines.insert(
+            ch,
+            Timeline {
+                channel_id: ch,
+                group: ChannelGroupState::Active,
+                items: vec![
+                    item(7, TimelineItemState::Ok, Some(5)),
+                    item(8, TimelineItemState::Pending, None),
+                ],
+                has_earlier: false,
+            },
+        );
+        assert_eq!(
+            exact_message(&s, ch, &m.hex()).map(|i| i.seq),
+            Some(Some(5))
+        );
+        assert!(exact_message(&s, ch, &p.hex()).is_none());
+        assert!(exact_message(&s, ch, "nothex").is_none());
+        assert!(exact_message(&s, ChannelId([2; 16]), &m.hex()).is_none());
+    }
+
+    /// A community channel `ch` read by Ada (not the owner) whose `@everyone` grants `allow`, beside a DM channel `dm`.
+    /// `ch` holds Ada's pinned message A, Bea's message B and Ada's outbox row P; `dm` holds A again, not pinned there.
+    fn message_world(allow: u32) -> (AppState, CommunityId, crate::state::ChannelId) {
+        use crate::features::roles::perm;
+        use crate::state::channels::{Channel, ChannelGroupState, Community};
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, RoleSummary};
+        use crate::state::{ChannelId, Timeline, TimelineItem, UserId};
+        let (c, ch, dm, everyone) = (
+            CommunityId([1; 16]),
+            ChannelId([2; 16]),
+            ChannelId([5; 16]),
+            [3; 16],
+        );
+        let (ada, bea) = (UserId([4; 16]), UserId([6; 16]));
+        let mut s = AppState::default();
+        s.account.user_id = Some(ada);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        s.channels.push(Channel {
+            id: ch,
+            community_id: c,
+            kind: 0,
+            mode: 0,
+            name: "general".into(),
+            topic: String::new(),
+            parent_id: None,
+            position: 0,
+            slowmode: 0,
+            text_group_id: None,
+            group: ChannelGroupState::Active,
+        });
+        let member = |user_id, username: &str| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        s.members
+            .insert(c, vec![member(ada, "ada"), member(bea, "bea")]);
+        s.roles.roles.insert(
+            c,
+            vec![RoleSummary {
+                id: everyone,
+                name: "@everyone".into(),
+                color: 0,
+                position: 0,
+                hoist: false,
+                mentionable: false,
+                allow: perm::VIEW_CHANNEL | perm::SEND_MESSAGES | allow,
+                deny: 0,
+                members: 2,
+            }],
+        );
+        s.roles.access.insert(
+            c,
+            CommunityAccess {
+                loaded: true,
+                everyone_id: Some(everyone),
+                ..CommunityAccess::default()
+            },
+        );
+        s.roles.overwrites.entry(c).or_default();
+        let item = |msg: u8, own: bool, state, seq, pinned| TimelineItem {
+            key: format!("o{msg}"),
+            state,
+            reason: String::new(),
+            sender_user: Some(if own { ada } else { bea }),
+            sender_device: None,
+            own,
+            bot: false,
+            ts: 0,
+            body: format!("body {msg}"),
+            msg_id: Some(MessageId([msg; 16])),
+            seq,
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let timeline = |channel_id, items| Timeline {
+            channel_id,
+            group: ChannelGroupState::Active,
+            items,
+            has_earlier: false,
+        };
+        s.timelines.insert(
+            ch,
+            timeline(
+                ch,
+                vec![
+                    item(0xa, true, TimelineItemState::Ok, Some(1), true),
+                    item(0xb, false, TimelineItemState::Ok, Some(2), false),
+                    item(0xc, true, TimelineItemState::Pending, None, false),
+                ],
+            ),
+        );
+        s.timelines.insert(
+            dm,
+            timeline(
+                dm,
+                vec![item(0xa, true, TimelineItemState::Ok, Some(1), false)],
+            ),
+        );
+        (s, c, ch)
+    }
+
+    /// builtin.ts `reply`, `edit`, `delete`, `pin` and `topic` (:116-152, :414-423): each checks the message and the
+    /// channel's bits before it may run. Refused here, nothing is sent; an own message asks before it is deleted; a
+    /// message already pinned answers without a send; a DM needs no bit to pin.
+    #[test]
+    fn message_builtins_check_before_running() {
+        use crate::features::roles::perm;
+        use crate::state::ChannelId;
+        let (s, c, ch) = message_world(0);
+        let (a, b, p) = (
+            MessageId([0xa; 16]).hex(),
+            MessageId([0xb; 16]).hex(),
+            MessageId([0xc; 16]).hex(),
+        );
+        let failed =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let run = |s: &AppState, draft: &str| plan_in(s, Some(c), Some(ch), draft);
+        assert_eq!(
+            run(&s, &format!("/edit message:{b} text:x")),
+            failed("You can edit only your own loaded message.")
+        );
+        assert_eq!(
+            run(&s, &format!("/delete message:{b} reason:spam")),
+            failed("Deleting another person’s message requires Manage Messages and a reason.")
+        );
+        assert_eq!(
+            run(&s, &format!("/delete message:{a}")),
+            Plan::Builtin {
+                run: Builtin::DeleteOwn {
+                    msg: MessageId([0xa; 16])
+                },
+                confirm: Some(Ask {
+                    title: "Delete this message?".into(),
+                    body: "This permanently deletes your message.".into(),
+                }),
+            }
+        );
+        assert_eq!(
+            run(&s, &format!("/pin message:{a}")),
+            failed("You cannot pin messages here.")
+        );
+        assert_eq!(
+            run(&s, &format!("/reply message:{p} text:x")),
+            failed("That message is not available in this conversation.")
+        );
+        assert_eq!(
+            run(&s, "/topic text:x"),
+            failed("You cannot manage this channel.")
+        );
+        assert_eq!(
+            run(&s, &format!("/reply message:{a} text:hello")),
+            Plan::Builtin {
+                run: Builtin::Reply {
+                    to: MessageId([0xa; 16]),
+                    text: "hello".into()
+                },
+                confirm: None,
+            }
+        );
+
+        let (s, c, ch) =
+            message_world(perm::PIN_MESSAGES | perm::MANAGE_MESSAGES | perm::MANAGE_CHANNELS);
+        let run = |draft: &str| plan_in(&s, Some(c), Some(ch), draft);
+        assert_eq!(
+            run(&format!("/pin message:{a}")),
+            Plan::Private(
+                ResultStatus::Success,
+                "Message is already pinned.".into(),
+                ResultProvider::Builtin
+            )
+        );
+        assert_eq!(
+            run("/topic text:x"),
+            Plan::Builtin {
+                run: Builtin::Topic {
+                    channel: ch,
+                    text: "x".into()
+                },
+                confirm: None,
+            }
+        );
+        // Another person's message: a moderator with a reason removes it for everyone, after the question.
+        assert_eq!(
+            run(&format!("/delete message:{b}")),
+            failed("Deleting another person’s message requires Manage Messages and a reason."),
+            "no reason"
+        );
+        assert_eq!(
+            run(&format!("/delete message:{b} reason:spam")),
+            Plan::Builtin {
+                run: Builtin::RemoveOther {
+                    msg: MessageId([0xb; 16]),
+                    seq: 2,
+                    reason: "spam".into(),
+                    excerpt: String::new(),
+                },
+                confirm: Some(Ask {
+                    title: "Delete this message?".into(),
+                    body: "Remove this message from everyone? Reason: spam".into(),
+                }),
+            }
+        );
+        // In a DM no bit is needed to pin (builtin.ts:417), and a topic is never set there.
+        let dm = ChannelId([5; 16]);
+        assert_eq!(
+            plan_in(&s, None, Some(dm), &format!("/pin message:{a}")),
+            Plan::Builtin {
+                run: Builtin::Pin {
+                    msg: MessageId([0xa; 16]),
+                    on: true
+                },
+                confirm: None,
+            }
+        );
+        assert_eq!(
+            plan_in(&s, None, Some(dm), "/topic text:x"),
+            failed("You cannot manage this channel.")
+        );
+        assert_eq!(
+            plan_in(&s, None, Some(dm), &format!("/unpin message:{a}")),
+            Plan::Private(
+                ResultStatus::Success,
+                "Message is already unpinned.".into(),
+                ResultProvider::Builtin
+            )
+        );
+        assert_eq!(
+            plan_in(&s, None, Some(dm), &format!("/pin message:{b}")),
+            failed("That message is not available in this channel.")
+        );
+    }
+
+    /// ThreadView.tsx:237 and builtin.ts:434-435: a thread's composer reads the thread's replies, not the channel's
+    /// timeline, and refuses to pin from it; `/reply` in a thread finds a reply, and outside it does not.
+    #[test]
+    fn thread_commands_bind_to_the_thread() {
+        use crate::features::roles::perm;
+        use crate::state::TimelineItem;
+        use crate::state::threads::ThreadData;
+        let (mut s, c, ch) = message_world(perm::PIN_MESSAGES);
+        let root = MessageId([0xa; 16]);
+        let mut reply: TimelineItem = s.timelines[&ch].items[0].clone();
+        reply.msg_id = Some(MessageId([0xd; 16]));
+        reply.pinned = false;
+        s.threads.threads.insert(
+            root,
+            ThreadData {
+                channel: ch,
+                root: None,
+                replies: vec![reply],
+                has_earlier: false,
+                count: 1,
+            },
+        );
+        let (r, channel_only) = (MessageId([0xd; 16]).hex(), MessageId([0xb; 16]).hex());
+        let thread = Some(Conversation {
+            channel: ch,
+            thread: Some(root),
+        });
+        let failed = |text: &str| {
+            Plan::Private(
+                ResultStatus::Failed,
+                text.to_owned(),
+                ResultProvider::Builtin,
+            )
+        };
+        assert_eq!(
+            plan_at(&s, Some(c), thread, &format!("/pin message:{r}")),
+            failed("Messages in threads cannot be pinned from the command composer.")
+        );
+        assert_eq!(
+            plan_at(&s, Some(c), thread, &format!("/pin message:{channel_only}")),
+            failed("That message is not available in this channel.")
+        );
+        assert_eq!(
+            plan_at(&s, Some(c), thread, &format!("/reply message:{r} text:x")),
+            Plan::Builtin {
+                run: Builtin::Reply {
+                    to: MessageId([0xd; 16]),
+                    text: "x".into()
+                },
+                confirm: None,
+            }
+        );
+        assert_eq!(
+            plan_at(
+                &s,
+                Some(c),
+                Some(Conversation {
+                    channel: ch,
+                    thread: None
+                }),
+                &format!("/reply message:{r} text:x")
+            ),
+            failed("That message is not available in this conversation.")
+        );
+    }
+
+    /// builtin.ts:355-379 as data (Review Focus 1): after the one `remove_message`, the steps only resolve the same proof
+    /// or send its evidence, each at most once; no step removes again (`RemovalStep` has no such variant).
+    #[test]
+    fn removal_steps_never_send_a_second_removal() {
+        use crate::features::moderation::{Evidence, Removal, RemovalOutcome};
+        const P: [u8; 16] = [7; 16];
+        let hex = crate::state::hex(&P);
+        let outcome = |removal, proof, evidence| RemovalOutcome {
+            removal,
+            proof_request_id: proof,
+            evidence_request_id: Some([8; 16]),
+            evidence,
+        };
+        let done = |status, text: String, uncertain| RemovalStep::Done {
+            status,
+            text,
+            uncertain,
+        };
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Unknown, P, Evidence::Pending),
+                false,
+                false
+            ),
+            RemovalStep::Resolve(P)
+        );
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Unknown, P, Evidence::Pending),
+                true,
+                false
+            ),
+            done(
+                ResultStatus::Failed,
+                format!("Message removal is unresolved. Recovery proof: {hex}."),
+                true
+            )
+        );
+        for resolved in [false, true] {
+            assert_eq!(
+                removal_step(
+                    &outcome(Removal::Rejected, P, Evidence::Pending),
+                    resolved,
+                    false
+                ),
+                done(
+                    ResultStatus::Failed,
+                    "The message could not be removed.".into(),
+                    false
+                )
+            );
+        }
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Accepted, P, Evidence::Pending),
+                false,
+                false
+            ),
+            RemovalStep::SendEvidence(P)
+        );
+        assert_eq!(
+            removal_step(
+                &outcome(Removal::Accepted, P, Evidence::Pending),
+                false,
+                true
+            ),
+            done(
+                ResultStatus::Failed,
+                format!("Message removed; moderation evidence is pending. Recovery proof: {hex}."),
+                true
+            )
+        );
+        // builtin.ts:368: without the removal's evidence request id nothing is sent again; the evidence is reported.
+        let no_request = RemovalOutcome {
+            evidence_request_id: None,
+            ..outcome(Removal::Accepted, P, Evidence::Unknown)
+        };
+        assert_eq!(
+            removal_step(&no_request, false, false),
+            done(
+                ResultStatus::Failed,
+                format!("Message removed; moderation evidence is unknown. Recovery proof: {hex}."),
+                true
+            )
+        );
+        match removal_step(
+            &outcome(Removal::Accepted, P, Evidence::Rejected),
+            true,
+            true,
+        ) {
+            RemovalStep::Done {
+                status: ResultStatus::Failed,
+                text,
+                uncertain: true,
+            } => assert!(
+                text.starts_with("Message removal was accepted; moderation evidence is rejected."),
+                "{text}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        for (resolved, sent) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(
+                removal_step(
+                    &outcome(Removal::Accepted, P, Evidence::Accepted),
+                    resolved,
+                    sent
+                ),
+                done(
+                    ResultStatus::Success,
+                    "Message removed and moderation evidence recorded.".into(),
+                    false
+                )
+            );
+        }
+        // The one removal's own failure (builtin.ts:344-349): a refusal is definitive, anything else uncertain.
+        let api = |status, code: &str| crate::sync::api::ApiError {
+            status,
+            code: code.into(),
+            detail: String::new(),
+            retry_after_ms: None,
+            extra: Vec::new(),
+        };
+        let refused =
+            "The message could not be removed with the current permissions or message state.";
+        let unsure =
+            "Message removal outcome is uncertain. Check the conversation before retrying.";
+        assert_eq!(removal_error(&api(0, "E_FORBIDDEN")), refused);
+        assert_eq!(removal_error(&api(404, "E_HTTP")), refused);
+        assert_eq!(removal_error(&api(0, "E_NETWORK")), unsure);
+        assert_eq!(removal_error(&api(409, "E_CONFLICT")), unsure);
+    }
+
+    /// builtin.ts:337-376 carries the message's text as its evidence: a [`Builtin`] never prints a body, a reason or an
+    /// excerpt (E2EE content stays out of logs and test output).
+    #[test]
+    fn a_builtin_never_prints_its_text() {
+        let remove = Builtin::RemoveOther {
+            msg: MessageId([1; 16]),
+            seq: 3,
+            reason: "secret reason".into(),
+            excerpt: "secret excerpt".into(),
+        };
+        let reply = Builtin::Reply {
+            to: MessageId([1; 16]),
+            text: "secret body".into(),
+        };
+        // The question of a removal names its reason in its body; a plan prints neither.
+        let plan = Plan::Builtin {
+            run: remove.clone(),
+            confirm: Some(Ask {
+                title: "Delete this message?".into(),
+                body: "Remove this message from everyone? Reason: secret reason".into(),
+            }),
+        };
+        // A warning's reason is its question's body.
+        let warn = Plan::Builtin {
+            run: Builtin::Warn {
+                community: CommunityId([7; 16]),
+                user: crate::state::UserId([2; 16]),
+                name: "bea".into(),
+                reason: "secret reason".into(),
+            },
+            confirm: Some(Ask {
+                title: "Warn bea?".into(),
+                body: "secret reason".into(),
+            }),
+        };
+        for shown in [
+            format!("{remove:?}"),
+            format!("{reply:?}"),
+            format!("{warn:?}"),
+            format!("{warn:#?}"),
+            format!("{plan:?}"),
+            format!(
+                "{:#?}",
+                RunOutcome::Builtin {
+                    run: remove,
+                    confirm: None
+                }
+            ),
+        ] {
+            assert!(!shown.contains("secret"), "{}", shown.len());
+            // R20: nor the member a moderation command acts on.
+            assert!(!shown.contains("bea"), "{}", shown.len());
+        }
+        // The question is still listed, by its lengths ("Delete this message?" is 20 bytes).
+        assert!(format!("{plan:?}").contains("Ask(20 bytes"));
+    }
+
+    /// R20 round 1: every moderation built-in, and a moderation target, print neither the member's id nor their name
+    /// (one case per variant, so re-adding either to any arm fails here).
+    #[test]
+    fn each_moderation_builtin_keeps_its_member_out_of_debug() {
+        let (community, user) = (CommunityId([7; 16]), crate::state::UserId([2; 16]));
+        let name = || "Bjornsson".to_owned();
+        let cases = [
+            (
+                "Timeout",
+                Builtin::Timeout {
+                    community,
+                    user,
+                    name: name(),
+                    seconds: 600,
+                },
+            ),
+            (
+                "Untimeout",
+                Builtin::Untimeout {
+                    community,
+                    user,
+                    name: name(),
+                },
+            ),
+            (
+                "UntimeoutConfirmed",
+                Builtin::UntimeoutConfirmed {
+                    community,
+                    user,
+                    name: name(),
+                },
+            ),
+            (
+                "Warn",
+                Builtin::Warn {
+                    community,
+                    user,
+                    name: name(),
+                    reason: "secret-reason".into(),
+                },
+            ),
+            (
+                "Unban",
+                Builtin::Unban {
+                    community,
+                    user,
+                    name: name(),
+                },
+            ),
+        ];
+        let id = format!("{user:?}");
+        for (variant, b) in cases {
+            for shown in [format!("{b:?}"), format!("{b:#?}")] {
+                assert!(shown.starts_with(variant), "{variant}: the variant shows");
+                assert!(!shown.contains(&id), "{variant}: the member's id");
+                assert!(!shown.contains("Bjornsson"), "{variant}: the member's name");
+                assert!(!shown.contains("secret"), "{variant}: the reason");
+            }
+        }
+        let target = Target {
+            user,
+            name: name(),
+            username: "bjornsson".into(),
+        };
+        let shown = format!("{target:?}");
+        assert!(!shown.contains(&id) && !shown.to_lowercase().contains("bjornsson"));
+    }
+
+    /// R21: posts, private rows, sealed Bot arguments and answers, polls, search hits and notifications print no decrypted
+    /// text in Debug output (one value per redacted type).
+    #[test]
+    fn decrypted_texts_of_commands_and_notices_stay_out_of_debug() {
+        const SECRET: &str = "zebra-body-7";
+        let mut args = registry::Args::new();
+        args.insert("text".into(), SECRET.into());
+        let definition = registry::commands()[0].clone();
+        let (channel, user) = (ChannelId([9; 16]), crate::state::UserId([2; 16]));
+        let shown = [
+            format!("{:?}", Plan::Post(SECRET.into())),
+            format!(
+                "{:?}",
+                Plan::Private(ResultStatus::Success, SECRET.into(), ResultProvider::Bot)
+            ),
+            format!(
+                "{:#?}",
+                Plan::Bot {
+                    definition: definition.clone(),
+                    args: args.clone(),
+                }
+            ),
+            format!("{:?}", RunOutcome::Post(SECRET.into())),
+            format!("{:#?}", RunOutcome::Bot { definition, args }),
+            format!(
+                "{:?}",
+                private::Patch {
+                    status: None,
+                    text: Some(SECRET.into()),
+                    hold: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                sealed::Answer {
+                    seq: 1,
+                    status: 200,
+                    body: SECRET.as_bytes().to_vec(),
+                    final_: true,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::state::bot_admin::WebhookLabel {
+                    text: SECRET.into(),
+                    webhook_id: "w".repeat(32),
+                    name: "CI".into(),
+                    avatar_id: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                RemovalStep::Done {
+                    status: ResultStatus::Failed,
+                    text: SECRET.into(),
+                    uncertain: true,
+                }
+            ),
+            format!(
+                "{:?}",
+                vec![
+                    crate::gateway::frames::Value::Text(SECRET.into()),
+                    crate::gateway::frames::Value::Bytes(SECRET.as_bytes().to_vec()),
+                ]
+            ),
+            format!(
+                "{:?}",
+                vec![
+                    crate::features::bot_admin::BotArg::Text(SECRET.into()),
+                    crate::features::bot_admin::BotArg::Bytes(SECRET.as_bytes().to_vec()),
+                ]
+            ),
+            format!(
+                "{:?}",
+                crate::features::bot_admin::SealedAnswer {
+                    status: 200,
+                    body: SECRET.as_bytes().to_vec(),
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::utilities::polls::PollCreate {
+                    channel: [9; 16],
+                    thread: None,
+                    question: SECRET.into(),
+                    answers: vec![SECRET.into()],
+                    multi: false,
+                    duration: 60,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::utilities::polls::CardOption {
+                    text: SECRET.into(),
+                    pct: 0,
+                    mine: false,
+                    winner: false,
+                    voters: Vec::new(),
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::search::RawHit {
+                    group: [9; 16],
+                    seq: 1,
+                    snippet: SECRET.into(),
+                    thread_root: None,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::notify::Notice {
+                    channel,
+                    community: None,
+                    kind: crate::features::notify::NoticeKind::Dm,
+                    sender_user: Some(user),
+                    sender_name: "Ada".into(),
+                    body: SECRET.into(),
+                    ts: 1,
+                }
+            ),
+            format!(
+                "{:?}",
+                crate::features::notify::Notification {
+                    kind: crate::features::notify::NotificationKind::Dm,
+                    title: "Ada".into(),
+                    body: SECRET.into(),
+                    tag: "dilla:x".into(),
+                    channel: Some(channel),
+                }
+            ),
+        ];
+        for s in shown {
+            assert!(!s.contains("zebra"), "a decrypted text: {} bytes", s.len());
+        }
+    }
+
+    /// R20: a checked kick or ban, its private row's copy and the row itself name neither the member nor the reason.
+    #[test]
+    fn moderation_rows_keep_the_member_and_reason_out_of_debug() {
+        let ban = Moderation {
+            community: CommunityId([7; 16]),
+            user: crate::state::UserId([2; 16]),
+            name: "Bjornsson".into(),
+            username: "bjornsson".into(),
+            action: ModAction::Ban {
+                seconds: Some(3600),
+                duration: "1h".into(),
+                reason: "secret-reason".into(),
+            },
+        };
+        let texts = ModerationTexts {
+            cancelled: "Ban of Bjornsson cancelled.".into(),
+            pending: "Banning Bjornsson…".into(),
+            done: "Bjornsson was banned.".into(),
+        };
+        let row = crate::state::bot::PrivateResult {
+            id: 1,
+            at: 0,
+            status: ResultStatus::Success,
+            text: "Bjornsson was banned. secret-reason".into(),
+            provider: ResultProvider::Builtin,
+            hold: false,
+            settled_at: None,
+        };
+        let user = format!("{:?}", crate::state::UserId([2; 16]));
+        for shown in [
+            format!("{ban:?}"),
+            format!("{ban:#?}"),
+            format!("{texts:?}"),
+            format!("{row:?}"),
+        ] {
+            assert!(!shown.to_lowercase().contains("bjornsson"), "a name");
+            assert!(!shown.contains("secret"), "a reason");
+            assert!(!shown.contains(&user), "the member's id");
+        }
+    }
+
+    /// builtin.ts `eligibleAssignableRole` (:384-393): a role is assignable when this account manages roles and ranks
+    /// above it, it carries nothing this account lacks, and the member is neither this account nor the owner nor already
+    /// holding it (revoke: holding it); @everyone never.
+    #[test]
+    fn assignable_role_follows_the_web_rules() {
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, RoleSummary};
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea, owner) = (UserId([1; 16]), UserId([2; 16]), UserId([3; 16]));
+        let role = |n: u8, position: u32, allow: u32| RoleSummary {
+            id: [n; 16],
+            name: format!("r{n}"),
+            color: 0,
+            position,
+            hoist: false,
+            mentionable: false,
+            allow,
+            deny: 0,
+            members: 0,
+        };
+        let member = |user_id, username: &str, role_ids: Vec<[u8; 16]>| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids,
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner,
+            policy_version: 1,
+        });
+        // I hold role 10 (position 5, no bits); Bea holds role 13.
+        s.members.insert(
+            c,
+            vec![
+                member(me, "ada", vec![[10; 16]]),
+                member(bea, "bea", vec![[13; 16]]),
+                member(owner, "olaf", Vec::new()),
+            ],
+        );
+        s.roles.roles.insert(
+            c,
+            vec![
+                role(9, 0, 0),
+                role(10, 5, 0),
+                role(11, 5, 0),
+                role(12, 2, 0x1 << 25),
+                role(13, 2, 0),
+                role(14, 3, 0),
+            ],
+        );
+        s.roles.access.insert(
+            c,
+            CommunityAccess {
+                top: 5,
+                manage_roles: true,
+                loaded: true,
+                everyone_id: Some([9; 16]),
+                ..CommunityAccess::default()
+            },
+        );
+        let id = |n: u8| {
+            [n; 16]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let pick = |user: UserId, role: u8, add: bool| {
+            assignable_role(&s, c, &user.hex(), &id(role), add).map(|(r, t)| (r.id, t.user))
+        };
+        assert_eq!(
+            pick(bea, 14, true),
+            Some(([14; 16], bea)),
+            "a lower role not held"
+        );
+        assert_eq!(pick(bea, 14, false), None, "not held: nothing to remove");
+        assert_eq!(pick(bea, 13, true), None, "already held");
+        assert_eq!(
+            pick(bea, 13, false),
+            Some(([13; 16], bea)),
+            "held: removable"
+        );
+        assert_eq!(pick(bea, 9, true), None, "@everyone");
+        assert_eq!(pick(bea, 11, true), None, "at the caller's top");
+        assert_eq!(pick(bea, 12, true), None, "carries a bit the caller lacks");
+        assert_eq!(pick(me, 14, true), None, "oneself");
+        assert_eq!(pick(owner, 14, true), None, "the owner");
+        let mut no_manage = s.clone();
+        no_manage.roles.access.get_mut(&c).unwrap().manage_roles = false;
+        assert!(assignable_role(&no_manage, c, &bea.hex(), &id(14), true).is_none());
+    }
+
+    /// builtin.ts `mutationError` for a sync step: a definitive code is named, anything else is uncertain.
+    #[test]
+    fn mutation_error_of_names_definitive_codes() {
+        use crate::ClientError;
+        assert_eq!(
+            mutation_error_of(&ClientError::Sync("E_FORBIDDEN".into())),
+            "Command was refused (E_FORBIDDEN)."
+        );
+        assert_eq!(
+            mutation_error_of(&ClientError::Network("down".into())),
+            "The command result is uncertain. Check the current server state before retrying."
+        );
+    }
 
     /// Review HL item 15 (weak test), at the op 63 handler's level: three hints of one community's Bot inside 250 ms read
     /// its catalog twice (the first at once, one trailing read for the other two), as hints.test.ts expects of
@@ -959,6 +3051,11 @@ mod tests {
         assert_eq!(music_hint(&s, &hint(2, lounge.0)), Some(lounge));
         assert_eq!(music_hint(&s, &hint(2, [9; 16])), None, "another call");
         assert_eq!(music_hint(&s, &hint(1, lounge.0)), None, "a channel scope");
+        // A watched channel follows its hint without a call.
+        let mut s = AppState::default();
+        s.bot_admin.music_watched.insert(lounge);
+        assert_eq!(music_hint(&s, &hint(2, lounge.0)), Some(lounge));
+        assert_eq!(music_hint(&s, &hint(1, lounge.0)), None);
     }
 
     fn state_with_catalog() -> (AppState, CommunityId) {
@@ -1139,6 +3236,206 @@ mod tests {
         );
     }
 
+    /// builtin.ts `timeout`, `warn` and `unban` (:168-182, :204-264): the member, the length, the reason and the ban are
+    /// checked before anything is asked; `/timeout` and `/warn` need Moderate Members, `/unban` Ban Members and a ban this
+    /// device has read.
+    #[test]
+    fn moderation_builtins_check_before_running() {
+        use crate::state::members::{BanSummary, Member};
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea) = (UserId([1; 16]), UserId([2; 16]));
+        let member = |user_id, username: &str| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: me,
+            policy_version: 1,
+        });
+        s.members
+            .insert(c, vec![member(me, "ada"), member(bea, "bea")]);
+        let mut access = s.roles.access_of(c);
+        access.loaded = true;
+        access.owner = true;
+        s.roles.access.insert(c, access.clone());
+        let refused =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let bea_id = bea.hex();
+        let timeout = |d: &str| format!("/timeout user:{bea_id} duration:{d}");
+        assert_eq!(
+            plan(&s, Some(c), &timeout("10m")),
+            refused("This member cannot be timed out with your current permissions and rank."),
+            "no Moderate Members"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &format!("/untimeout user:{bea_id}")),
+            refused("This member cannot be timed out with your current permissions and rank.")
+        );
+        assert_eq!(
+            plan(&s, Some(c), &format!("/warn user:{bea_id} reason:spam")),
+            refused("This member cannot be warned with your current permissions and rank.")
+        );
+        access.moderate_members = true;
+        s.roles.access.insert(c, access.clone());
+        assert_eq!(
+            plan(&s, Some(c), &timeout("30s")),
+            refused("Timeout duration must be from 1m to 28d.")
+        );
+        assert_eq!(
+            plan(&s, Some(c), &timeout("29d")),
+            refused("Timeout duration must be from 1m to 28d.")
+        );
+        assert_eq!(
+            plan(&s, Some(c), &timeout("10m")),
+            Plan::Builtin {
+                run: Builtin::Timeout {
+                    community: c,
+                    user: bea,
+                    name: "bea".into(),
+                    seconds: 600,
+                },
+                confirm: Some(Ask {
+                    title: "Timeout bea?".into(),
+                    body: "Restrict this member for 10m.".into(),
+                }),
+            }
+        );
+        // The question comes once the timeout is read (builtins::run): none here.
+        assert_eq!(
+            plan(&s, Some(c), &format!("/untimeout user:{bea_id}")),
+            Plan::Builtin {
+                run: Builtin::Untimeout {
+                    community: c,
+                    user: bea,
+                    name: "bea".into(),
+                },
+                confirm: None,
+            }
+        );
+        let bad_reason =
+            refused("Enter a reason of at most 512 UTF-8 bytes without control characters.");
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/warn user:{bea_id} reason:\"a\u{1}b\"")
+            ),
+            bad_reason
+        );
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/warn user:{bea_id} reason:{}", "x".repeat(513))
+            ),
+            bad_reason
+        );
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/warn user:{bea_id} reason:\" spam \"")
+            ),
+            Plan::Builtin {
+                run: Builtin::Warn {
+                    community: c,
+                    user: bea,
+                    name: "bea".into(),
+                    reason: "spam".into(),
+                },
+                confirm: Some(Ask {
+                    title: "Warn bea?".into(),
+                    body: "spam".into(),
+                }),
+            }
+        );
+
+        let unban = format!("/unban user:{bea_id}");
+        assert_eq!(
+            plan(&s, Some(c), &unban),
+            refused("You cannot unban members here."),
+            "no Ban Members"
+        );
+        access.ban_members = true;
+        s.roles.access.insert(c, access);
+        assert_eq!(
+            plan(&s, Some(c), &unban),
+            refused("That member is not currently banned."),
+            "no bans read"
+        );
+        s.people.bans.insert(
+            c,
+            vec![BanSummary {
+                user_id: bea,
+                name: "Bea B".into(),
+                reason: String::new(),
+                by_user: me,
+                created: 0,
+                expires: None,
+            }],
+        );
+        assert_eq!(
+            plan(&s, Some(c), &unban),
+            Plan::Builtin {
+                run: Builtin::Unban {
+                    community: c,
+                    user: bea,
+                    name: "Bea B".into(),
+                },
+                confirm: Some(Ask {
+                    title: "Unban Bea B?".into(),
+                    body: "This restores the member’s ability to join the community.".into(),
+                }),
+            }
+        );
+        assert_eq!(
+            plan(&s, Some(c), &format!("/unban user:{}", me.hex())),
+            refused("That member is not currently banned.")
+        );
+        // Not CommandHost's `moderation` (only `/kick` and `/ban`, CommandHost.tsx:233): a Cancel dismisses the row (:291).
+        for run in [
+            Builtin::Timeout {
+                community: c,
+                user: bea,
+                name: String::new(),
+                seconds: 60,
+            },
+            Builtin::Untimeout {
+                community: c,
+                user: bea,
+                name: String::new(),
+            },
+            Builtin::UntimeoutConfirmed {
+                community: c,
+                user: bea,
+                name: String::new(),
+            },
+            Builtin::Warn {
+                community: c,
+                user: bea,
+                name: String::new(),
+                reason: String::new(),
+            },
+            Builtin::Unban {
+                community: c,
+                user: bea,
+                name: String::new(),
+            },
+        ] {
+            assert!(run.dismissed_on_cancel(), "{run:?}");
+        }
+    }
+
     #[test]
     fn catalog_commands_are_sealed_and_only_in_their_community() {
         let (s, c) = state_with_catalog();
@@ -1156,6 +3453,528 @@ mod tests {
                 not_a_command("remind"),
                 ResultProvider::Builtin
             )
+        );
+    }
+
+    /// builtin.test.ts:501 (`has a real handler registered for every built-in catalog entry`): in a state where this
+    /// account may do anything (the community's owner, every permission loaded), each built-in of the registry, given
+    /// valid arguments, parses and is answered by its own arm: `plan_in` has no catch-all, so a built-in without one is
+    /// `Plan::Incomplete` here.
+    #[test]
+    fn every_builtin_has_a_handler() {
+        use super::registry::ArgKind;
+        use crate::state::MessageId;
+        let (mut s, c, ch) = message_world(u32::MAX);
+        let ada = s.account.user_id.unwrap();
+        s.communities[0].owner = ada;
+        s.roles.access.insert(
+            c,
+            crate::state::roles::CommunityAccess {
+                top: u32::MAX,
+                owner: true,
+                administrator: true,
+                manage_community: true,
+                view_audit_log: true,
+                manage_channels: true,
+                kick_members: true,
+                ban_members: true,
+                moderate_members: true,
+                manage_messages: true,
+                create_invite: true,
+                manage_roles: true,
+                loaded: true,
+                everyone_id: Some([3; 16]),
+            },
+        );
+        let bea = crate::state::UserId([6; 16]).hex();
+        for command in registry::commands() {
+            let mut draft = format!("/{}", command.id);
+            for option in command.options.iter().filter(|o| o.required) {
+                let value = match (option.kind, option.name.as_str()) {
+                    (ArgKind::User, _) => bea.clone(),
+                    (ArgKind::Role, _) => crate::features::server_admin::hex_id(&[3; 16]),
+                    (ArgKind::Message, _) => MessageId([0xb; 16]).hex(),
+                    (ArgKind::Channel, _) => ch.hex(),
+                    (ArgKind::Duration, _) => "1h".to_owned(),
+                    (_, "language") => "rust".to_owned(),
+                    _ => "x".to_owned(),
+                };
+                draft.push_str(&format!(" {}:{value}", option.name));
+            }
+            assert_ne!(
+                plan_in(&s, Some(c), Some(ch), &draft),
+                Plan::Incomplete,
+                "{draft} has no handler"
+            );
+        }
+    }
+
+    /// builtin.ts `updateMemberRole` (:395-404): a role is granted or revoked only where [`assignable_role`] allows it;
+    /// removing one asks first, adding one does not.
+    #[test]
+    fn role_builtins_check_before_running() {
+        use crate::state::members::Member;
+        use crate::state::roles::{CommunityAccess, RoleSummary};
+        use crate::state::{Community, UserId};
+        let c = CommunityId([7; 16]);
+        let (me, bea) = (UserId([1; 16]), UserId([2; 16]));
+        let (everyone, mine, crew, guest) = ([9; 16], [10; 16], [13; 16], [14; 16]);
+        let role = |id: [u8; 16], name: &str, position: u32| RoleSummary {
+            id,
+            name: name.into(),
+            color: 0,
+            position,
+            hoist: false,
+            mentionable: false,
+            allow: 0,
+            deny: 0,
+            members: 0,
+        };
+        let member = |user_id, username: &str, role_ids: Vec<[u8; 16]>| Member {
+            user_id,
+            username: username.into(),
+            display: String::new(),
+            kind: 0,
+            role_ids,
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: c,
+            name: "Midgard".into(),
+            owner: UserId([3; 16]),
+            policy_version: 1,
+        });
+        s.members.insert(
+            c,
+            vec![
+                member(me, "ada", vec![mine]),
+                member(bea, "bea", vec![crew]),
+            ],
+        );
+        s.roles.roles.insert(
+            c,
+            vec![
+                role(everyone, "@everyone", 0),
+                role(mine, "Mods", 5),
+                role(crew, "Crew", 2),
+                role(guest, "Guest", 1),
+            ],
+        );
+        s.roles.access.insert(
+            c,
+            CommunityAccess {
+                top: 5,
+                manage_roles: true,
+                loaded: true,
+                everyone_id: Some(everyone),
+                ..CommunityAccess::default()
+            },
+        );
+        let hex = crate::features::server_admin::hex_id;
+        let draft =
+            |verb: &str, r: &[u8; 16]| format!("/role {verb} user:{} role:{}", bea.hex(), hex(r));
+        let refused = Plan::Private(
+            ResultStatus::Failed,
+            "This member or role is not assignable with your current permissions and rank.".into(),
+            ResultProvider::Builtin,
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("add", &everyone)),
+            refused,
+            "@everyone"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("add", &crew)),
+            refused,
+            "already held"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("remove", &guest)),
+            refused,
+            "not held"
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("remove", &crew)),
+            Plan::Builtin {
+                run: Builtin::Role {
+                    community: c,
+                    user: bea,
+                    role: crew,
+                    add: false,
+                    role_name: "Crew".into(),
+                    member_name: "bea".into(),
+                },
+                confirm: Some(Ask {
+                    title: "Remove Crew from bea?".into(),
+                    body: "This changes the member’s roles.".into(),
+                }),
+            }
+        );
+        assert_eq!(
+            plan(&s, Some(c), &draft("add", &guest)),
+            Plan::Builtin {
+                run: Builtin::Role {
+                    community: c,
+                    user: bea,
+                    role: guest,
+                    add: true,
+                    role_name: "Guest".into(),
+                    member_name: "bea".into(),
+                },
+                confirm: None,
+            }
+        );
+        // The self roles are read as the command runs: planning checks nothing but the community.
+        assert_eq!(
+            plan(&s, Some(c), "/selfrole list"),
+            Plan::Builtin {
+                run: Builtin::SelfRoleList { community: c },
+                confirm: None,
+            }
+        );
+        assert_eq!(
+            plan(
+                &s,
+                Some(c),
+                &format!("/selfrole remove role:{}", hex(&crew))
+            ),
+            Plan::Builtin {
+                run: Builtin::SelfRole {
+                    community: c,
+                    role: hex(&crew),
+                    add: false,
+                },
+                confirm: None,
+            }
+        );
+    }
+
+    /// R20/R21: a role command names neither the member nor the role it acts on in its Debug, nor do the self-role
+    /// commands name their role (one case per variant).
+    #[test]
+    fn role_builtins_keep_the_member_and_role_out_of_debug() {
+        let (community, user) = (CommunityId([7; 16]), crate::state::UserId([2; 16]));
+        let role = [0xab; 16];
+        let cases = [
+            (
+                "Role",
+                Builtin::Role {
+                    community,
+                    user,
+                    role,
+                    add: true,
+                    role_name: "Crewmates".into(),
+                    member_name: "Bjornsson".into(),
+                },
+            ),
+            (
+                "SelfRole",
+                Builtin::SelfRole {
+                    community,
+                    role: crate::features::server_admin::hex_id(&role),
+                    add: true,
+                },
+            ),
+            ("SelfRoleList", Builtin::SelfRoleList { community }),
+        ];
+        let id = format!("{user:?}");
+        for (variant, b) in cases {
+            for shown in [format!("{b:?}"), format!("{b:#?}")] {
+                assert!(shown.starts_with(variant), "{variant}: the variant shows");
+                assert!(!shown.contains(&id), "{variant}: the member's id");
+                assert!(!shown.contains("Bjornsson"), "{variant}: the member's name");
+                assert!(!shown.contains("Crewmates"), "{variant}: the role's name");
+                assert!(!shown.contains("ab"), "{variant}: the role's id");
+                assert!(!shown.contains("171"), "{variant}: the role's id bytes");
+            }
+            assert!(b.dismissed_on_cancel(), "{variant}");
+        }
+    }
+
+    /// builtin.ts:88-130, :153-162, :272-277: the navigation, UI-opening and voice built-ins check before they run. Each
+    /// refusal is its sentence; a command that may run names what it needs; the voice commands compute what the call ends
+    /// with from the person's own mute and deafen.
+    #[test]
+    fn navigation_builtins_check_before_running() {
+        use crate::calls::CallPhase;
+        use crate::features::roles::perm;
+        use crate::state::ChannelId;
+        use crate::state::channels::{Channel, ChannelGroupState};
+        let (mut s, c, ch) = message_world(0);
+        let voice = ChannelId([8; 16]);
+        let mut room = s.channel(ch).unwrap().clone();
+        (room.id, room.kind, room.name) = (voice, 1, "lounge".into());
+        s.channels.push(room);
+        let mut other = Channel {
+            community_id: CommunityId([0xee; 16]),
+            id: ChannelId([9; 16]),
+            kind: 1,
+            ..s.channel(voice).unwrap().clone()
+        };
+        other.group = ChannelGroupState::Active;
+        s.channels.push(other);
+        let failed =
+            |text: &str| Plan::Private(ResultStatus::Failed, text.into(), ResultProvider::Builtin);
+        let run = |run: Builtin| Plan::Builtin { run, confirm: None };
+        let plan = |s: &AppState, draft: &str| plan_in(s, Some(c), Some(ch), draft);
+        let in_dm = |s: &AppState, draft: &str| plan_in(s, None, Some(ChannelId([5; 16])), draft);
+        let msg = MessageId([0xb; 16]).hex();
+
+        // giphy: a community's, never a DM's.
+        assert_eq!(
+            in_dm(&s, "/giphy query:cats"),
+            failed("GIF search is available only in a community channel.")
+        );
+        assert_eq!(
+            plan(&s, "/giphy query:cats"),
+            run(Builtin::Giphy {
+                query: "cats".into()
+            })
+        );
+        assert_eq!(
+            plan(&s, "/giphy"),
+            run(Builtin::Giphy {
+                query: String::new()
+            })
+        );
+
+        // invite: Create Invite in the channel.
+        let refused = failed("You cannot create invites here.");
+        assert_eq!(plan(&s, "/invite"), refused);
+        assert_eq!(in_dm(&s, "/invite"), refused);
+        let (allowed, ..) = message_world(perm::CREATE_INVITE | perm::VIEW_AUDIT_LOG);
+        assert_eq!(
+            plan(&allowed, "/invite"),
+            run(Builtin::Invite { community: c })
+        );
+
+        // search: the scope is one of three, and a community's search needs one.
+        assert_eq!(
+            plan(&s, "/search query:x scope:all"),
+            run(Builtin::Search { query: "x".into() })
+        );
+        assert_eq!(
+            plan(&s, "/search query:x"),
+            run(Builtin::Search { query: "x".into() })
+        );
+        assert_eq!(
+            plan(&s, "/search query:x scope:galaxy"),
+            failed("Scope must be channel, community, or all.")
+        );
+        assert_eq!(
+            in_dm(&s, "/search query:x scope:community"),
+            failed("Community search is unavailable here.")
+        );
+        assert_eq!(
+            in_dm(&s, "/search query:x scope:all"),
+            run(Builtin::Search { query: "x".into() }),
+            "all and channel search work in a DM"
+        );
+
+        // thread: a stored message of a community channel.
+        assert_eq!(
+            plan(&s, &format!("/thread message:{msg}")),
+            run(Builtin::Thread {
+                root: MessageId([0xb; 16])
+            })
+        );
+        let unavailable = failed("That message is not available in this channel.");
+        assert_eq!(
+            plan(
+                &s,
+                &format!("/thread message:{}", MessageId([0xc; 16]).hex())
+            ),
+            unavailable,
+            "an outbox row has no id to open yet"
+        );
+        assert_eq!(
+            plan(&s, &format!("/thread message:{}", MessageId([1; 16]).hex())),
+            unavailable
+        );
+        assert_eq!(
+            in_dm(
+                &s,
+                &format!("/thread message:{}", MessageId([0xa; 16]).hex())
+            ),
+            unavailable
+        );
+
+        // dm: the member's id, whoever it names (the instance decides when it runs).
+        let bea = crate::state::UserId([6; 16]);
+        assert_eq!(
+            plan(&s, &format!("/dm user:{}", bea.hex())),
+            run(Builtin::Dm { user: bea })
+        );
+        assert_eq!(
+            plan(&s, "/dm user:nobody"),
+            failed("Could not open that direct message.")
+        );
+
+        // modlog: View Audit Log in a community.
+        let refused = failed("Moderation history needs a community and View Audit Log permission.");
+        assert_eq!(plan(&s, "/modlog"), refused);
+        assert_eq!(in_dm(&s, "/modlog"), refused);
+        assert_eq!(
+            plan(&allowed, "/modlog"),
+            run(Builtin::Modlog { community: c })
+        );
+
+        // join: this community's voice channel.
+        let pick = |id: ChannelId| format!("/join voice-channel:{}", id.hex());
+        assert_eq!(
+            plan(&s, &pick(voice)),
+            run(Builtin::Join { channel: voice })
+        );
+        let refused = failed("Choose an accessible voice channel.");
+        assert_eq!(plan(&s, &pick(ch)), refused, "a text channel");
+        assert_eq!(
+            plan(&s, &pick(ChannelId([9; 16]))),
+            refused,
+            "another server's"
+        );
+        assert_eq!(plan(&s, &pick(ChannelId([0x77; 16]))), refused, "none");
+        assert_eq!(
+            in_dm(&s, &pick(voice)),
+            failed("This command needs a community channel.")
+        );
+
+        // leave and the four voice settings need a call.
+        assert_eq!(plan(&s, "/leave"), failed("You are not in a voice call."));
+        for draft in ["/mute", "/unmute", "/deafen", "/undeafen"] {
+            assert_eq!(
+                plan(&s, draft),
+                failed("Join a voice call first."),
+                "{draft}"
+            );
+        }
+        s.voice.call.channel = Some(voice);
+        s.voice.call.phase = CallPhase::Joining;
+        assert_eq!(
+            plan(&s, "/leave"),
+            run(Builtin::Leave),
+            "a join on its way is left too"
+        );
+        assert_eq!(
+            plan(&s, "/mute"),
+            failed("Join a voice call first."),
+            "the settings wait for the call"
+        );
+        s.voice.call.phase = CallPhase::In;
+        let voice_of = |muted, deafened| run(Builtin::Voice { muted, deafened });
+        assert_eq!(plan(&s, "/deafen"), voice_of(true, true));
+        assert_eq!(plan(&s, "/mute"), voice_of(true, false));
+        assert_eq!(plan(&s, "/unmute"), voice_of(false, false));
+        assert_eq!(plan(&s, "/undeafen"), voice_of(false, false));
+        (s.voice.self_mute, s.voice.self_deaf) = (true, true);
+        assert_eq!(
+            plan(&s, "/undeafen"),
+            voice_of(true, false),
+            "the mute it had is kept"
+        );
+        assert_eq!(plan(&s, "/mute"), voice_of(true, true), "a deafen is kept");
+        assert_eq!(plan(&s, "/unmute"), voice_of(false, true));
+    }
+
+    /// A search or GIF query is what the person looks for, and a `/dm` names a member: the commands' Debug shows
+    /// lengths, ids of the conversation and no more.
+    #[test]
+    fn navigation_builtins_keep_queries_and_members_out_of_debug() {
+        let (community, root) = (CommunityId([7; 16]), MessageId([0xcd; 16]));
+        let user = crate::state::UserId([0xab; 16]);
+        let secret = "needle-in-the-haystack";
+        for (shown, want) in [
+            (
+                Builtin::Giphy {
+                    query: secret.into(),
+                },
+                "Giphy(22 bytes)",
+            ),
+            (
+                Builtin::Search {
+                    query: secret.into(),
+                },
+                "Search(22 bytes)",
+            ),
+            (Builtin::Dm { user }, "Dm"),
+            (Builtin::Leave, "Leave"),
+            (
+                Builtin::Voice {
+                    muted: true,
+                    deafened: false,
+                },
+                "Voice(true, false)",
+            ),
+        ] {
+            for text in [format!("{shown:?}"), format!("{shown:#?}")] {
+                assert_eq!(text, want);
+                assert!(!text.contains("needle"), "{want}: the query");
+                assert!(!text.contains(&format!("{user:?}")), "{want}: the member");
+            }
+            assert!(shown.dismissed_on_cancel());
+        }
+        assert_eq!(
+            format!("{:?}", Builtin::Thread { root }),
+            format!("Thread({root:?})")
+        );
+        assert_eq!(
+            format!("{:?}", Builtin::Invite { community }),
+            format!("Invite({community:?})")
+        );
+        assert_eq!(
+            format!("{:?}", Builtin::Modlog { community }),
+            format!("Modlog({community:?})")
+        );
+    }
+
+    /// CommandHost.tsx:243: a draft's memory key is its command and its parsed arguments, whatever order they were typed
+    /// in; another value is another key, and a draft that is no invocation has none.
+    #[test]
+    fn invocation_key_reads_the_parsed_arguments() {
+        let s = AppState::default();
+        let a = crate::state::UserId([2; 16]).hex();
+        let key = |draft: &str| invocation_key(&s, None, draft);
+        let first = key(&format!("/timeout user:{a} duration:10m")).expect("an invocation");
+        assert!(first.starts_with("timeout\0"), "the command first");
+        assert_eq!(
+            key(&format!("/timeout duration:10m user:{a}")),
+            Some(first.clone())
+        );
+        assert_ne!(key(&format!("/timeout user:{a} duration:1h")), Some(first));
+        assert_eq!(key("hello"), None);
+        assert_eq!(key("/timeout"), None, "incomplete");
+    }
+
+    /// R21: an attempt's draft and invocation and an outcome's text show as lengths only; an uncertain outcome's row
+    /// reads failed.
+    #[test]
+    fn an_attempt_and_an_outcome_keep_their_text_out_of_debug() {
+        let attempt = Attempt {
+            request: [1; 16],
+            invocation: "warn\0reason=secret".into(),
+            text: "/warn user:x reason:secret".into(),
+        };
+        let outcome = Outcome::Uncertain("secret".into());
+        for shown in [format!("{attempt:?}"), format!("{outcome:?}")] {
+            assert!(!shown.contains("secret"), "{shown}");
+        }
+        assert_eq!(outcome.row(), (ResultStatus::Failed, "secret"));
+        assert_eq!(
+            Outcome::Success("ok".into()).row(),
+            (ResultStatus::Success, "ok")
+        );
+        assert_eq!(
+            mutation_outcome_of(&crate::ClientError::Network("x".into())),
+            Outcome::Uncertain(
+                "The command result is uncertain. Check the current server state before retrying."
+                    .into()
+            )
+        );
+        assert_eq!(
+            mutation_outcome_of(&crate::ClientError::Sync("E_FORBIDDEN".into())),
+            Outcome::Failure("Command was refused (E_FORBIDDEN).".into())
         );
     }
 }

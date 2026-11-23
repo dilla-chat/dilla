@@ -16,7 +16,7 @@ use super::dialog::{Dialog, DialogKind, InitialFocus};
 use crate::a11y::{Accessible, Live, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height, paragraph};
+use crate::text::{line, paragraph};
 use crate::tokens::{color, text};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -63,6 +63,8 @@ pub struct ConfirmDialog {
     field_focus: Option<FocusHandle>,
     on_confirm: Option<Handler>,
     on_close: Option<Handler>,
+    on_backdrop: Option<Handler>,
+    confirm_wrap: Option<Box<dyn FnOnce(AnyElement) -> AnyElement>>,
     in_section: bool,
 }
 
@@ -93,6 +95,8 @@ impl ConfirmDialog {
             field_focus: None,
             on_confirm: None,
             on_close: None,
+            on_backdrop: None,
+            confirm_wrap: None,
             in_section: false,
         }
     }
@@ -159,6 +163,18 @@ impl ConfirmDialog {
         self.on_close = Some(Rc::new(handler));
         self
     }
+
+    /// A click on the scrim, apart from Cancel (ConfirmDialog.tsx `onBackdrop`: the caller abandons the question).
+    pub fn on_backdrop(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_backdrop = Some(Rc::new(handler));
+        self
+    }
+
+    /// Puts the confirm button inside `wrap`'s element (the app's automation box, so a test's pointer can find it).
+    pub fn confirm_wrap(mut self, wrap: impl FnOnce(AnyElement) -> AnyElement + 'static) -> Self {
+        self.confirm_wrap = Some(Box::new(wrap));
+        self
+    }
 }
 
 impl RenderOnce for ConfirmDialog {
@@ -198,7 +214,7 @@ impl RenderOnce for ConfirmDialog {
         let description = div().flex().flex_col().children(paragraph(
             &self.body,
             text::UI,
-            line_height(text::UI, 1.5),
+            crate::text::root_line_height(text::UI),
             color::FG_2,
             measure,
         ));
@@ -210,7 +226,10 @@ impl RenderOnce for ConfirmDialog {
             .can_close(self.can_close)
             .description(description)
             .a11y_description(self.body.clone())
-            .footer(confirm)
+            .footer(match self.confirm_wrap {
+                Some(wrap) => wrap(confirm.into_any_element()),
+                None => confirm.into_any_element(),
+            })
             .initial_focus(match &self.field_focus {
                 Some(h) => InitialFocus::Handle(h.clone()),
                 None => InitialFocus::Close,
@@ -220,6 +239,9 @@ impl RenderOnce for ConfirmDialog {
         }
         if let Some(handler) = self.on_close {
             dialog = dialog.on_close(move |window, cx| handler(window, cx));
+        }
+        if let Some(handler) = self.on_backdrop {
+            dialog = dialog.on_backdrop(move |window, cx| handler(window, cx));
         }
         if let Some(name) = self.person {
             dialog =
@@ -246,7 +268,7 @@ impl RenderOnce for ConfirmDialog {
                         .child(line(
                             error,
                             text::BTN,
-                            line_height(text::BTN, 1.5),
+                            crate::text::root_line_height(text::BTN),
                             color::DANGER,
                         )),
                 );

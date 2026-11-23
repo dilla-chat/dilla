@@ -7,6 +7,7 @@ pub mod attachments;
 pub mod bot;
 pub mod bot_admin;
 pub mod browser_auth;
+pub mod collate;
 pub mod devices;
 pub mod diagnostics;
 pub mod dms;

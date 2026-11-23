@@ -13,7 +13,7 @@ pub mod video;
 use std::rc::Rc;
 
 use dilla_client::features::attachments::{
-    ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, attachment_kind, safe_name,
+    ATTACHMENT_CAP, AttachmentKind, GIF_AUTOPLAY_MAX, MAX_ATTACHMENTS, attachment_kind, safe_name,
 };
 use dilla_client::features::gifs::{GifScope, gif_scope};
 use dilla_client::state::{TimelineItem, attachments::TrayPhase};
@@ -27,7 +27,7 @@ use dilla_desktop_ui::components::attachments::video::{
     MenuView, PipMode, VideoView, video_fullscreen,
 };
 use dilla_desktop_ui::components::attachments::{
-    OnClick, ROW_GAP, drop_overlay, gif_picker, lightbox, tray as tray_view,
+    OnClick, drop_overlay, gif_picker, lightbox, tray as tray_view,
 };
 use dilla_desktop_ui::tokens::{color, layout, radius, text};
 use dilla_desktop_ui::{Icon, IconName};
@@ -80,17 +80,17 @@ struct Card {
     height: Option<f32>,
 }
 
-/// Lays `cards` out as app.css `.dw-attachments` does (a wrapping row, `--row-gap` both ways) in `width`: answers the
-/// lines' elements and the total height.
-fn wrap(cards: Vec<Card>, width: f32) -> (AnyElement, f32) {
+/// Lays `cards` out as app.css `.dw-attachments` does (a wrapping row, `--row-gap` both ways: `gap`, the window's
+/// density) in `width`: answers the lines' elements and the total height.
+fn wrap(cards: Vec<Card>, width: f32, gap: f32) -> (AnyElement, f32) {
     let mut lines: Vec<Vec<Card>> = Vec::new();
     let mut used = 0.0;
     for c in cards {
         let fits = lines
             .last()
-            .is_some_and(|l| !l.is_empty() && used + ROW_GAP + c.width <= width);
+            .is_some_and(|l| !l.is_empty() && used + gap + c.width <= width);
         if fits {
-            used += ROW_GAP + c.width;
+            used += gap + c.width;
             lines.last_mut().expect("a line").push(c);
         } else {
             used = c.width;
@@ -98,17 +98,17 @@ fn wrap(cards: Vec<Card>, width: f32) -> (AnyElement, f32) {
         }
     }
     let mut total = 0.0;
-    let mut column = div().flex().flex_col().gap(px(ROW_GAP));
+    let mut column = div().flex().flex_col().gap(px(gap));
     for (i, line) in lines.into_iter().enumerate() {
         let h = line
             .iter()
             .map(|c| c.height.unwrap_or_else(file_card_height))
             .fold(0.0, f32::max);
-        total += h + if i > 0 { ROW_GAP } else { 0.0 };
+        total += h + if i > 0 { gap } else { 0.0 };
         column = column.child(
             div()
                 .flex()
-                .gap(px(ROW_GAP))
+                .gap(px(gap))
                 .h(px(h))
                 .children(line.into_iter().map(|c| (c.element)(h))),
         );
@@ -301,6 +301,7 @@ pub fn attachment_cards(
                     .child(image_tile(
                         id,
                         w,
+                        shown.as_ref().and_then(|i| ui::dimensions(i)),
                         shown,
                         badge,
                         open.map(|o| (tf("shell.attachment.open", &[("name", &name)]).into(), o)),
@@ -397,13 +398,26 @@ pub fn attachment_cards(
                     })
                 });
                 let state = state_text.clone();
+                // AttachmentCard.css:14: the file card rises in once, from its first draw.
+                // (Remembered by `motion::entered_age`, which bounds what it keeps and forgets it when the log mounts anew.)
+                let entered = dilla_desktop_ui::motion::entered_age(
+                    cx,
+                    dilla_desktop_ui::motion::scoped(
+                        &dilla_desktop_ui::motion::scope(cx),
+                        &format!("file-card-{id}"),
+                    ),
+                    dilla_desktop_ui::tokens::motion::SLOW,
+                );
+                if entered.is_some() {
+                    window.request_animation_frame();
+                }
                 let element: Box<dyn FnOnce(f32) -> AnyElement> = Box::new(move |line_h| {
                     let own = line_h
                         - state
                             .as_ref()
                             .map_or(0.0, |_| STATE_GAP + state_line_height());
                     let save = save.map(|s| (save_label, s));
-                    let el = file_card(id, name, meta, save, own.max(file_card_height()));
+                    let el = file_card(id, name, meta, save, own.max(file_card_height()), entered);
                     match state {
                         None => el,
                         Some((s, failed)) => div()
@@ -425,11 +439,25 @@ pub fn attachment_cards(
             }
         }
     }
-    let (element, height) = wrap(cards, body_width(window));
+    let gap = f32::from(dilla_desktop_ui::metrics::Density::of(window, cx).row_gap());
+    let (element, height) = wrap(cards, body_width(window), gap);
     Some(Extra { element, height })
 }
 
-/// The attachment tray over the composer (`slots::composer_leading`, after the reply bar).
+/// Whether a file of `size` bytes is over the cap (Attachments.tsx: `file.size > BROWSER_ATTACHMENT_CAP`, 25 MB): the tray
+/// refuses its card ("Over 25 MB") and a toast says so.
+pub fn over_the_cap(size: u64) -> bool {
+    size > ATTACHMENT_CAP
+}
+
+/// Attachments.tsx `attachFiles`: whether a pick of files of `sizes` raises the over-the-cap toast: one of them is over the
+/// cap and the batch still fits the tray (`in_tray` cards are there already; a batch that does not fit is refused by the
+/// tray itself, which says so).
+pub fn raises_over_cap_toast(sizes: &[u64], in_tray: usize) -> bool {
+    sizes.iter().any(|&s| over_the_cap(s)) && in_tray + sizes.len() <= MAX_ATTACHMENTS
+}
+
+/// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar).
 pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let channel = ctx.channel?;
     let client = ctx.client.clone();
@@ -478,7 +506,7 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
             }
         })
         .collect();
-    tray_view::tray(entries)
+    tray_view::tray(entries, cx)
 }
 
 /// A 26x24 tool of the composer's foot (`.d-composer__tool`).
@@ -650,6 +678,7 @@ fn overlays(window: &mut Window, cx: &mut App) -> Vec<AnyElement> {
             .child(drop_overlay::drop_overlay(
                 t("shell.drop.title"),
                 t("shell.drop.body"),
+                cx,
             ));
         out.push(
             deferred(anchored().position(point(left, top)).child(pane))
@@ -811,6 +840,8 @@ pub struct PipView {
 
 impl gpui::Render for PipView {
     fn render(&mut self, window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+        // A window of its own: regular, whatever the last drawn window had (no account draws in it).
+        dilla_desktop_ui::metrics::Density::enter(window, cx);
         let key = self.key;
         let size = window.viewport_size();
         let view = match ui::ui(cx).players.get(&key) {
@@ -928,38 +959,41 @@ fn lightbox_overlay(here: gpui::WindowId, cx: &mut App) -> Option<AnyElement> {
         seq,
         index,
     };
-    Some(lightbox::lightbox(lightbox::LightboxProps {
-        label: tf(
-            "shell.lightbox.label",
-            &[("name", &name), ("size", &ui::format_size(size))],
-        )
-        .into(),
-        image,
-        save_label: t("shell.lightbox.save").into(),
-        on_save: click({
-            let name = name.clone();
-            move |_, cx| {
-                if let Some(c) = &client {
-                    ui::save(c, card, &name, cx)
+    Some(lightbox::lightbox(
+        lightbox::LightboxProps {
+            label: tf(
+                "shell.lightbox.label",
+                &[("name", &name), ("size", &ui::format_size(size))],
+            )
+            .into(),
+            image,
+            save_label: t("shell.lightbox.save").into(),
+            on_save: click({
+                let name = name.clone();
+                move |_, cx| {
+                    if let Some(c) = &client {
+                        ui::save(c, card, &name, cx)
+                    }
                 }
-            }
-        }),
-        close_label: t("shell.lightbox.close").into(),
-        on_close: click(|_, cx| ui::close_lightbox(cx)),
-        close_focus: focus,
-        previous: (at > 0).then(|| {
-            (
-                t("shell.lightbox.previous").into(),
-                click(|_, cx| ui::step_lightbox(-1, cx)),
-            )
-        }),
-        next: (at + 1 < count).then(|| {
-            (
-                t("shell.lightbox.next").into(),
-                click(|_, cx| ui::step_lightbox(1, cx)),
-            )
-        }),
-    }))
+            }),
+            close_label: t("shell.lightbox.close").into(),
+            on_close: click(|_, cx| ui::close_lightbox(cx)),
+            close_focus: focus,
+            previous: (at > 0).then(|| {
+                (
+                    t("shell.lightbox.previous").into(),
+                    click(|_, cx| ui::step_lightbox(-1, cx)),
+                )
+            }),
+            next: (at + 1 < count).then(|| {
+                (
+                    t("shell.lightbox.next").into(),
+                    click(|_, cx| ui::step_lightbox(1, cx)),
+                )
+            }),
+        },
+        cx,
+    ))
 }
 
 fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -969,6 +1003,16 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             gpui_component::input::InputState::new(window, cx)
                 .placeholder(t("gif.search.placeholder"))
         });
+        // `/giphy cats` opens the picker with its query ([`ui::open_gifs`]): the field starts with it, so it is not
+        // searched again as if the person had cleared it.
+        let query = ui::ui(cx)
+            .gif
+            .as_ref()
+            .map(|g| g.query.clone())
+            .unwrap_or_default();
+        if !query.is_empty() {
+            input.update(cx, |s, cx| s.set_value(query, window, cx));
+        }
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         if let Some(g) = ui::ui(cx).gif.as_mut() {
@@ -1019,30 +1063,33 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
             }),
         )
     });
-    Some(gif_picker::gif_picker(gif_picker::GifPickerProps {
-        search: div()
-            .h(px(m::SEARCH_H))
-            .px(px(m::SEARCH_PAD_X))
-            .flex()
-            .items_center()
-            .bg(color::BG_2)
-            .border_1()
-            .border_color(color::HAIRLINE_2)
-            .rounded(radius::MD)
-            .text_size(text::INPUT)
-            .child(
-                gpui_component::input::Input::new(&input)
-                    .aria_label(t("gif.search"))
-                    .appearance(false),
-            )
-            .into_any_element(),
-        powered: t("gif.powered").into(),
-        tiles,
-        active: g.active,
-        picking: g.picking.clone().map(Into::into),
-        status,
-        more,
-    }))
+    Some(gif_picker::gif_picker(
+        gif_picker::GifPickerProps {
+            search: div()
+                .h(px(m::SEARCH_H))
+                .px(px(m::SEARCH_PAD_X))
+                .flex()
+                .items_center()
+                .bg(color::BG_2)
+                .border_1()
+                .border_color(color::HAIRLINE_2)
+                .rounded(radius::MD)
+                .text_size(text::INPUT)
+                .child(
+                    gpui_component::input::Input::new(&input)
+                        .aria_label(t("gif.search"))
+                        .appearance(false),
+                )
+                .into_any_element(),
+            powered: t("gif.powered").into(),
+            tiles,
+            active: g.active,
+            picking: g.picking.clone().map(Into::into),
+            status,
+            more,
+        },
+        cx,
+    ))
 }
 
 /// The DM GIF privacy setting (settings/DmGifPrivacySetting.tsx), drawn inside the Privacy section. Task 13's Privacy
@@ -1100,6 +1147,22 @@ pub fn tray_busy(ctx: &SlotCx) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_file_is_over_the_cap_only_past_25_mb() {
+        assert!(!over_the_cap(25 * 1024 * 1024));
+        assert!(over_the_cap(25 * 1024 * 1024 + 1));
+    }
+
+    /// Attachments.tsx `attachFiles`: the toast needs a file over the cap and a batch the tray still takes.
+    #[test]
+    fn the_over_the_cap_toast_needs_a_batch_that_fits_the_tray() {
+        let big = ATTACHMENT_CAP + 1;
+        assert!(raises_over_cap_toast(&[big], 0));
+        assert!(!raises_over_cap_toast(&[1, 2], 0), "nothing over the cap");
+        assert!(!raises_over_cap_toast(&[big], MAX_ATTACHMENTS), "no room");
+        assert!(raises_over_cap_toast(&[big], MAX_ATTACHMENTS - 1));
+    }
+
     fn fixed(width: f32, height: f32) -> Card {
         Card {
             element: Box::new(|_| div().into_any_element()),
@@ -1107,6 +1170,9 @@ mod tests {
             height: Some(height),
         }
     }
+
+    /// The regular density's `--row-gap`.
+    const GAP: f32 = 2.0;
 
     #[test]
     fn cards_wrap_like_a_flex_row_with_the_row_gap() {
@@ -1121,11 +1187,20 @@ mod tests {
                 },
             ],
             870.0,
+            GAP,
         );
         assert_eq!(h, 210.0);
         // Nine images at 870px: three a line (3 * 280 + 2 * 2 = 844), three lines.
-        let (_, h) = wrap((0..9).map(|_| fixed(IMAGE_W, 210.0)).collect(), 870.0);
-        assert_eq!(h, 3.0 * 210.0 + 2.0 * ROW_GAP);
+        let (_, h) = wrap((0..9).map(|_| fixed(IMAGE_W, 210.0)).collect(), 870.0, GAP);
+        assert_eq!(h, 3.0 * 210.0 + 2.0 * GAP);
+        // Task 19b: the compact density's `--row-gap` is 0, so the lines touch.
+        let compact = f32::from(dilla_desktop_ui::metrics::Density::Compact.row_gap());
+        let (_, h) = wrap(
+            (0..9).map(|_| fixed(IMAGE_W, 210.0)).collect(),
+            870.0,
+            compact,
+        );
+        assert_eq!(h, 3.0 * 210.0);
         // A file card alone is its own height.
         let (_, h) = wrap(
             vec![Card {
@@ -1134,6 +1209,7 @@ mod tests {
                 height: None,
             }],
             870.0,
+            GAP,
         );
         assert_eq!(h, file_card_height());
     }

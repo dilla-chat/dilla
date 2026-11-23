@@ -41,14 +41,26 @@ pub struct OpenThread {
     pub root: MessageId,
 }
 
-/// The message the composer replies to (the reply bar's "Replying to **Ada** · excerpt").
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The message the composer replies to (the reply bar's "Replying to **Ada** · excerpt"). Its Debug gives the excerpt's
+/// length only (R21: decrypted text stays out of Debug output).
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReplyTarget {
     pub channel: ChannelId,
     pub msg_id: MessageId,
     pub sender: Option<UserId>,
     /// The original's body as the bar shows it (one line, cut by the bar).
     pub excerpt: String,
+}
+
+impl std::fmt::Debug for ReplyTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplyTarget")
+            .field("channel", &self.channel)
+            .field("msg_id", &self.msg_id)
+            .field("sender", &self.sender)
+            .field("excerpt", &super::Redacted(&self.excerpt))
+            .finish()
+    }
 }
 
 /// The threads slice. [`Default`] is the empty slice.

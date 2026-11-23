@@ -186,6 +186,16 @@ mod driven {
         parity_messages_moderate_remove_b => "moderate-remove-b";
         parity_messages_slow_mode => "slow-mode";
         parity_messages_slow_mode_b => "slow-mode-b";
+        parity_messages_log_earlier => "log-earlier";
+        parity_messages_log_earlier_b => "log-earlier-b";
+        // Task 19b: the log at the compact density (`"density": "compact"`, the web shot with `data-density="compact"`).
+        parity_messages_compact => "compact";
+        // Task 34: the composer foot's typing line, for one person and for several (`world.typing`).
+        parity_messages_typing => "typing";
+        parity_messages_typing_several => "typing-several";
+        // Task 42: the reply action on a hovered row puts the reply chip over the composer.
+        parity_messages_reply_compose => "reply-compose";
+        parity_messages_reply_compose_b => "reply-compose-b";
     }
 
     fn launch(name: &str) -> Driver {

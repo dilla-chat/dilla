@@ -5,14 +5,14 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, FocusHandle, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
+    AnyElement, App, FocusHandle, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
     SharedString, Styled, StyledImage, div, img, px,
 };
 
-use super::{LEADING, OnClick};
+use super::OnClick;
 use crate::components::button::{Button, ButtonVariant};
-use crate::text::{line, line_height};
-use crate::tokens::{color, radius, text};
+use crate::text::line;
+use crate::tokens::{color, motion, radius, text};
 
 /// `.d-lightbox__stage { padding: 1rem }`.
 const STAGE_PAD: f32 = 16.0;
@@ -41,7 +41,7 @@ fn button(id: &'static str, label: SharedString, variant: ButtonVariant, f: OnCl
 }
 
 /// The lightbox, filling its (window-sized) parent.
-pub fn lightbox(p: LightboxProps) -> AnyElement {
+pub fn lightbox(p: LightboxProps, cx: &App) -> AnyElement {
     let stage: AnyElement = match p.image {
         Some(image) => img(image)
             .max_w_full()
@@ -66,7 +66,8 @@ pub fn lightbox(p: LightboxProps) -> AnyElement {
         nav = nav.child(button("lightbox-next", label, ButtonVariant::Ghost, f));
     }
     let on_close = p.on_close.clone();
-    div()
+    // Lightbox.css:5: the dialog fades in with `d-fade` over `--duration-scrim` (the CSS's default curve).
+    let lightbox = div()
         .id("lightbox")
         .absolute()
         .inset_0()
@@ -102,7 +103,7 @@ pub fn lightbox(p: LightboxProps) -> AnyElement {
                         line(
                             p.label,
                             text::UI,
-                            line_height(text::UI, LEADING),
+                            crate::text::root_line_height(text::UI),
                             color::FG_2,
                         )
                         .ellipsis(),
@@ -126,6 +127,12 @@ pub fn lightbox(p: LightboxProps) -> AnyElement {
                                 .on_click(move |e, w, cx| on_close(e, w, cx)),
                         ),
                 ),
-        )
-        .into_any_element()
+        );
+    crate::motion::fade_in(
+        lightbox,
+        "lightbox-fade",
+        motion::SCRIM,
+        crate::motion::EASE,
+        cx,
+    )
 }

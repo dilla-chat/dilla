@@ -106,8 +106,9 @@ pub enum ResultProvider {
     Bot,
 }
 
-/// One private result row (private-results.ts `PrivateResult`): shown only on this device, in its conversation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One private result row (private-results.ts `PrivateResult`): shown only on this device, in its conversation. Its Debug
+/// gives the text's length only: a moderation command's row names the member it acted on ("{name} was banned.").
+#[derive(Clone, PartialEq, Eq)]
 pub struct PrivateResult {
     pub id: u64,
     /// When it was added, unix milliseconds (the rows' order).
@@ -119,6 +120,20 @@ pub struct PrivateResult {
     pub hold: bool,
     /// When it last finished (unix ms), while it is finished and not held: it goes away [`PRIVATE_RESULT_TTL_MS`] later.
     pub settled_at: Option<u64>,
+}
+
+impl std::fmt::Debug for PrivateResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateResult")
+            .field("id", &self.id)
+            .field("at", &self.at)
+            .field("status", &self.status)
+            .field("text_len", &self.text.len())
+            .field("provider", &self.provider)
+            .field("hold", &self.hold)
+            .field("settled_at", &self.settled_at)
+            .finish()
+    }
 }
 
 /// private-results.ts `PRIVATE_RESULT_TTL_MS`: a finished private reply goes away this long after it finished.
@@ -139,7 +154,7 @@ pub struct Conversation {
 }
 
 /// A poll as the Bot's durable record says (utilities.ts `PollSummary`), with the voters a card shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PollView {
     /// The poll's id (its post's final `[dilla-poll:v1:<id>]` line).
     pub id: [u8; 16],
@@ -175,7 +190,7 @@ pub enum ReminderStatus {
 }
 
 /// utilities.ts `ReminderSummary`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReminderView {
     pub id: [u8; 16],
     pub text: String,
@@ -188,6 +203,122 @@ pub struct ReminderView {
     pub revision: u64,
 }
 
+// R21: a poll's question and answers and a reminder's text are decrypted posts; Debug gives their lengths only.
+
+impl std::fmt::Debug for PollView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PollView")
+            .field("id", &self.id)
+            .field("channel", &self.channel)
+            .field("thread", &self.thread)
+            .field("question", &super::Redacted(&self.question))
+            .field("answers", &super::RedactedList(&self.answers))
+            .field("multi", &self.multi)
+            .field("closed", &self.closed)
+            .field("counts", &self.counts)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ReminderView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReminderView")
+            .field("id", &self.id)
+            .field("text", &super::Redacted(&self.text))
+            .field("due", &self.due)
+            .field("state", &self.state)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BotState {
+    /// The checks of a card in the log (`root == false`) or of the pane's root card (`true`).
+    pub fn checks(&self, root: bool) -> &BTreeMap<MessageId, PollCheck> {
+        if root {
+            &self.root_poll_checks
+        } else {
+            &self.poll_checks
+        }
+    }
+
+    /// [`BotState::checks`], to write.
+    pub fn checks_mut(&mut self, root: bool) -> &mut BTreeMap<MessageId, PollCheck> {
+        if root {
+            &mut self.root_poll_checks
+        } else {
+            &mut self.poll_checks
+        }
+    }
+
+    /// A read of `message`'s card ended (`Utilities::verify_poll`'s loop): `end` is its check from now on, `None` removing
+    /// it (the poll was read). Only while the read's own check (`Pending`, or `Retry` for a re-read) is still there: a root
+    /// check the pane dropped on closing ([`BotState::forget_root_checks`]) is not brought back by a read that outlived it.
+    pub fn settle(&mut self, root: bool, message: MessageId, end: Option<PollCheck>) {
+        let checks = self.checks_mut(root);
+        if !checks.contains_key(&message) {
+            return;
+        }
+        match end {
+            Some(check) => {
+                checks.insert(message, check);
+            }
+            None => {
+                checks.remove(&message);
+            }
+        }
+    }
+
+    /// A read of `message`'s card stopped before it ended (its task panicked or the runtime shut down): a `Pending` check
+    /// goes, so the card is not left loading for good, and a `Retry` is given up again.
+    pub fn release_unfinished(&mut self, root: bool, message: MessageId) {
+        let checks = self.checks_mut(root);
+        match checks.get(&message) {
+            Some(PollCheck::Pending) => {
+                checks.remove(&message);
+            }
+            Some(&PollCheck::Retry(channel)) => {
+                checks.insert(message, PollCheck::GaveUp(channel));
+            }
+            _ => {}
+        }
+    }
+
+    /// PollCard.tsx: a pushed hint of `channel` reads its given-up polls again, the log's cards and the pane's root card
+    /// alike. Each becomes `Retry`, which the next draw of its post turns into one read that leaves the card given up
+    /// (nothing shows) until it succeeds. Other channels' are untouched, and a check still loading too.
+    pub fn retry_gave_up(&mut self, channel: ChannelId) {
+        for checks in [&mut self.poll_checks, &mut self.root_poll_checks] {
+            for check in checks.values_mut() {
+                if *check == PollCheck::GaveUp(channel) {
+                    *check = PollCheck::Retry(channel);
+                }
+            }
+        }
+    }
+
+    /// The thread pane stopped showing `root`'s thread (it closed, or another thread took its place): its root card's
+    /// checks go, as the web's per-card state goes with the card, so reopening it reads the poll again (loading, then 2, 5
+    /// and 10 s). The log's checks of the same post stay.
+    pub fn forget_root_checks(&mut self, root: MessageId) {
+        self.root_poll_checks.remove(&root);
+    }
+}
+
+/// Where the read of a poll post's record stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PollCheck {
+    /// Being read, or waiting to read again: the card says it is loading.
+    Pending,
+    /// The Bot said no for good, or the retries ran out, for a post in this channel: the post's own text shows and no card
+    /// is drawn, until a read of it succeeds (PollCard.tsx's `gaveUp`).
+    GaveUp(crate::state::ChannelId),
+    /// A given-up post being read again, as a pushed hint of its channel asks: it still shows as given up while it reads,
+    /// and goes back to `GaveUp` if the read fails again.
+    Retry(crate::state::ChannelId),
+}
+
 /// The bot area's slice.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BotState {
@@ -197,8 +328,20 @@ pub struct BotState {
     pub private_results: BTreeMap<Conversation, Vec<PrivateResult>>,
     /// The verified polls, by the message that carries each.
     pub polls: BTreeMap<MessageId, PollView>,
+    /// The polls being read from the Bot, by the message that claims each (PollCard.tsx's retry state). A message with
+    /// neither a check nor a held poll has not been asked about yet; a successful read removes its check.
+    pub poll_checks: BTreeMap<MessageId, PollCheck>,
+    /// The same state for a post drawn as its own thread's root in the thread pane (the web's `PollCard` keeps its state per
+    /// card, with the thread in its scope: ThreadView passes `threadId = rootMsgId` to the root row too). That card reads the
+    /// poll scoped to the thread, which a channel's poll is never in, so it ends given up; nothing of it is written to
+    /// [`BotState::poll_checks`], which the log's card of the same post reads. A root's checks go when the pane stops showing
+    /// its thread ([`BotState::forget_root_checks`]), as the web's card state goes with the card.
+    pub root_poll_checks: BTreeMap<MessageId, PollCheck>,
     /// This member's reminders, by community, soonest first.
     pub reminders: BTreeMap<CommunityId, Vec<ReminderView>>,
+    /// The scheduled announcements the Bot last listed, by community (Task 28; the chips' suggestions). A community with
+    /// no entry was not listed yet.
+    pub announcements: BTreeMap<CommunityId, Vec<crate::features::bot::announcements::ScheduleRow>>,
 }
 
 impl BotState {

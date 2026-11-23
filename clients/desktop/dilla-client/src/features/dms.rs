@@ -101,6 +101,15 @@ pub fn picker_members(
     s: &AppState,
     community: Option<crate::state::CommunityId>,
 ) -> Vec<crate::state::Member> {
+    picker_members_in(s, community, &super::collate::locale())
+}
+
+/// [`picker_members`] ordered by the names of the locale `tag` (BCP 47), not the process locale.
+pub fn picker_members_in(
+    s: &AppState,
+    community: Option<crate::state::CommunityId>,
+    tag: &str,
+) -> Vec<crate::state::Member> {
     let own = s.account.user_id;
     let mut out: Vec<crate::state::Member> = Vec::new();
     let lists: Vec<&Vec<crate::state::Member>> = match community {
@@ -119,6 +128,17 @@ pub fn picker_members(
             }
         }
     }
+    // shell-model.ts `dmCandidates`: by shown name (`localeCompare`, base sensitivity, the viewer's locale), then by user id.
+    out.sort_by(|a, b| {
+        let shown = |m: &crate::state::Member| {
+            if m.display.is_empty() {
+                m.username.clone()
+            } else {
+                m.display.clone()
+            }
+        };
+        super::collate::base_in(tag, &shown(a), &shown(b)).then(a.user_id.0.cmp(&b.user_id.0))
+    });
     out
 }
 
@@ -162,10 +182,28 @@ impl Dms {
 
     /// controller.ts `openDm`: the DM with `user` (made if there is none: `POST /v1/dms`), listed before it answers.
     pub fn open_dm(&self, user: UserId) -> oneshot::Receiver<Result<ChannelId, ClientError>> {
+        self.open_with(vec![user])
+    }
+
+    /// `POST /v1/dms` with several recipients: the group DM of the caller and `users` (made each time; the instance
+    /// gives a group DM a fresh id). Feature `testing`: the desktop has no group-DM creation of its own yet; the
+    /// parity world seeds the crew DM of `dms/home-b` and `dms/conversation-b` with it.
+    #[cfg(feature = "testing")]
+    pub fn open_group_dm(
+        &self,
+        users: Vec<UserId>,
+    ) -> oneshot::Receiver<Result<ChannelId, ClientError>> {
+        self.open_with(users)
+    }
+
+    fn open_with(&self, users: Vec<UserId>) -> oneshot::Receiver<Result<ChannelId, ClientError>> {
         let inner = self.inner.clone();
         self.inner.spawn(async move {
-            let body =
-                Value::Array(vec![Value::Array(vec![Value::Bytes(user.0.to_vec())])]).encode();
+            let recipients = users
+                .iter()
+                .map(|u| Value::Bytes(u.0.to_vec()))
+                .collect::<Vec<_>>();
+            let body = Value::Array(vec![Value::Array(recipients)]).encode();
             let answer = inner
                 .socket_requests()
                 .request("POST", "/v1/dms".to_owned(), body.into(), Some(idem()))
@@ -342,6 +380,57 @@ pub(crate) async fn publish_dms(inner: &Arc<Inner>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pickers_members_are_by_shown_name_in_the_given_locale() {
+        use crate::state::{CommunityId, Member, UserId};
+        let c = CommunityId([9; 16]);
+        let member = |id: u8, username: &str, display: &str| Member {
+            user_id: UserId([id; 16]),
+            username: username.into(),
+            display: display.into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut s = AppState::default();
+        s.account.user_id = Some(UserId([1; 16]));
+        s.members.insert(
+            c,
+            vec![
+                member(1, "ada", "Ada"),
+                member(2, "tom", "Tom"),
+                member(3, "bjorn", "Björn"),
+                member(4, "asa", "Åsa"),
+                member(5, "zed", ""),
+                member(6, "simon", "Šimon"),
+                member(7, "bjorn2", "Bjorn"),
+            ],
+        );
+        let names = |tag: &str| -> Vec<String> {
+            picker_members_in(&s, Some(c), tag)
+                .iter()
+                .map(|m| {
+                    if m.display.is_empty() {
+                        m.username.clone()
+                    } else {
+                        m.display.clone()
+                    }
+                })
+                .collect()
+        };
+        // English folds Å into A, Š into S; Björn and Bjorn are equal at base strength, so the user id (3 before 7) orders them.
+        assert_eq!(
+            names("en-US"),
+            ["Åsa", "Björn", "Bjorn", "Šimon", "Tom", "zed"]
+        );
+        // Swedish puts Å after Z, and Ö is a letter of its own after it: Bjorn sorts before Björn.
+        assert_eq!(
+            names("sv-SE"),
+            ["Bjorn", "Björn", "Šimon", "Tom", "zed", "Åsa"]
+        );
+    }
 
     #[test]
     fn type_ahead_wraps_and_ignores_case() {

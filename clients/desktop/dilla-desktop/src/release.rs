@@ -45,6 +45,7 @@ pub fn release_client(client: &Rc<Client>, cx: &mut App) {
     screens::reactions::picker::release(client, cx);
     screens::ring::effects::release_notifier(cx);
     screens::threads::release(client, cx);
+    screens::commands::poll_votes::release(client, cx);
     screens::factor::release(client, cx);
     screens::commands::confirm::release(client, cx);
     screens::commands::chips::release(client);

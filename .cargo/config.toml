@@ -12,3 +12,10 @@ runner = "wasm-bindgen-test-runner"
 # NOTE: deliberately NO target table or runner for wasm32-wasip1. (Written without the literal
 # table header so that core/dilla-core/tests/workspace_policy.rs can assert its absence textually.)
 # The wasip1 vector check runs under wazero from Go (Plan B task 4, R7), not under wasmtime.
+
+# The macOS desktop app's floor is 13.0 (LSMinimumSystemVersion, GPUI gaps Task 45 fix round 1). Without this, rustc
+# links for its own default and the cc builds (webrtc-sys's C++ and Objective-C++) for the host SDK, so `@available`
+# never guards anything and macOS 14+ symbols (SCScreenshotManager, the camera's device types) are linked strongly: the
+# app would stop in dyld on macOS 13. Ignored on every other target. desktop-gpui.yml checks the built binary.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "13.0"

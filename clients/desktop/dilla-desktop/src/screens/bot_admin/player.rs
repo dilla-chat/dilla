@@ -4,8 +4,9 @@
 //! from the Bot's own stamp (Ruling AI; an older Bot's snapshot stays static).
 //!
 //! [`view_of`] is the pure part (tested); [`dock`] draws the compact row in the shell's dock slot from a [`MusicFeed`] the
-//! shell provides, and [`card`] draws the card variant.
+//! shell provides, and [`music_card`] draws the card variant under the Bot's "started music" message.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -16,8 +17,12 @@ use dilla_desktop_ui::components::bot_admin::now_playing::{
     NowPlaying, NowPlayingLabels, NowPlayingVariant, PlayerTrack, QueueRow, up_next,
 };
 use dilla_desktop_ui::components::toast::show_toast_in;
-use gpui::{AnyElement, App, IntoElement, SharedString, Window};
+use gpui::{
+    AnyElement, App, InteractiveElement, IntoElement, ParentElement, SharedString, Styled, Window,
+    div, px,
+};
 
+use crate::slots::{Extra, SlotCx};
 use crate::strings::{t, tf};
 
 /// What the dock needs to draw the player, which the shell's state loop keeps for its window ([`follow`]) whenever this
@@ -37,6 +42,21 @@ pub struct MusicFeed {
     pub bot: String,
     /// The device clock (unix ms) the playhead runs on: the shell's frozen clock in a fixture.
     pub now_ms: u64,
+    /// The playhead runs on the device clock read at each draw (a running client's feed); `false` keeps it at
+    /// [`Self::now_ms`] (a fixture's frozen clock).
+    pub clock_runs: bool,
+}
+
+impl MusicFeed {
+    /// The clock the playhead is drawn at now: the device clock for a running feed (as the card reads it, so the dock,
+    /// the stage bar and the card agree), else the frozen one.
+    pub fn draw_now_ms(&self) -> u64 {
+        if self.clock_runs {
+            device_now_ms()
+        } else {
+            self.now_ms
+        }
+    }
 }
 
 /// One window's player (final review C1: per window, as the voice area's state is): its feed and its track-end read.
@@ -58,21 +78,15 @@ pub fn feed_of(
     client: Option<std::rc::Weak<Client>>,
     now_ms: u64,
 ) -> Option<MusicFeed> {
+    let clock_runs = client.is_some();
     let call = &state.voice.call;
     if call.phase != dilla_client::calls::CallPhase::In {
         return None;
     }
     let channel = call.channel?;
     let room = state.channel(channel)?;
-    let community = room.community_id;
-    let catalog = state.bot.catalogs.get(&community)?;
-    let bot_user = catalog.bot_user?;
-    let bot_in = state
-        .voice
-        .calls
-        .get(&channel)
-        .is_some_and(|c| c.participants.iter().any(|p| p.user_id == bot_user));
-    bot_in.then(|| MusicFeed {
+    let (community, bot_user) = bot_in_room(state, channel)?;
+    Some(MusicFeed {
         state: state.clone(),
         client,
         community,
@@ -80,7 +94,23 @@ pub fn feed_of(
         room: room.name.clone(),
         bot: member_name(state, community, bot_user),
         now_ms,
+        clock_runs,
     })
+}
+
+/// The community and the pinned Bot user when that Bot is in the voice channel's call (the web's `botInRoom`: a participant
+/// of the call is the catalog's `bot_user`).
+fn bot_in_room(state: &AppState, channel: ChannelId) -> Option<(CommunityId, UserId)> {
+    let community = state.channel(channel)?.community_id;
+    let bot_user = state.bot.catalogs.get(&community)?.bot_user?;
+    state
+        .voice
+        .calls
+        .get(&channel)?
+        .participants
+        .iter()
+        .any(|p| p.user_id == bot_user)
+        .then_some((community, bot_user))
 }
 
 /// When the player is read again for the playing track's end: a second after it should end (music.tsx), `None` while
@@ -105,7 +135,17 @@ struct TrackEnd {
     _timer: Option<gpui::Task<()>>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's device clock (unix ms), when it sets one.
+    static TEST_NOW_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 fn device_now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = TEST_NOW_MS.with(std::cell::Cell::get) {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -130,6 +170,20 @@ pub fn follow(window: gpui::WindowId, state: &Arc<AppState>, client: &Rc<Client>
         &mut read,
         cx,
     );
+}
+
+/// A fixture's feed: the shell of a fixture has no client to run [`follow`], so the window's feed is what [`feed_of`] makes of
+/// the fixture's call and the fixture's clock (a Bot's player in a joined call, drawn in the dock and on the stage).
+#[cfg(feature = "automation")]
+pub fn seed_fixture_feed(
+    window: gpui::WindowId,
+    state: &Arc<AppState>,
+    clock: crate::screens::shell::Clock,
+    cx: &mut App,
+) {
+    if let Some(feed) = feed_of(state, None, clock_ms(clock)) {
+        crate::per_window::get_mut::<WindowMusic>(window, cx).feed = Some(feed);
+    }
 }
 
 /// [`follow`] with the read it sends (`read`) and the clock it reads, so a test can count the reads.
@@ -180,8 +234,14 @@ fn follow_in(
         TrackEnd { key, _timer: timer };
 }
 
-/// The release path (integration 3, step 0 item 1): every window's feed of `client` goes, with its track-end read.
+/// The release path (integration 3, step 0 item 1): every window's feed of `client` goes, with its track-end read, and so
+/// do the cards' reads.
 pub fn release(client: &Rc<Client>, cx: &mut App) {
+    crate::per_window::retain::<WindowCards>(cx, |_, c| {
+        !c.client
+            .as_ref()
+            .is_some_and(|w| std::ptr::eq(w.as_ptr(), Rc::as_ptr(client)))
+    });
     crate::per_window::retain::<WindowMusic>(cx, |_, m| {
         !m.feed
             .as_ref()
@@ -288,6 +348,7 @@ pub fn labels(up_next_count: usize) -> NowPlayingLabels {
         skip: t("music.skip").into(),
         stop: t("music.stop").into(),
         queue: tf("music.queue", &[("n", &up_next_count.to_string())]).into(),
+        up_next: tf("music.upNext", &[("n", &up_next_count.to_string())]).into(),
     }
 }
 
@@ -307,10 +368,11 @@ fn member_name(state: &AppState, community: CommunityId, user: UserId) -> String
         .unwrap_or_default()
 }
 
-/// The controls of the player of `feed`: each runs the operation on the Bot and, when it is refused, says why in the
+/// The controls of the player of `channel`: each runs the operation on the Bot and, when it is refused, says why in the
 /// toast (`MusicPlayer`'s catch).
 fn control(
-    feed: &MusicFeed,
+    client: Option<std::rc::Weak<Client>>,
+    channel: ChannelId,
     run: impl Fn(
         &Music,
         ChannelId,
@@ -320,7 +382,6 @@ fn control(
     > + 'static,
     paused_now: bool,
 ) -> impl Fn(&mut Window, &mut App) + 'static {
-    let (client, channel) = (feed.client.clone(), feed.channel);
     move |window: &mut Window, cx: &mut App| {
         let Some(client) = client.as_ref().and_then(std::rc::Weak::upgrade) else {
             return;
@@ -360,7 +421,7 @@ fn element(
         &feed.bot,
         &name_of,
         true,
-        feed.now_ms,
+        feed.draw_now_ms(),
     );
     let paused = !view.playing;
     let mut player = NowPlaying::new(id, variant, labels(up_next(&view.queue)))
@@ -372,12 +433,23 @@ fn element(
         .can_control(view.can_control, view.blocked.clone())
         .queue(view.queue.clone(), queue_open)
         .on_toggle(control(
-            feed,
+            feed.client.clone(),
+            feed.channel,
             |m, ch, paused| m.pause(ch, !paused, None),
             paused,
         ))
-        .on_skip(control(feed, |m, ch, _| m.skip(ch, None), paused))
-        .on_stop(control(feed, |m, ch, _| m.stop(ch, None), paused));
+        .on_skip(control(
+            feed.client.clone(),
+            feed.channel,
+            |m, ch, _| m.skip(ch, None),
+            paused,
+        ))
+        .on_stop(control(
+            feed.client.clone(),
+            feed.channel,
+            |m, ch, _| m.stop(ch, None),
+            paused,
+        ));
     if let Some(volume) = view.volume {
         player = player.volume(tf("music.volume", &[("n", &volume.to_string())]));
     }
@@ -391,6 +463,11 @@ fn element(
 /// or while its music state is unavailable.
 pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let feed = feed(window.window_handle().window_id(), cx)?;
+    playhead_tick(
+        feed.clock_runs && playhead_runs(feed.state.bot_admin.music.get(&feed.channel)),
+        window,
+        cx,
+    );
     element(
         &feed,
         NowPlayingVariant::Compact,
@@ -400,28 +477,396 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     )
 }
 
-/// The card variant of the same player (the message Glenn posts where `/play` ran).
-pub fn card(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+/// Whether the stage of `channel` draws the now-playing bar (VoiceView.tsx:614 `joined && !dm && v.music?.track !== undefined`):
+/// the feed is the one of this device's call (phase In, the Bot in it) and it is this stage's own channel, and a track plays.
+/// A DM is not a voice channel, so it never has a feed.
+pub fn stage_shows(feed: Option<&MusicFeed>, channel: ChannelId, has_track: bool) -> bool {
+    has_track && feed.is_some_and(|f| f.channel == channel)
+}
+
+/// The bar on top of the voice stage of `channel` (CallStage.tsx:239-241: first in the stage body, `--d-stage-gap` above the
+/// tiles), drawn from the dock's own feed and so from the dock's own read and watch: it starts none of its own, and it goes
+/// with the call. `None` unless [`stage_shows`].
+pub fn stage_bar(channel: ChannelId, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let feed = feed(window.window_handle().window_id(), cx)?;
-    let open = window.use_keyed_state("now-playing-card-queue", cx, |_, _| false);
-    let shown = *open.read(cx);
-    let handle = open.clone();
+    let has_track = matches!(
+        feed.state.bot_admin.music.get(&feed.channel),
+        Some(MusicState::Available(s)) if s.track.is_some()
+    );
+    if !stage_shows(Some(&feed), channel, has_track) {
+        return None;
+    }
+    playhead_tick(
+        feed.clock_runs && playhead_runs(feed.state.bot_admin.music.get(&feed.channel)),
+        window,
+        cx,
+    );
     element(
         &feed,
-        NowPlayingVariant::Card,
-        "now-playing-card",
-        shown,
-        Some(Rc::new(move |next, _, cx| {
-            handle.update(cx, |o, cx| {
-                *o = next;
-                cx.notify();
-            })
-        })),
+        NowPlayingVariant::Stage,
+        "now-playing-stage",
+        false,
+        None,
     )
 }
 
-#[allow(dead_code)]
-fn _shared(_: SharedString) {}
+/// music.tsx `useChannelPlayer`'s `running`: a playing track with the Bot's stamp, the playhead that moves on its own.
+pub fn playhead_runs(state: Option<&MusicState>) -> bool {
+    matches!(state, Some(MusicState::Available(s)) if s.track.is_some() && !s.paused && s.clock.is_some())
+}
+
+/// What keeps one window's playhead clock: whether a running playhead was drawn since the last tick, and whether the
+/// clock runs.
+#[derive(Default)]
+struct PlayheadTick {
+    drawn: bool,
+    running: bool,
+}
+
+/// music.tsx `usePlayheadNow` (Ruling AI): a 1 s clock while a playhead runs. Each draw of a running playhead (the dock,
+/// the stage bar, a live card) marks the window; one timer per window repaints it a second later, and stops at the first
+/// tick with no such draw since the last (the track paused or ended, the bar or the card went, the window was released
+/// or is not drawn). The playhead itself is read from the device clock at the draw, so every view in the window shows
+/// the same time.
+fn playhead_tick(running: bool, window: &mut Window, cx: &mut App) {
+    if !running {
+        return;
+    }
+    let id = window.window_handle().window_id();
+    let tick = crate::per_window::get_mut::<PlayheadTick>(id, cx);
+    tick.drawn = true;
+    if std::mem::replace(&mut tick.running, true) {
+        return;
+    }
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(1))
+                .await;
+            let go = cx.update(|cx| {
+                // A closed window's state is gone (`per_window::window_closed`): its clock stops.
+                if crate::per_window::get::<PlayheadTick>(id, cx).is_none() {
+                    return false;
+                }
+                let tick = crate::per_window::get_mut::<PlayheadTick>(id, cx);
+                let go = std::mem::replace(&mut tick.drawn, false);
+                if !go {
+                    tick.running = false;
+                }
+                go
+            });
+            if !go || handle.update(cx, |_, window, _| window.refresh()).is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// What the card shows of one player, as `useMusicCard` tells them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardPhase {
+    /// The Bot is not in that voice channel's call (or its player cannot be read): "{bot} left voice".
+    Left,
+    /// The Bot is in the room but no snapshot has been read yet: neutral, never "left voice" for a moment.
+    Neutral,
+    /// The announced track is no longer the one playing.
+    Ended,
+    /// The announced track is the one playing: the live player.
+    Live,
+}
+
+/// `useMusicCard`: the card's phase and view for the announcement of queue item `item`, in `room`. `state` is what the
+/// client holds of the player of that voice channel (`None`: nothing read yet).
+#[allow(clippy::too_many_arguments)]
+pub fn card_view_of(
+    bot_in_room: bool,
+    state: Option<&MusicState>,
+    item: &str,
+    room: &str,
+    bot: &str,
+    name_of: NameOf<'_>,
+    in_call: bool,
+    now_ms: u64,
+) -> (CardPhase, PlayerView) {
+    let quiet = |meta: String, blocked: String| PlayerView {
+        track: None,
+        position_s: 0.0,
+        playing: false,
+        meta,
+        volume: None,
+        can_control: false,
+        blocked,
+        queue: Vec::new(),
+    };
+    if !bot_in_room {
+        return (
+            CardPhase::Left,
+            view_of(None, room, bot, name_of, in_call, now_ms),
+        );
+    }
+    match state {
+        None => (CardPhase::Neutral, quiet(room.to_owned(), String::new())),
+        // `musicView` with a status that is not `available`.
+        Some(MusicState::Unavailable) => (
+            CardPhase::Left,
+            view_of(None, room, bot, name_of, in_call, now_ms),
+        ),
+        Some(MusicState::Available(s)) if s.track.as_ref().is_none_or(|t| t.id != item) => {
+            let ended = tf("music.ended", &[("bot", bot), ("room", room)]);
+            (CardPhase::Ended, quiet(ended.clone(), ended))
+        }
+        Some(MusicState::Available(s)) => (
+            CardPhase::Live,
+            view_of(Some(s), room, bot, name_of, in_call, now_ms),
+        ),
+    }
+}
+
+/// The card's gap above it (MessageRow.css `.d-message-row__card`'s `margin-top`).
+const CARD_MARGIN: f32 = 6.0;
+
+/// The card's width: NowPlaying.css's 440px inside its 1px edge.
+const CARD_WIDTH: f32 = 442.0;
+
+/// One window's cards: the players this window reads for the cards on its screen.
+#[derive(Default)]
+struct WindowCards {
+    /// The client the reads went to (weakly: a release never waits for it).
+    client: Option<std::rc::Weak<Client>>,
+    /// The voice channels with a card on screen and the Bot in the room, as the last frame had them.
+    reading: BTreeSet<ChannelId>,
+    /// Each read channel's read again for the track's end.
+    track_end: BTreeMap<ChannelId, TrackEnd>,
+}
+
+/// The device clock the playhead runs on: the shell's frozen one in a fixture.
+pub fn clock_ms(clock: crate::screens::shell::Clock) -> u64 {
+    match clock {
+        crate::screens::shell::Clock::Local => device_now_ms(),
+        crate::screens::shell::Clock::Fixed { now, .. } => now * 1000,
+    }
+}
+
+/// The card under the Bot's "started music" message (MessageItem.tsx `MusicMessageCard`): `None` for any other message or
+/// one that is not shown (the card shows for a readable row only). `last` is whether the row is the log's last, which hides
+/// its empty attachments slot: the web's card is a grid item with the grid's gap and its own 6px margin in front of that
+/// slot, so the card sits where it does whichever the row is.
+pub fn music_card(
+    item: &dilla_client::state::TimelineItem,
+    ctx: &SlotCx,
+    last: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Extra> {
+    use dilla_client::state::TimelineItemState as S;
+    if !matches!(item.state, S::Ok | S::Pending | S::Failed) {
+        return None;
+    }
+    let community = ctx.community?;
+    let marker = crate::screens::timeline::announcement_in(&ctx.state, community, item)?;
+    let state = &ctx.state;
+    let channel = marker.voice_channel;
+    let now_ms = clock_ms(ctx.clock);
+    let room = state
+        .channels
+        .iter()
+        .find(|c| c.id == channel && c.community_id == community)
+        .map_or_else(|| t("music.someRoom").to_owned(), |c| c.name.clone());
+    let members = state.members.get(&community).map_or(&[][..], Vec::as_slice);
+    let bot = item
+        .sender_user
+        .map(|u| crate::screens::timeline::user_name(state, members, u))
+        .unwrap_or_default();
+    let name_of = |user: UserId| member_name(state, community, user);
+    let call = &state.voice.call;
+    let in_call =
+        call.phase != dilla_client::calls::CallPhase::Idle && call.channel == Some(channel);
+    let (phase, view) = card_view_of(
+        bot_in_room(state, channel).is_some(),
+        state.bot_admin.music.get(&channel),
+        &marker.item,
+        &room,
+        &bot,
+        &name_of,
+        in_call,
+        now_ms,
+    );
+    // A live card's playhead moves on the 1 s clock too (a fixture's frozen clock never runs).
+    playhead_tick(
+        phase == CardPhase::Live
+            && matches!(ctx.clock, crate::screens::shell::Clock::Local)
+            && playhead_runs(state.bot_admin.music.get(&channel)),
+        window,
+        cx,
+    );
+    let key = SharedString::from(item.key.clone());
+    let open = window.use_keyed_state(
+        (gpui::ElementId::from("now-playing-card-queue"), key.clone()),
+        cx,
+        |_, _| false,
+    );
+    let queue_open = *open.read(cx);
+    let mut card_labels = labels(up_next(&view.queue));
+    match phase {
+        CardPhase::Neutral => card_labels.idle = t("music.region").into(),
+        CardPhase::Ended => card_labels.idle = t("music.finished").into(),
+        CardPhase::Left | CardPhase::Live => {}
+    }
+    let paused = !view.playing;
+    let client = ctx.client.as_ref().map(Rc::downgrade);
+    let mut player = NowPlaying::new(
+        (gpui::ElementId::from("music-card"), key),
+        NowPlayingVariant::Card,
+        card_labels,
+    )
+    .track(view.track.clone())
+    .position(view.position_s)
+    .playing(view.playing)
+    .meta(view.meta.clone())
+    .bot(bot)
+    .can_control(view.can_control, view.blocked.clone())
+    .queue(view.queue.clone(), queue_open)
+    .on_toggle(control(
+        client.clone(),
+        channel,
+        |m, ch, paused| m.pause(ch, !paused, None),
+        paused,
+    ))
+    .on_skip(control(
+        client.clone(),
+        channel,
+        |m, ch, _| m.skip(ch, None),
+        paused,
+    ))
+    .on_stop(control(
+        client,
+        channel,
+        |m, ch, _| m.stop(ch, None),
+        paused,
+    ))
+    .on_queue_toggle(move |next, _, cx| {
+        open.update(cx, |o, cx| {
+            *o = next;
+            cx.notify();
+        })
+    });
+    if let Some(volume) = view.volume {
+        player = player.volume(tf("music.volume", &[("n", &volume.to_string())]));
+    }
+    // The part's box starts under the attachments slot (and the grid's gap): the card's own margin less the slot.
+    let width = crate::screens::reactions::column_width(window, cx).min(CARD_WIDTH);
+    let pad = CARD_MARGIN - crate::screens::timeline::attachments_slot(last);
+    Some(Extra {
+        // A block: the message column's width up to the card's 442px (the extras sit in an absolute box that shrinks to its
+        // content, so the width is set). The head's text is ellipsised, so the height does not depend on it.
+        element: div()
+            .debug_selector(|| "music-card-box".to_owned())
+            .flex()
+            .flex_col()
+            .w(px(width))
+            .pt(px(pad))
+            .child(player)
+            .into_any_element(),
+        height: CARD_MARGIN + NowPlaying::card_height(view.queue.len(), queue_open),
+    })
+}
+
+/// Called once per frame by the timeline of `window` with the voice channels of the "started music" rows that intersect its
+/// viewport, the `state` they were drawn from, the `client` they act on and the clock `now_ms`: the card reads the player
+/// only while the Bot is in that room and the card is on screen (Decision D10, as music.tsx's `botInRoom && visible`). A
+/// channel that has just come on screen is read; each one is read again a second after its track should end
+/// ([`refresh_after_ms`]); and the client is told which channels the windows watch, for the Bot's hints of them
+/// (`set_watched`, the union over this client's windows). A frame with no card on screen passes an empty set; a frame with
+/// no log at all calls [`cards_off_screen`].
+pub fn card_on_screen(
+    window: gpui::WindowId,
+    channels: BTreeSet<ChannelId>,
+    state: &AppState,
+    client: Option<&Rc<Client>>,
+    now_ms: u64,
+    cx: &mut App,
+) {
+    let Some(client) = client else {
+        return;
+    };
+    let reading: BTreeSet<ChannelId> = channels
+        .into_iter()
+        .filter(|ch| bot_in_room(state, *ch).is_some())
+        .collect();
+    let cards = crate::per_window::get_mut::<WindowCards>(window, cx);
+    cards.client = Some(Rc::downgrade(client));
+    let before = std::mem::replace(&mut cards.reading, reading.clone());
+    for channel in reading.difference(&before) {
+        drop(client.music().refresh(*channel));
+    }
+    for channel in &reading {
+        let snapshot = match state.bot_admin.music.get(channel) {
+            Some(MusicState::Available(s)) => Some(s),
+            _ => None,
+        };
+        let key = snapshot.map(|s| (*channel, s.revision));
+        let kept = crate::per_window::get_mut::<WindowCards>(window, cx)
+            .track_end
+            .get(channel)
+            .is_some_and(|t| t.key == key);
+        if kept {
+            continue;
+        }
+        let weak = Rc::downgrade(client);
+        let channel = *channel;
+        let timer = snapshot
+            .and_then(|s| refresh_after_ms(s, now_ms))
+            .map(|ms| {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(ms))
+                        .await;
+                    if let Some(client) = weak.upgrade() {
+                        drop(client.music().refresh(channel));
+                    }
+                })
+            });
+        crate::per_window::get_mut::<WindowCards>(window, cx)
+            .track_end
+            .insert(channel, TrackEnd { key, _timer: timer });
+    }
+    crate::per_window::get_mut::<WindowCards>(window, cx)
+        .track_end
+        .retain(|ch, _| reading.contains(ch));
+    publish_watched(client, cx);
+}
+
+/// `window` draws no message log (another screen, a voice stage in its place, no channel): none of its cards is on screen,
+/// so its reads, its track-end timers and its share of the watched channels go (Decision D10).
+pub fn cards_off_screen(window: gpui::WindowId, cx: &mut App) {
+    if crate::per_window::get::<WindowCards>(window, cx).is_none() {
+        return;
+    }
+    let cards = crate::per_window::get_mut::<WindowCards>(window, cx);
+    let client = cards.client.as_ref().and_then(std::rc::Weak::upgrade);
+    cards.reading.clear();
+    cards.track_end.clear();
+    if let Some(client) = client {
+        publish_watched(&client, cx);
+    }
+}
+
+/// Tells `client` which channels its windows' cards watch: the union over the windows that read through it.
+fn publish_watched(client: &Rc<Client>, cx: &mut App) {
+    let mut watched = BTreeSet::new();
+    crate::per_window::each_mut::<WindowCards>(cx, |_, cards| {
+        let ours = cards
+            .client
+            .as_ref()
+            .is_some_and(|c| std::ptr::eq(c.as_ptr(), Rc::as_ptr(client)));
+        if ours {
+            watched.extend(cards.reading.iter().copied());
+        }
+    });
+    client.music().set_watched(watched);
+}
 
 #[cfg(test)]
 mod tests {
@@ -543,6 +988,21 @@ mod tests {
     /// Integration 3, step 5: the shell provides the dock's feed exactly while this device is in a call with the
     /// community's pinned Bot in it: the call's channel, its name and the Bot's name.
     #[test]
+    fn the_stage_bar_is_only_for_the_calls_own_channel() {
+        use dilla_client::calls::CallPhase;
+        let (s, a) = in_call(true, CallPhase::In);
+        let b = ChannelId([5; 16]);
+        let feed = feed_of(&Arc::new(s), None, 0).expect("a feed");
+        assert!(stage_shows(Some(&feed), a, true));
+        assert!(
+            !stage_shows(Some(&feed), b, true),
+            "another channel's stage"
+        );
+        assert!(!stage_shows(Some(&feed), a, false), "nothing playing");
+        assert!(!stage_shows(None, a, true), "not in a call with the Bot");
+    }
+
+    #[test]
     fn the_feed_follows_a_call_with_the_bot_in_it() {
         use dilla_client::calls::CallPhase;
         let (s, channel) = in_call(true, CallPhase::In);
@@ -614,6 +1074,104 @@ mod tests {
             vec![a_channel, b_channel],
             "one read per call start"
         );
+    }
+
+    /// Screens-b review I1 (music.tsx `usePlayheadNow`, Ruling AI): while a track plays with the Bot's stamp, the dock
+    /// repaints once a second and draws the playhead at the device clock of that draw, the clock the card reads too; a
+    /// paused track stops the clock.
+    #[gpui::test]
+    fn the_playhead_ticks_each_second_while_a_track_plays(cx: &mut gpui::TestAppContext) {
+        use dilla_client::calls::CallPhase;
+        use gpui::{Context, Render};
+
+        #[derive(Default)]
+        struct Host {
+            renders: usize,
+            shown: Option<f64>,
+        }
+        impl Render for Host {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.renders += 1;
+                let w = window.window_handle().window_id();
+                self.shown =
+                    feed(w, cx).and_then(|f| match f.state.bot_admin.music.get(&f.channel) {
+                        Some(MusicState::Available(s)) => Some(
+                            view_of(
+                                Some(s),
+                                &f.room,
+                                &f.bot,
+                                &|_| String::new(),
+                                true,
+                                f.draw_now_ms(),
+                            )
+                            .position_s,
+                        ),
+                        _ => None,
+                    });
+                div().children(dock(window, cx))
+            }
+        }
+
+        cx.update(crate::install);
+        cx.update(|cx| cx.set_reduce_motion(true));
+        TEST_NOW_MS.with(|n| n.set(Some(10_000)));
+        let (host, vcx) = cx.add_window_view(|_, _| Host::default());
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        let publish = |vcx: &mut gpui::VisualTestContext, snapshot: MusicSnapshot| {
+            let (mut s, channel) = in_call(true, CallPhase::In);
+            s.bot_admin
+                .music
+                .insert(channel, MusicState::Available(snapshot));
+            vcx.update(|_, cx| {
+                follow_in(w, &Arc::new(s), None, 10_000, &mut |_, _| {}, cx);
+                // A running client's feed (the unit test has none to pass).
+                crate::per_window::get_mut::<WindowMusic>(w, cx)
+                    .feed
+                    .as_mut()
+                    .expect("a feed")
+                    .clock_runs = true;
+            });
+            host.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+        };
+        let run = |vcx: &mut gpui::VisualTestContext, ms: u64| {
+            for _ in 0..ms / 100 {
+                vcx.executor()
+                    .advance_clock(std::time::Duration::from_millis(100));
+                vcx.run_until_parked();
+                vcx.update(|window, cx| window.simulate_next_frame(cx));
+                vcx.run_until_parked();
+            }
+        };
+        publish(vcx, snapshot());
+        assert_eq!(host.read_with(vcx, |h, _| h.shown), Some(38.0));
+        let before = host.read_with(vcx, |h, _| h.renders);
+        TEST_NOW_MS.with(|n| n.set(Some(12_000)));
+        run(vcx, 2_000);
+        let ticked = host.read_with(vcx, |h, _| h.renders) - before;
+        assert_eq!(ticked, 2, "one repaint a second");
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.shown),
+            Some(40.0),
+            "37 s + the Bot's 1 s + 2 s of device time"
+        );
+        assert_eq!(
+            clock_ms(crate::screens::shell::Clock::Local),
+            feed(w, &vcx.app.borrow()).unwrap().draw_now_ms(),
+            "the card's clock is the dock's"
+        );
+        // Paused: the clock stops (at most the tick already armed lands).
+        let mut paused = snapshot();
+        paused.paused = true;
+        paused.revision = 4;
+        publish(vcx, paused);
+        let before = host.read_with(vcx, |h, _| h.renders);
+        run(vcx, 3_000);
+        assert!(
+            host.read_with(vcx, |h, _| h.renders) - before <= 1,
+            "no clock while paused"
+        );
+        TEST_NOW_MS.with(|n| n.set(None));
     }
 
     /// Integration 3, step 5: the player is read again a second after the playing track should end (music.tsx), never
@@ -700,5 +1258,142 @@ mod tests {
     #[test]
     fn the_queue_toggle_counts_what_is_up_next() {
         assert_eq!(labels(3).queue.as_ref(), "Up next · 3");
+    }
+
+    /// The card of a Bot that is not in the voice channel's call: "{bot} left voice", no control.
+    #[test]
+    fn the_card_says_the_bot_left_when_it_is_not_in_the_room() {
+        let (phase, v) = card_view_of(false, None, "i1", "harbour", "Glenn", &names, false, 0);
+        assert_eq!(phase, CardPhase::Left);
+        assert_eq!(v.meta, "Glenn left voice");
+        assert!(!v.can_control);
+        // A player that cannot be read while the Bot is in the room counts as the same (`status !== 'available'`).
+        let unreadable = MusicState::Unavailable;
+        let (phase, v) = card_view_of(
+            true,
+            Some(&unreadable),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            false,
+            0,
+        );
+        assert_eq!(
+            (phase, v.meta.as_str()),
+            (CardPhase::Left, "Glenn left voice")
+        );
+    }
+
+    #[test]
+    fn the_card_is_neutral_before_the_first_read() {
+        let (phase, v) = card_view_of(true, None, "i1", "harbour", "Glenn", &names, false, 0);
+        assert_eq!(phase, CardPhase::Neutral);
+        assert_eq!(v.meta, "harbour");
+        assert!(v.track.is_none() && v.queue.is_empty() && !v.can_control);
+    }
+
+    #[test]
+    fn a_card_whose_track_no_longer_plays_says_it_ended() {
+        let mut s = snapshot();
+        s.track = Some(track("i2", "Another", None));
+        let other = MusicState::Available(s);
+        let (phase, v) = card_view_of(
+            true,
+            Some(&other),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            true,
+            0,
+        );
+        assert_eq!(phase, CardPhase::Ended);
+        assert_eq!(v.meta, "Glenn played this in harbour");
+        assert_eq!(v.blocked, v.meta);
+        assert!(v.queue.is_empty() && v.track.is_none());
+        let mut s = snapshot();
+        s.track = None;
+        let none = MusicState::Available(s);
+        let (phase, v) = card_view_of(true, Some(&none), "i1", "harbour", "Glenn", &names, true, 0);
+        assert_eq!(phase, CardPhase::Ended);
+        assert_eq!(v.meta, "Glenn played this in harbour");
+    }
+
+    #[test]
+    fn the_announced_track_playing_is_live_and_gated_by_dj() {
+        let mut s = snapshot();
+        s.track = Some(track("i1", "Harbour Lights", Some(UserId([1; 16]))));
+        s.can_control = false;
+        let playing = MusicState::Available(s);
+        let (phase, v) = card_view_of(
+            true,
+            Some(&playing),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            false,
+            12_000,
+        );
+        assert_eq!(phase, CardPhase::Live);
+        assert_eq!(v.blocked, "Join harbour to control playback");
+        assert!(!v.can_control && v.track.is_some());
+        let (_, v) = card_view_of(
+            true,
+            Some(&playing),
+            "i1",
+            "harbour",
+            "Glenn",
+            &names,
+            true,
+            12_000,
+        );
+        assert_eq!(v.blocked, t("music.blocked.dj"));
+    }
+
+    /// Decision D10: a window that draws no log (another screen, a stage in its place) has none of its cards on screen, so
+    /// its reads and track-end timers go, and another window's stay.
+    #[gpui::test]
+    fn a_window_with_no_log_reads_no_player(cx: &mut gpui::TestAppContext) {
+        let a = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let b = cx
+            .add_empty_window()
+            .update(|w, _| w.window_handle().window_id());
+        let channel = ChannelId([8; 16]);
+        cx.update(|cx| {
+            for w in [a, b] {
+                let cards = crate::per_window::get_mut::<WindowCards>(w, cx);
+                cards.reading.insert(channel);
+                cards.track_end.insert(
+                    channel,
+                    TrackEnd {
+                        key: Some((channel, 1)),
+                        _timer: None,
+                    },
+                );
+            }
+            cards_off_screen(a, cx);
+            let a_cards = crate::per_window::get::<WindowCards>(a, cx).expect("A's cards");
+            assert!(a_cards.reading.is_empty() && a_cards.track_end.is_empty());
+            let b_cards = crate::per_window::get::<WindowCards>(b, cx).expect("B's cards");
+            assert_eq!(b_cards.reading.len(), 1);
+            assert_eq!(b_cards.track_end.len(), 1);
+        });
+    }
+
+    /// Decision D10: the card's Bot-in-room test is the dock's (a participant of the call is the pinned Bot user).
+    #[test]
+    fn the_bot_is_in_the_room_when_the_pinned_bot_is_in_its_call() {
+        use dilla_client::calls::CallPhase;
+        let (s, channel) = in_call(true, CallPhase::In);
+        assert_eq!(
+            bot_in_room(&s, channel),
+            Some((CommunityId([7; 16]), UserId([9; 16])))
+        );
+        let (s, channel) = in_call(false, CallPhase::In);
+        assert_eq!(bot_in_room(&s, channel), None);
     }
 }

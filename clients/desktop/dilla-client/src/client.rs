@@ -27,8 +27,9 @@ use crate::state::channels::{
     channel_group, channel_group_state, decode_channels, decode_communities,
 };
 use crate::state::members::decode_members;
-use crate::state::messages::TimelineUnavailable;
+use crate::state::messages::{TimelineItemState, TimelineUnavailable};
 use crate::state::messages::{build_timeline, decode_outbox, decode_timeline};
+use crate::state::removed::{REMOVALS_MAX, SelfRemoved, notices};
 use crate::state::unread::{build_badges, decode_activity};
 use crate::state::{
     AccountPhase, AppState, Channel, ChannelId, CommunityId, ConnectionStatus, DeviceId, GroupId,
@@ -100,10 +101,19 @@ enum Update {
     /// A re-establishment of a refused session ended.
     Renewed(Renewal),
     Structure,
+    /// A leave or delete of this community went through ([`Inner::list_written`]).
+    ListWritten(CommunityId),
     /// A structure read ended: its start's number ([`StructureOrder::start`]) and what it read.
     Loaded(u64, Box<Loaded>),
     Focus(Option<ChannelId>),
     MarkRead(ChannelId, oneshot::Sender<Result<(), ClientError>>),
+    /// "Load earlier" ([`Client::load_earlier`]): an open channel's page grows by [`TIMELINE_PAGE`]; answered once the
+    /// longer timeline is published.
+    LoadEarlier(ChannelId, oneshot::Sender<Result<(), ClientError>>),
+    /// A view shows the conversation ([`Client::open_page`]): its page starts at [`TIMELINE_PAGE`].
+    PageOpened(ChannelId),
+    /// A view no longer shows it ([`Client::close_page`]).
+    PageClosed(ChannelId),
     /// An area's change to its own slice ([`Inner::publish`]).
     Apply(Box<dyn FnOnce(&mut AppState) + Send>),
     /// The account's second factor was set up ([`Client::factor_completed`]).
@@ -274,6 +284,8 @@ pub(crate) struct Inner {
     runtime: tokio::runtime::Handle,
     prefs: Prefs,
     upkeep: Arc<Upkeep>,
+    /// The servers this account left or deleted itself (Task 15): a list read missing one is no removal notice.
+    self_removed: Arc<Mutex<SelfRemoved>>,
     #[cfg_attr(
         not(feature = "testing"),
         allow(
@@ -457,6 +469,7 @@ impl Client {
             user_id,
             device_id,
         );
+        let self_removed = Arc::new(Mutex::new(SelfRemoved::default()));
         let initial = AppState {
             account: crate::state::AccountState {
                 phase: if owed {
@@ -493,6 +506,7 @@ impl Client {
             runtime: runtime.handle().clone(),
             prefs: Prefs::instance(&cfg.data_dir),
             upkeep: upkeep.clone(),
+            self_removed: self_removed.clone(),
             taps: taps.clone(),
         });
         let _ = area_inner.set(Arc::downgrade(&inner));
@@ -530,9 +544,12 @@ impl Client {
             own_user: user_id,
             own_device: device_id,
             focus: None,
+            pages: HashMap::new(),
             not_member: HashSet::new(),
             resyncing: HashSet::new(),
             listed: None,
+            self_removed,
+            removal_seq: 0,
             renew: RenewGate::default(),
             upkeep,
             inner: area_inner,
@@ -661,6 +678,57 @@ impl Client {
             let _ = tx.send(Err(ClientError::Stopped));
             return rx;
         }
+        rx
+    }
+
+    /// A view shows `channel` or DM `channel` (Shell.tsx:855-860, controller.ts `openOnce` 4395): its timeline reads one
+    /// page, [`TIMELINE_PAGE`] rows, whatever an earlier open grew it to. Each open is paired with a
+    /// [`Client::close_page`] when the view shows something else. The group itself is opened by
+    /// [`Client::open_channel`] (or the DM area's `open`).
+    pub fn open_page(&self, channel: ChannelId) {
+        let _ = self.inner.updates.send(Update::PageOpened(channel));
+    }
+
+    /// The view that opened `channel` with [`Client::open_page`] shows something else (controller.ts `closeChannel`,
+    /// 4445): once no view shows it, "load earlier" no longer grows it.
+    pub fn close_page(&self, channel: ChannelId) {
+        let _ = self.inner.updates.send(Update::PageClosed(channel));
+    }
+
+    /// controller.ts `loadEarlier`: an open conversation's timeline ([`Client::open_page`]) reads [`TIMELINE_PAGE`] more
+    /// rows, until it is opened again. A conversation that is not open is left as it is. Answers once the longer
+    /// timeline is published.
+    pub fn load_earlier(&self, channel: ChannelId) -> oneshot::Receiver<Result<(), ClientError>> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .inner
+            .updates
+            .send(Update::LoadEarlier(channel, tx))
+            .is_err()
+        {
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(Err(ClientError::Stopped));
+            return rx;
+        }
+        rx
+    }
+
+    /// Shell.tsx:1745-1806, the search hit's jump: the key of `channel`'s row with stored `seq` that reads as a message,
+    /// loading earlier pages ([`Client::load_earlier`]) until it is in the timeline. The timeline is waited for at most
+    /// 1000 ms when it is not published yet. `None` when it never appears: no timeline, no such row (or one that is
+    /// not readable), or a load that publishes nothing new. The conversation must be open ([`Client::open_page`]),
+    /// or its page cannot grow.
+    pub fn find_loaded(&self, channel: ChannelId, seq: u64) -> oneshot::Receiver<Option<String>> {
+        let (tx, rx) = oneshot::channel();
+        let Some(rt) = &self.runtime else {
+            let _ = tx.send(None);
+            return rx;
+        };
+        let mut state = self.inner.state.clone();
+        let updates = self.inner.updates.clone();
+        rt.spawn(async move {
+            let _ = tx.send(find_loaded(&mut state, &updates, channel, seq).await);
+        });
         rx
     }
 
@@ -890,6 +958,18 @@ impl Inner {
             drop(hold);
         });
         rx
+    }
+
+    /// Tells the publisher a leave or delete of `community` went through (controller.ts `listWritten`).
+    pub(crate) fn list_written(&self, community: CommunityId) {
+        let _ = self.updates.send(Update::ListWritten(community));
+    }
+
+    /// The servers this account left or deleted itself, locked (a poisoned lock keeps its marks).
+    pub(crate) fn self_removed(&self) -> std::sync::MutexGuard<'_, SelfRemoved> {
+        self.self_removed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The account's upkeep (key packages, backups: [`crate::account`]).
@@ -1229,6 +1309,43 @@ enum Renewal {
     FactorOwed,
 }
 
+/// How long a search hit's jump waits for a conversation's timeline that is not published yet (Shell.tsx:1765-1777).
+const FIND_WAIT: Duration = Duration::from_millis(1000);
+
+/// [`Client::find_loaded`]'s loop (Shell.tsx:1760-1785): the row is there when `seq` is a readable item of the timeline;
+/// while it is not and the timeline has earlier rows, one more page is loaded, and a load that changes nothing ends it.
+async fn find_loaded(
+    state: &mut watch::Receiver<Arc<AppState>>,
+    updates: &mpsc::UnboundedSender<Update>,
+    channel: ChannelId,
+    seq: u64,
+) -> Option<String> {
+    let published = state.wait_for(|s| s.timelines.contains_key(&channel));
+    tokio::time::timeout(FIND_WAIT, published)
+        .await
+        .ok()?
+        .ok()?;
+    loop {
+        let before = state.borrow().timelines.get(&channel)?.clone();
+        if let Some(item) = before
+            .items
+            .iter()
+            .find(|i| i.seq == Some(seq) && i.state == TimelineItemState::Ok)
+        {
+            return Some(item.key.clone());
+        }
+        if !before.has_earlier {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        updates.send(Update::LoadEarlier(channel, tx)).ok()?;
+        rx.await.ok()?.ok()?;
+        if state.borrow().timelines.get(&channel) == Some(&before) {
+            return None;
+        }
+    }
+}
+
 /// The wait before the `n`th retry of a re-establishment that did not reach a verdict: 1 s doubling to 30 s.
 fn renewal_backoff(n: u32) -> Duration {
     Duration::from_secs((1u64 << n.saturating_sub(1).min(5)).min(30))
@@ -1257,6 +1374,14 @@ where
     }
 }
 
+/// An open conversation's page ([`Client::open_page`]).
+struct OpenPage {
+    /// How many views show it (each window opens it on its own); it closes when the last lets go.
+    holders: u32,
+    /// The rows its timeline reads: [`TIMELINE_PAGE`] on every open, a page more for each "load earlier".
+    limit: u32,
+}
+
 /// Owns the [`AppState`] and publishes every change.
 struct Publisher {
     state: AppState,
@@ -1269,11 +1394,19 @@ struct Publisher {
     own_user: [u8; 16],
     own_device: [u8; 16],
     focus: Option<ChannelId>,
+    /// The open conversations and their pages (controller.ts `open`, `OpenChannel.limit`): a channel not listed reads one
+    /// page.
+    pages: HashMap<ChannelId, OpenPage>,
     not_member: HashSet<GroupId>,
     resyncing: HashSet<GroupId>,
-    /// The communities the last structure load listed (`None` before the first): one listed again after a load left
-    /// it out (a kick, a lifted ban or a leave, then a join) is the engine's [`Engine::rejoined`].
-    listed: Option<HashSet<CommunityId>>,
+    /// The communities the last structure load listed, with their names (`None` before the first): one listed again
+    /// after a load left it out (a kick, a lifted ban or a leave, then a join) is the engine's [`Engine::rejoined`],
+    /// and one a load leaves out that this account did not leave is a removal notice.
+    listed: Option<HashMap<CommunityId, String>>,
+    /// Shared with [`Inner::self_removed`].
+    self_removed: Arc<Mutex<SelfRemoved>>,
+    /// The last removal notice's id.
+    removal_seq: u64,
     /// The renewals of refused sessions (one per ready, one at a time).
     renew: RenewGate,
     /// The account's upkeep, started on every ready.
@@ -1309,6 +1442,13 @@ impl StructureOrder {
     fn start(&mut self) -> u64 {
         self.started += 1;
         self.started
+    }
+
+    /// A local write of the community list (controller.ts `listWritten`): every read started so far counts as older
+    /// than it, so one still in flight is not applied over it.
+    fn written(&mut self) {
+        self.started += 1;
+        self.shown = self.started;
     }
 
     /// Whether read `seq`'s answer is shown (no newer one is); if so, it is the one shown.
@@ -1437,6 +1577,11 @@ impl Publisher {
             let mut structure = false;
             let mut panicked = false;
             let mut reread_all = false;
+            // Channels whose page changed (a "load earlier", a grown page opened again at one page): their timelines are
+            // read again (read only: no read marker moves for it).
+            let mut reread: HashSet<[u8; 16]> = HashSet::new();
+            // The "load earlier" presses answered once the longer timelines are published.
+            let mut earlier: Vec<oneshot::Sender<Result<(), ClientError>>> = Vec::new();
             for update in batch {
                 match update {
                     Update::Group(g) => {
@@ -1469,6 +1614,7 @@ impl Publisher {
                         }
                     }
                     Update::Structure => structure = true,
+                    Update::ListWritten(c) => self.list_written(c),
                     Update::Loaded(seq, loaded) => {
                         if self.structure.lands(seq) {
                             self.on_loaded(*loaded).await;
@@ -1484,6 +1630,40 @@ impl Publisher {
                     Update::MarkRead(channel, done) => {
                         let _ = done.send(self.mark_read(channel).await);
                         groups.insert([0; 16]);
+                    }
+                    Update::PageOpened(channel) => {
+                        // controller.ts `openOnce` (4395): every open starts the conversation at one page.
+                        let page = self.pages.entry(channel).or_insert(OpenPage {
+                            holders: 0,
+                            limit: TIMELINE_PAGE,
+                        });
+                        page.holders += 1;
+                        if page.limit != TIMELINE_PAGE {
+                            page.limit = TIMELINE_PAGE;
+                            reread.insert(channel.0);
+                        }
+                    }
+                    Update::PageClosed(channel) => {
+                        // controller.ts `closeChannel` (4445): the open entry goes once nothing shows it.
+                        if let Some(page) = self.pages.get_mut(&channel) {
+                            page.holders = page.holders.saturating_sub(1);
+                            if page.holders == 0 {
+                                // A grown page goes back to one page now, so a later open shows one page.
+                                if page.limit != TIMELINE_PAGE {
+                                    reread.insert(channel.0);
+                                }
+                                self.pages.remove(&channel);
+                            }
+                        }
+                    }
+                    Update::LoadEarlier(channel, done) => {
+                        // controller.ts `loadEarlier` (4450-4457): only an open conversation's page grows; a press
+                        // that lands after it closed changes nothing.
+                        if let Some(page) = self.pages.get_mut(&channel) {
+                            page.limit = page.limit.saturating_add(TIMELINE_PAGE);
+                            reread.insert(channel.0);
+                        }
+                        earlier.push(done);
                     }
                     Update::Apply(f) => f(&mut self.state),
                     Update::FactorCompleted => self.check_factor(),
@@ -1520,8 +1700,11 @@ impl Publisher {
                 // Every action still queued answers Stopped (none is dropped unanswered); later ones find the channel
                 // closed and answer Stopped themselves.
                 rx.close();
+                for done in earlier {
+                    let _ = done.send(Err(ClientError::Stopped));
+                }
                 while let Ok(update) = rx.try_recv() {
-                    if let Update::MarkRead(_, done) = update {
+                    if let Update::MarkRead(_, done) | Update::LoadEarlier(_, done) = update {
                         let _ = done.send(Err(ClientError::Stopped));
                     }
                 }
@@ -1540,10 +1723,13 @@ impl Publisher {
                     .collect();
                 groups.extend(all);
             }
-            if !groups.is_empty() {
-                self.refresh_groups(&groups).await;
+            if !groups.is_empty() || !reread.is_empty() {
+                self.refresh_groups(&groups, &reread).await;
             }
             self.publish();
+            for done in earlier {
+                let _ = done.send(Ok(()));
+            }
         }
     }
 
@@ -1571,6 +1757,8 @@ impl Publisher {
         self.link.disconnect();
         self.state.connection.status = ConnectionStatus::Offline;
         self.state.account.phase = AccountPhase::Revoked;
+        // controller.ts 4343: the notices go with the session.
+        self.state.removal_notices.clear();
     }
 
     /// Answers whether the structure is to be read again.
@@ -1640,15 +1828,21 @@ impl Publisher {
             }
             ConnectionEvent::Refused(Refusal::UpgradeRequired, _) => {
                 self.state.connection.status = ConnectionStatus::Offline;
-                self.state.account.phase = AccountPhase::VersionRefused { upgrade: true };
+                self.state.account.phase = AccountPhase::VersionRefused {
+                    upgrade: true,
+                    instance: false,
+                };
                 false
             }
             ConnectionEvent::Refused(
-                Refusal::InstanceOutdated | Refusal::VersionUnsupported,
+                refusal @ (Refusal::InstanceOutdated | Refusal::VersionUnsupported),
                 _,
             ) => {
                 self.state.connection.status = ConnectionStatus::Offline;
-                self.state.account.phase = AccountPhase::VersionRefused { upgrade: false };
+                self.state.account.phase = AccountPhase::VersionRefused {
+                    upgrade: false,
+                    instance: refusal == Refusal::InstanceOutdated,
+                };
                 false
             }
         }
@@ -1808,6 +2002,16 @@ impl Publisher {
         });
     }
 
+    /// controller.ts `listWritten` + `dropCommunity`: a leave or delete this account made went through. A read that
+    /// began before it is discarded (it would list the server again and clear its self-removed mark), and the server
+    /// leaves the list the next read is compared with, so it is never told as a removal.
+    fn list_written(&mut self, community: CommunityId) {
+        self.structure.written();
+        if let Some(listed) = &mut self.listed {
+            listed.remove(&community);
+        }
+    }
+
     async fn on_loaded(&mut self, loaded: Loaded) {
         let policy = self.engine.instance().policy_version;
         let expected = loaded
@@ -1836,8 +2040,41 @@ impl Publisher {
             self.state.timelines.remove(id);
             self.state.messages.unavailable.remove(id);
         }
-        if let Some(before) = self.listed.replace(now.clone()) {
-            let rejoined: Vec<CommunityId> = now.difference(&before).copied().collect();
+        let names: HashMap<CommunityId, String> = loaded
+            .communities
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect();
+        if let Some(before) = self.listed.replace(names) {
+            // controller.ts 3073-3100: a server the previous read listed and this one does not, that this account did
+            // not leave or delete, is a removal. A server listed again drops its notice (a superset of the web's
+            // join-only drop: a join made elsewhere shows up in the list alone).
+            let fresh = {
+                let mut mine = self
+                    .self_removed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let fresh = notices(&before, &now, &mine, &mut self.removal_seq);
+                for c in &now {
+                    mine.listed(*c);
+                }
+                fresh
+            };
+            self.state
+                .removal_notices
+                .retain(|n| !now.contains(&n.community));
+            self.state.removal_notices.extend(fresh);
+            let over = self
+                .state
+                .removal_notices
+                .len()
+                .saturating_sub(REMOVALS_MAX);
+            self.state.removal_notices.drain(..over);
+            let rejoined: Vec<CommunityId> = now
+                .iter()
+                .filter(|c| !before.contains_key(c))
+                .copied()
+                .collect();
             if !rejoined.is_empty() {
                 // Jonas (2026-11-13), stricter than the web: a server joined again keeps its history hidden until each
                 // text group's removal feed is read (a moderator may have removed a message while the account was
@@ -1878,10 +2115,11 @@ impl Publisher {
         self.refresh_channels(&all).await;
     }
 
-    /// Re-reads what the changed groups show: the bound channels' timelines and every badge.
-    async fn refresh_groups(&mut self, groups: &HashSet<[u8; 16]>) {
+    /// Re-reads what the changed groups show: the bound channels' timelines and every badge. `pages` are channels whose
+    /// page changed (nothing new in them): their timelines are read too, without moving a read marker.
+    async fn refresh_groups(&mut self, groups: &HashSet<[u8; 16]>, pages: &HashSet<[u8; 16]>) {
         let rows = self.engine.groups().await;
-        let channels: HashSet<[u8; 16]> = rows
+        let mut channels: HashSet<[u8; 16]> = rows
             .iter()
             .filter(|r| r.kind == 0 && groups.contains(&r.group_id))
             .map(|r| r.target_id)
@@ -1892,6 +2130,7 @@ impl Publisher {
         {
             let _ = self.mark_read(focus).await;
         }
+        channels.extend(pages);
         self.refresh_channels(&channels).await;
     }
 
@@ -1962,8 +2201,9 @@ impl Publisher {
         group: &GroupRow,
     ) -> Option<crate::state::Timeline> {
         let g = group.group_id;
+        let limit = self.pages.get(&channel).map_or(TIMELINE_PAGE, |p| p.limit);
         let (rows, outbox) = try_core(&self.core, move |c| {
-            (c.timeline(&g, 0, TIMELINE_PAGE), c.outbox(&g))
+            (c.timeline(&g, 0, limit), c.outbox(&g))
         })
         .await
         .ok()?;
@@ -1979,7 +2219,7 @@ impl Publisher {
             &outbox,
             self.own_user,
             self.own_device,
-            TIMELINE_PAGE,
+            limit,
         ))
     }
 

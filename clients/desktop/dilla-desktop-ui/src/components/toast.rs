@@ -25,9 +25,20 @@ struct Toasts {
     /// shown for (`None`: every window).
     current: Option<(SharedString, u64, Option<WindowId>)>,
     n: u64,
+    /// A frozen clock (a drawn fixture's, as the web shooter's browser has): a toast never ends, so the frame holds it.
+    frozen: bool,
 }
 
 impl Global for Toasts {}
+
+/// The toasts stop ending: the clock of a drawn fixture is frozen, as the web shooter's browser clock is, so a toast stays on
+/// screen for the frame (the parity harness's fixture windows).
+pub fn freeze(cx: &mut App) {
+    if !cx.has_global::<Toasts>() {
+        cx.set_global(Toasts::default());
+    }
+    cx.global_mut::<Toasts>().frozen = true;
+}
 
 /// The text of the toast showing now, if any.
 pub fn current(cx: &App) -> Option<SharedString> {
@@ -58,13 +69,16 @@ pub fn show_toast_in(window: Option<WindowId>, text: impl Into<SharedString>, cx
     if !cx.has_global::<Toasts>() {
         cx.set_global(Toasts::default());
     }
-    let n = {
+    let (n, frozen) = {
         let toasts = cx.global_mut::<Toasts>();
         toasts.n += 1;
         toasts.current = Some((text, toasts.n, window));
-        toasts.n
+        (toasts.n, toasts.frozen)
     };
     cx.refresh_windows();
+    if frozen {
+        return;
+    }
     cx.spawn(async move |cx| {
         cx.background_executor()
             .timer(Duration::from_millis(TOAST_MS))
@@ -112,8 +126,9 @@ impl RenderOnce for ToastHost {
         match current_in(window_id, cx) {
             None => region,
             // `role="status"`: read out once as it appears (each toast is a new node, so a repeated "Copied" is too).
-            Some(message) => region.child(
-                div()
+            Some(message) => {
+                let enter = (self.id.clone(), format!("toast-enter-{n}"));
+                let toast = div()
                     .id((self.id, format!("toast-{n}")))
                     .a11y(Role::Status, message.clone())
                     .aria_value(message.clone())
@@ -135,8 +150,10 @@ impl RenderOnce for ToastHost {
                         text::UI,
                         line_height(text::UI, 1.5),
                         color::FG,
-                    )),
-            ),
+                    ));
+                // Toast.css:7: `d-toast` over `--duration-toast`, each toast on its own.
+                region.child(crate::motion::toast_in(toast, enter, cx))
+            }
         }
     }
 }
@@ -148,5 +165,33 @@ mod tests {
     #[test]
     fn a_toast_shows_for_2_4_seconds() {
         assert_eq!(TOAST_MS, 2400);
+    }
+
+    /// The toast names its window, as every caller in the app does (`tests/toasts.rs` flags a toast for every window).
+    #[gpui::test]
+    fn a_toast_ends_on_its_timer_unless_the_clock_is_frozen(cx: &mut gpui::TestAppContext) {
+        let later = Duration::from_millis(TOAST_MS + 100);
+        let w = cx
+            .add_empty_window()
+            .update(|window, _| window.window_handle().window_id());
+        cx.update(|cx| show_toast_in(Some(w), "gone", cx));
+        assert!(cx.update(|cx| current_in(w, cx).is_some()));
+        cx.executor().advance_clock(later);
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| current_in(w, cx).is_none()),
+            "the timer ended it"
+        );
+        cx.update(|cx| {
+            freeze(cx);
+            show_toast_in(Some(w), "stays", cx);
+        });
+        cx.executor().advance_clock(later);
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|cx| current_in(w, cx)).as_deref(),
+            Some("stays"),
+            "a frozen clock holds it"
+        );
     }
 }

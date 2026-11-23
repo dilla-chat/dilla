@@ -17,6 +17,7 @@ mod client;
 mod ds;
 mod fixtures;
 mod media_driver;
+pub mod nested_cargo;
 mod netprobe;
 mod scenario;
 mod totp;

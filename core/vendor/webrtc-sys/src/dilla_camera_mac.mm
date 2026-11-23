@@ -35,6 +35,11 @@
 #error "dilla_camera_mac.mm is built with -fobjc-arc (build.rs)"
 #endif
 
+// The app's floor is macOS 13 (.cargo/config.toml's MACOSX_DEPLOYMENT_TARGET): a 14.0 symbol used
+// without @available (the external and Continuity device types) does not build. build.rs silences
+// this library with -Wno-everything, which this pragma overrides.
+#pragma clang diagnostic error "-Wunguarded-availability-new"
+
 // Receives the session's frames on its serial capture queue. `camera_` is read and cleared only on
 // that queue, so clearing it there (the DillaCamera destructor) also waits out a frame in flight.
 @interface DillaCameraDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>

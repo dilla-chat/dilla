@@ -31,7 +31,7 @@ use dilla_desktop_ui::components::text_field::{Frame, TextField};
 
 use crate::screens::factor::code::{CodeEvent, CodeField};
 use crate::screens::factor::frame::{
-    Action, AuthFrame, FIELD_H, error_line, link, links_row, nav_row, note, para,
+    Action, AuthFrame, FIELD_H, body_para, error_line, link, links_row, nav_row, note,
 };
 use crate::screens::{FocusNext, FocusPrevious};
 use crate::strings::{t, tf};
@@ -992,7 +992,10 @@ impl Render for SignInView {
                     AuthFrame::new(tf("signin.login.title", &[("instance", &instance)]))
                         .step(step(1))
                         .progress(1, total)
-                        .child(para(tf("signin.login.body", &[("instance", &instance)])));
+                        .child(body_para(tf(
+                            "signin.login.body",
+                            &[("instance", &instance)],
+                        )));
                 if self.pin.is_none() {
                     frame = frame.child(self.field(
                         cx,
@@ -1074,13 +1077,13 @@ impl Render for SignInView {
                     .step(step(2))
                     .progress(2, total);
                 if self.flow.as_ref().is_some_and(SignIn::used_passkey) {
-                    frame = frame.child(para(tf(
+                    frame = frame.child(body_para(tf(
                         "factorSignin.passkey.needsCode",
                         &[("instance", &instance)],
                     )));
                 }
                 frame = frame
-                    .child(para(t("signin.totp.body")))
+                    .child(body_para(t("signin.totp.body")))
                     .child(tracked_box("signin-code", self.code.clone()));
                 if let Some(e) = self.errors.get(&Field::Code) {
                     frame = frame.child(tracked_box("signin-code-error", error_line(e.clone())));
@@ -1127,7 +1130,7 @@ impl Render for SignInView {
             Shown::Passkey => AuthFrame::new(t("factorSignin.passkey.title"))
                 .step(step(2))
                 .progress(2, total)
-                .child(para(t("factorSignin.passkey.body")))
+                .child(body_para(t("factorSignin.passkey.body")))
                 .child(links_row(vec![link(
                     "signin-use-backup",
                     t("factorSignin.useBackup"),
@@ -1155,10 +1158,10 @@ impl Render for SignInView {
                     .step(step(2))
                     .progress(2, total);
                 if !passkeys && self.flow.as_ref().and_then(SignIn::owes) == Some(Owed::Passkey) {
-                    frame = frame.child(para(t("factorSignin.passkey.unusable")));
+                    frame = frame.child(body_para(t("factorSignin.passkey.unusable")));
                 }
                 frame
-                    .child(para(t("factorSignin.backup.body")))
+                    .child(body_para(t("factorSignin.backup.body")))
                     .child(self.field(
                         cx,
                         "signin-backup",
@@ -1208,7 +1211,7 @@ impl Render for SignInView {
                 let mut frame = AuthFrame::new(t("signin.key.title"))
                     .step(step(key_step))
                     .progress(key_step, total)
-                    .child(para(t("signin.key.body")))
+                    .child(body_para(t("signin.key.body")))
                     .child(tracked_box(
                         "signin-key",
                         div()
@@ -1223,14 +1226,14 @@ impl Render for SignInView {
                 if looks && self.note_settled {
                     frame = frame.child(tracked_box(
                         "signin-key-backup",
-                        para(t("signIn.key.isBackupCode")),
+                        body_para(t("signIn.key.isBackupCode")),
                     ));
                 }
                 if n != KEY_LENGTH {
                     frame = frame.child(note(t("signin.error.keyLength")));
                 }
                 if busy == Some(Command::Key) {
-                    frame = frame.child(para(t("signin.key.working")));
+                    frame = frame.child(body_para(t("signin.key.working")));
                 }
                 frame
                     .action(submit(
@@ -1264,7 +1267,7 @@ impl Render for SignInView {
                 AuthFrame::new(t("signin.done.title"))
                     .step(step(total))
                     .progress(total, total)
-                    .child(para(tf(
+                    .child(body_para(tf(
                         "signin.done.body",
                         &[("username", &who), ("instance", &instance)],
                     )))

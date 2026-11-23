@@ -28,20 +28,21 @@ use dilla_client::features::roles::{
     AssignLock, AssignRefusal, PermLock, assign_lock, assign_refusal, assignable, held_bits,
     permission_lock, request_id,
 };
-use dilla_client::state::members::Presence as Wire;
+use dilla_client::state::members::{BanSummary, Member, Presence as Wire};
 use dilla_client::state::roles::{RoleId, RoleSummary};
 use dilla_client::state::{AppState, CommunityId, UserId};
 use dilla_client::sync::api::ApiError;
 use gpui::{
     AnyElement, App, AppContext, Entity, InteractiveElement, IntoElement, ParentElement, Pixels,
     Point, SharedString, Styled, Window, WindowId, anchored, deferred, div, point,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::InputState;
 
 use dilla_desktop_ui::IconName;
 use dilla_desktop_ui::components::action_menu::{ActionMenu, MenuItem};
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, Presence, colour_of};
-use dilla_desktop_ui::components::button::Button;
+use dilla_desktop_ui::components::button::{Button, ButtonSize};
 use dilla_desktop_ui::components::check_list::{CheckList, CheckListItem};
 use dilla_desktop_ui::components::confirm_dialog::ConfirmDialog;
 use dilla_desktop_ui::components::dialog::Dialog;
@@ -49,10 +50,11 @@ use dilla_desktop_ui::components::members::{
     CardAction, GroupKind, ListGroup, ListMember, MemberList, ProfileCard, space,
 };
 use dilla_desktop_ui::components::select::Select;
+use dilla_desktop_ui::components::server_settings::layout as settings_layout;
 use dilla_desktop_ui::components::text_field::TextField;
 use dilla_desktop_ui::components::toast::show_toast_in;
-use dilla_desktop_ui::text::{line, line_height};
-use dilla_desktop_ui::tokens::{color, font, layout, text};
+use dilla_desktop_ui::text::{flow_paragraph, line, line_height};
+use dilla_desktop_ui::tokens::{color, font, radius, text};
 
 use crate::router::{Route, ServerSection};
 use crate::slots::{SectionId, SlotCx};
@@ -68,8 +70,9 @@ pub enum ModKind {
     Unban,
 }
 
-/// The dialog in flight: its target, and the warning's request id (stable across a retry of the same warning).
-#[derive(Clone, Debug)]
+/// The dialog in flight: its target, and the warning's request id (stable across a retry of the same warning). Its Debug
+/// names only the kind and the community: the member it acts on is moderation content.
+#[derive(Clone)]
 pub struct ModDialog {
     pub kind: ModKind,
     pub community: CommunityId,
@@ -77,6 +80,15 @@ pub struct ModDialog {
     pub name: String,
     pub server: String,
     request: [u8; 16],
+}
+
+impl std::fmt::Debug for ModDialog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModDialog")
+            .field("kind", &self.kind)
+            .field("community", &self.community)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The members area's view state (one per app).
@@ -100,6 +112,9 @@ pub struct MembersUi {
     pub role: Option<[u8; 16]>,
     /// What this view asked the client to read already (a section reads once per community).
     asked: HashSet<(&'static str, CommunityId)>,
+    /// A failed ban-list read's code, per community (BansSection.tsx `loadError`). Its `asked` entry stays until the
+    /// retry clears both, so the section does not read again on every draw.
+    bans_error: std::collections::HashMap<CommunityId, String>,
     /// The DeleteRole confirmation: the role and its name, and the request in flight.
     role_delete: Option<(CommunityId, RoleId, String)>,
     role_delete_busy: bool,
@@ -259,14 +274,44 @@ fn ensure_loaded(
         ),
     };
     cx.spawn(async move |cx| {
-        if job.await.is_err() {
-            // Read again on the next draw.
+        if let Err(e) = job.await {
             cx.update(|cx| {
-                ui(w, cx).asked.remove(&(what, community));
+                if read_failed(ui(w, cx), what, community, e.code) {
+                    cx.refresh_windows();
+                }
             });
         }
     })
     .detach();
+}
+
+/// A section's read failed. A failed ban-list read is said in the Bans section (BansSection.tsx `loadError`): it keeps its
+/// `asked` entry, so the section does not read again on every draw, and records the code until [`retry_bans`]. Any other
+/// read is asked again on the next draw. Answers whether the view must be drawn again to show the failure.
+fn read_failed(
+    u: &mut MembersUi,
+    what: &'static str,
+    community: CommunityId,
+    code: String,
+) -> bool {
+    if what == "bans" {
+        u.bans_error.insert(community, code);
+        true
+    } else {
+        u.asked.remove(&(what, community));
+        false
+    }
+}
+
+/// The Bans section's retry: forgets the failure and the read, so the next draw reads the ban list once more.
+fn retry_bans(u: &mut MembersUi, community: CommunityId) {
+    u.bans_error.remove(&community);
+    u.asked.remove(&("bans", community));
+}
+
+/// The Bans section's alert for a failed read (`admin.bans.error.load`).
+fn bans_error_text(code: &str) -> String {
+    tf("admin.bans.error.load", &[("code", code)])
 }
 
 /// The list's groups for `community` (MemberPane.tsx): the client's grouping, the status line (a custom status, else
@@ -1053,7 +1098,7 @@ fn section_head(title: &str, body: Option<String>) -> gpui::Div {
         head = head.child(line(
             body,
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::FG_2,
         ));
     }
@@ -1061,13 +1106,73 @@ fn section_head(title: &str, body: Option<String>) -> gpui::Div {
 }
 
 fn note(s: impl Into<SharedString>) -> AnyElement {
-    line(s.into(), text::UI, line_height(text::UI, 1.5), color::FG_3).into_any_element()
+    line(
+        s.into(),
+        text::UI,
+        dilla_desktop_ui::text::root_line_height(text::UI),
+        color::FG_3,
+    )
+    .into_any_element()
 }
 
 fn sorted_roles(state: &AppState, community: CommunityId) -> Vec<RoleSummary> {
     let mut roles: Vec<RoleSummary> = state.roles.roles_of(community).to_vec();
     roles.sort_by(|a, b| b.position.cmp(&a.position).then(a.id.cmp(&b.id)));
     roles
+}
+
+/// BansSection.tsx `SOON_S`: a ban that ends within this many seconds says the time as well as the date.
+const BAN_SOON_S: u64 = 2 * 86_400;
+
+/// A ban row's detail lines (BansSection.tsx `rows[].detail`), each drawn as its own line: who banned and when (only once
+/// `members` is read; a banner who is no longer a member is `admin.member.former`), how long the ban lasts (`lastsLine`:
+/// for ever, lapsed on a day, or until a day, with the time when it ends within [`BAN_SOON_S`]), and the reason.
+pub fn ban_details(ban: &BanSummary, members: Option<&[Member]>, now: u64) -> Vec<String> {
+    ban_details_in(ban, members, now, &crate::format::local_zone)
+}
+
+/// [`ban_details`] with its dates in `zone`: the section draws them in its clock's zone (UTC under a fixture's frozen
+/// clock, as the web reference is shot).
+fn ban_details_in(
+    ban: &BanSummary,
+    members: Option<&[Member]>,
+    now: u64,
+    zone: crate::format::Zone,
+) -> Vec<String> {
+    let locale = crate::format::date_locale();
+    let day = |ts| crate::format::day_in(ts, zone, &locale);
+    let mut lines = Vec::with_capacity(3);
+    if let Some(members) = members {
+        let by = members
+            .iter()
+            .find(|m| m.user_id == ban.by_user)
+            .map_or_else(
+                || t("admin.member.former").to_owned(),
+                |m| member_name(m).to_owned(),
+            );
+        lines.push(tf(
+            "admin.bans.by",
+            &[("name", &by), ("date", &day(ban.created))],
+        ));
+    }
+    lines.push(match ban.expires {
+        None => t("admin.bans.forever").to_owned(),
+        Some(at) if at <= now => tf("admin.bans.lapsed", &[("date", &day(at))]),
+        Some(at) => {
+            let date = if at - now <= BAN_SOON_S {
+                crate::format::day_time_in(at, zone, &locale)
+            } else {
+                day(at)
+            };
+            tf("admin.bans.until", &[("date", &date)])
+        }
+    });
+    lines.push(if ban.reason.is_empty() {
+        t("admin.bans.noReason").to_owned()
+    } else {
+        ban.reason.clone()
+    });
+    lines
 }
 
 fn bans_section(
@@ -1085,86 +1190,108 @@ fn bans_section(
         .iter()
         .find(|c| c.id == community)
         .map_or_else(String::new, |c| c.name.clone());
-    let access = state.roles.access_of(community);
+    let members = state.members.get(&community).map(Vec::as_slice);
+    let clock = ctx.clock;
+    let now = clock.now();
+    let error = ui(w, cx).bans_error.get(&community).cloned();
     let mut root = div()
         .id("settings-bans")
         .flex()
         .flex_col()
         .gap(space::S4)
         .child(section_head(t("admin.bans.title"), None));
-    match state.people.bans.get(&community) {
-        None => root = root.child(note(t("admin.bans.loading"))),
-        Some(bans) if bans.is_empty() => {
+    match (error, state.people.bans.get(&community)) {
+        // BansSection.tsx: a failed read says its code, with a retry that reads again.
+        (Some(code), _) => {
+            root = root.child(
+                div()
+                    .id("bans-error")
+                    .debug_selector(|| "bans-error".to_owned())
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(space::S6)
+                    .child(line(
+                        bans_error_text(&code),
+                        text::UI,
+                        dilla_desktop_ui::text::root_line_height(text::UI),
+                        color::DANGER,
+                    ))
+                    .child(div().debug_selector(|| "bans-retry".to_owned()).child(
+                        Button::new("bans-retry", t("admin.bans.retry")).on_click(
+                            move |_, _w, cx| {
+                                retry_bans(ui(w, cx), community);
+                                cx.refresh_windows();
+                            },
+                        ),
+                    )),
+            );
+        }
+        (None, None) => root = root.child(note(t("admin.bans.loading"))),
+        (None, Some(bans)) if bans.is_empty() => {
             root = root.child(note(tf("admin.bans.empty", &[("server", &server)])));
         }
-        Some(bans) => {
-            for b in bans {
+        (None, Some(bans)) => {
+            // ManageList.tsx: one card of one hairline edge, rows of at least 48px (8px 16px) with a hairline between,
+            // the title at `--text-ui` and each detail its own `d-manage-list__detail` line at `--text-xs` `--fg-2`.
+            // The web section is a 14px column under a margin-less h2 (`.dw-settings-section`), whose taller line box puts
+            // the list 6px lower than the head's own 16px margin and the 4px gap here leave (measured on the references).
+            let mut card = div()
+                .mt(space::S6)
+                .flex()
+                .flex_col()
+                .border_1()
+                .border_color(color::HAIRLINE)
+                .rounded(radius::XL)
+                .overflow_hidden();
+            for (i, b) in bans.iter().enumerate() {
                 let name = if b.name.is_empty() {
                     t("admin.bans.unknownUser").to_owned()
                 } else {
                     b.name.clone()
                 };
-                let reason = if b.reason.is_empty() {
-                    t("admin.bans.noReason").to_owned()
-                } else {
-                    b.reason.clone()
-                };
-                let until = match b.expires {
-                    None => t("admin.bans.forever").to_owned(),
-                    Some(at) => tf(
-                        "admin.bans.until",
-                        &[("date", &crate::format::day_time(at))],
-                    ),
-                };
-                let (user, name2, server2) = (b.user_id, name.clone(), server.clone());
-                let mut row = div()
-                    .id(SharedString::from(format!("ban-{}", b.user_id.hex())))
-                    .min_h(layout::ROW_H_2)
-                    .px(space::S10)
-                    .py(space::S6)
+                // `.d-manage-list__title` and `__detail` wrap anywhere (`overflow-wrap: anywhere`) inside the text
+                // column, which takes what the Unban button leaves: a long name or reason wraps, never runs under it.
+                let hex = b.user_id.hex();
+                let mut text_col = div()
+                    .debug_selector({
+                        let hex = hex.clone();
+                        move || format!("ban-text-{hex}")
+                    })
+                    .flex_1()
+                    .min_w_0()
                     .flex()
-                    .items_center()
-                    .gap(space::S10)
-                    .border_b_1()
-                    .border_color(color::HAIRLINE)
+                    .flex_col()
+                    .gap(settings_layout::BAN_TEXT_GAP)
+                    .child(flow_paragraph(
+                        name.clone(),
+                        text::UI,
+                        line_height(text::UI, 1.4),
+                        color::FG,
+                    ));
+                for detail in ban_details_in(b, members, now, &|s| clock.offset(s)) {
+                    text_col = text_col.child(flow_paragraph(
+                        detail,
+                        text::XS,
+                        line_height(text::XS, 1.4),
+                        color::FG_2,
+                    ));
+                }
+                let (user, name2, server2) = (b.user_id, name.clone(), server.clone());
+                // BansSection.tsx offers Unban on every row: the section is only reachable with the ban right, and the
+                // instance decides the request again.
+                let unban = div()
+                    .debug_selector({
+                        let hex = hex.clone();
+                        move || format!("ban-unban-{hex}")
+                    })
+                    .flex_none()
                     .child(
-                        Avatar::new(
-                            SharedString::from(format!("ban-avatar-{}", b.user_id.hex())),
-                            name.clone(),
-                        )
-                        .size(AvatarSize::Member),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                line(
-                                    name.clone(),
-                                    text::SM,
-                                    line_height(text::SM, 1.5),
-                                    color::FG,
-                                )
-                                .ellipsis(),
-                            )
-                            .child(
-                                line(
-                                    format!("{reason} · {until}"),
-                                    text::META,
-                                    line_height(text::META, 1.5),
-                                    color::FG_3,
-                                )
-                                .ellipsis(),
-                            ),
-                    );
-                if access.loaded && access.ban_members {
-                    row = row.child(
                         Button::new(
-                            SharedString::from(format!("unban-{}", b.user_id.hex())),
+                            SharedString::from(format!("unban-{hex}")),
                             t("admin.bans.unban"),
                         )
+                        .size(ButtonSize::Row)
                         .on_click(move |_, _w, cx| {
                             let u = ui(w, cx);
                             u.error = None;
@@ -1181,9 +1308,21 @@ fn bans_section(
                             cx.refresh_windows();
                         }),
                     );
-                }
-                root = root.child(row);
+                let row = div()
+                    .id(SharedString::from(format!("ban-{hex}")))
+                    .min_h(settings_layout::LIST_ROW_H)
+                    .px(settings_layout::LIST_PAD_X)
+                    .py(settings_layout::ROW_GAP)
+                    .flex()
+                    .items_center()
+                    .gap(settings_layout::FIELD_GAP)
+                    .border_color(color::HAIRLINE)
+                    .when(i > 0, |r| r.border_t_1())
+                    .child(text_col)
+                    .child(unban);
+                card = card.child(row);
             }
+            root = root.child(card);
         }
     }
     if let Some(d) = dialog_overlay(ctx, window, cx) {
@@ -1236,9 +1375,13 @@ fn log_date(seconds: &str) -> String {
     }
 }
 
-fn moderation_log_section(
+/// The moderation log (`ModerationLog.tsx`). Its settings page opens with the page's own `section_head`; `in_dialog` is
+/// the `/modlog` dialog's body, where the web's component draws its own `<h3>` (`showHeading` is true there): the
+/// browser's default h3, 1.17 times the dialog's `--text-ui`, bold, with a 1em margin each side.
+pub(crate) fn moderation_log_section(
     ctx: &SlotCx,
     community: CommunityId,
+    in_dialog: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -1259,11 +1402,30 @@ fn moderation_log_section(
         .flex()
         .flex_col()
         .gap(space::S10)
-        .child(section_head(t("admin.bot.moderationLog.title"), None))
+        .child(if in_dialog {
+            let size = text::UI * 1.17;
+            // 1em above and below; the column's own gap already gives the 10px of the bottom one.
+            div().mt(size).mb(size - space::S10).child(
+                line(
+                    t("admin.bot.moderationLog.title").to_owned(),
+                    size,
+                    dilla_desktop_ui::text::root_line_height(size),
+                    color::FG_2,
+                )
+                .weight(font::WEIGHT_DISPLAY),
+            )
+        } else {
+            section_head(t("admin.bot.moderationLog.title"), None)
+        })
         .child(
             div()
                 .flex()
-                .gap(space::S8)
+                // The web's two buttons are inline, side by side (the settings page lays them 8px apart).
+                .gap(if in_dialog {
+                    gpui::Pixels::default()
+                } else {
+                    space::S8
+                })
                 .child(
                     Button::new(
                         "modlog-automatic",
@@ -1370,7 +1532,7 @@ pub fn settings_section(
         }
         SectionId::Server(ServerSection::Bans) => bans_section(ctx, community, window, cx),
         SectionId::Server(ServerSection::ModerationLog) => {
-            moderation_log_section(ctx, community, window, cx)
+            moderation_log_section(ctx, community, false, window, cx)
         }
         _ => div().into_any_element(),
     }
@@ -1735,7 +1897,7 @@ fn assign_dialog(w: WindowId, ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> 
         body = body.child(line(
             problem,
             text::UI,
-            line_height(text::UI, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::UI),
             color::DANGER,
         ));
     }
@@ -1749,4 +1911,233 @@ fn assign_dialog(w: WindowId, ctx: &SlotCx, cx: &mut App) -> Option<AnyElement> 
         .on_close(move |_w, cx| close_assign(w, cx))
         .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::format::{day, day_time};
+
+    const T: u64 = 1_794_481_738;
+
+    fn ada() -> Member {
+        Member {
+            user_id: UserId([1; 16]),
+            username: "ada".to_owned(),
+            display: "Ada".to_owned(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        }
+    }
+
+    fn ban(expires: Option<u64>) -> BanSummary {
+        BanSummary {
+            user_id: UserId([2; 16]),
+            name: "Björn".to_owned(),
+            reason: String::new(),
+            by_user: UserId([1; 16]),
+            created: T,
+            expires,
+        }
+    }
+
+    #[test]
+    fn a_ban_row_names_who_banned_and_when_it_ends() {
+        let now = T + 60;
+        let members = [ada()];
+        let soon = ban(Some(T + 3600));
+        let until_soon = tf("admin.bans.until", &[("date", &day_time(T + 3600))]);
+        assert_eq!(
+            ban_details(&soon, Some(&members), now),
+            vec![
+                tf("admin.bans.by", &[("name", "Ada"), ("date", &day(T))]),
+                until_soon.clone(),
+                t("admin.bans.noReason").to_owned(),
+            ]
+        );
+        // Until the members are read, the clause naming the banner is left out.
+        assert_eq!(
+            ban_details(&soon, None, now),
+            vec![until_soon, t("admin.bans.noReason").to_owned()]
+        );
+        // A banner who left is a former member.
+        assert_eq!(
+            ban_details(&soon, Some(&[]), now)[0],
+            tf(
+                "admin.bans.by",
+                &[("name", t("admin.member.former")), ("date", &day(T))]
+            )
+        );
+        // Further off than two days: the day alone.
+        assert_eq!(
+            ban_details(&ban(Some(T + 3 * 86_400)), None, now)[0],
+            tf("admin.bans.until", &[("date", &day(T + 3 * 86_400))])
+        );
+        assert_eq!(
+            ban_details(&ban(Some(now - 1)), None, now)[0],
+            tf("admin.bans.lapsed", &[("date", &day(now - 1))])
+        );
+        assert_eq!(
+            ban_details(&ban(None), None, now)[0],
+            t("admin.bans.forever")
+        );
+    }
+
+    /// R20: a moderation dialog in flight prints its kind and community, never the member it acts on.
+    #[test]
+    fn a_moderation_dialog_keeps_its_member_out_of_debug() {
+        let dialog = ModDialog {
+            kind: ModKind::Ban,
+            community: CommunityId([7; 16]),
+            target: UserId([2; 16]),
+            name: "Bjornsson".to_owned(),
+            server: "Midgard".to_owned(),
+            request: [9; 16],
+        };
+        let user = format!("{:?}", UserId([2; 16]));
+        for shown in [format!("{dialog:?}"), format!("{dialog:#?}")] {
+            assert!(shown.contains("Ban"), "the kind shows");
+            assert!(!shown.contains("Bjornsson"), "a name");
+            assert!(!shown.contains(&user), "the member's id");
+            assert!(!shown.contains("Midgard"), "the server's name");
+            assert!(!shown.contains("9, 9"), "the request id");
+        }
+    }
+
+    /// BansSection.tsx `loadError`: a failed ban-list read keeps its `asked` entry (no read on every draw) and records its
+    /// code; the retry clears both. Any other section's failed read is simply asked again.
+    #[test]
+    fn a_failed_ban_read_waits_for_the_retry() {
+        let c = CommunityId([7; 16]);
+        let mut u = MembersUi::default();
+        u.asked.insert(("bans", c));
+        u.asked.insert(("people", c));
+        assert!(read_failed(&mut u, "bans", c, "E_FORBIDDEN".to_owned()));
+        assert!(
+            u.asked.contains(&("bans", c)),
+            "the read is not asked again"
+        );
+        assert_eq!(
+            u.bans_error.get(&c).map(String::as_str),
+            Some("E_FORBIDDEN")
+        );
+        assert!(!read_failed(&mut u, "people", c, "E_NET".to_owned()));
+        assert!(!u.asked.contains(&("people", c)), "read on the next draw");
+        assert_eq!(u.bans_error.len(), 1, "only the ban read records a failure");
+        retry_bans(&mut u, c);
+        assert!(u.bans_error.is_empty() && !u.asked.contains(&("bans", c)));
+        assert_eq!(
+            bans_error_text("E_FORBIDDEN"),
+            tf("admin.bans.error.load", &[("code", "E_FORBIDDEN")])
+        );
+    }
+
+    /// The Bans section drawn in a window: `community`'s state, in a column `width` wide.
+    struct BansHost {
+        ctx: SlotCx,
+        community: CommunityId,
+    }
+
+    impl gpui::Render for BansHost {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            div().w(settings_layout::BAN_TEST_W).child(bans_section(
+                &self.ctx,
+                self.community,
+                window,
+                cx,
+            ))
+        }
+    }
+
+    fn host(state: AppState, community: CommunityId) -> BansHost {
+        BansHost {
+            ctx: SlotCx {
+                state: std::sync::Arc::new(state),
+                community: Some(community),
+                clock: crate::screens::shell::Clock::Fixed {
+                    now: T + 60,
+                    utc: true,
+                },
+                ..SlotCx::default()
+            },
+            community,
+        }
+    }
+
+    /// ManageList.css `overflow-wrap: anywhere`: a reason far longer than the row (here one unbroken run) wraps inside
+    /// the text column, which ends where the Unban button begins; it never runs under the button.
+    #[gpui::test]
+    fn a_long_ban_reason_wraps_left_of_unban(cx: &mut gpui::TestAppContext) {
+        let c = CommunityId([7; 16]);
+        let mut state = AppState::default();
+        state.members.insert(c, vec![ada()]);
+        let mut long = ban(Some(T + 3600));
+        long.reason = "x".repeat(400);
+        let hex = long.user_id.hex();
+        state.people.bans.insert(c, vec![long]);
+        let (_view, vcx) = cx.add_window_view(move |_, _| host(state, c));
+        vcx.run_until_parked();
+        let text = vcx
+            .debug_bounds(Box::leak(format!("ban-text-{hex}").into_boxed_str()))
+            .expect("the row's text is drawn");
+        let unban = vcx
+            .debug_bounds(Box::leak(format!("ban-unban-{hex}").into_boxed_str()))
+            .expect("Unban is offered on every row");
+        assert!(text.right() <= unban.left(), "the text ends left of Unban");
+        // The title and two short details take one line each; the reason takes several.
+        let one_line = |size| gpui::px(line_height(size, 1.4));
+        let unwrapped =
+            one_line(text::UI) + one_line(text::XS) * 3.0 + settings_layout::BAN_TEXT_GAP * 3.0;
+        assert!(
+            text.size.height > unwrapped + one_line(text::XS),
+            "the reason wraps"
+        );
+    }
+
+    /// BansSection.tsx: a failed read shows `admin.bans.error.load` and a retry instead of the list; the retry clears the
+    /// failure and the read, so the next draw reads the list once more.
+    #[gpui::test]
+    fn a_failed_ban_read_shows_the_alert_and_the_retry_clears_it(cx: &mut gpui::TestAppContext) {
+        let c = CommunityId([7; 16]);
+        let mut state = AppState::default();
+        state.people.bans.insert(c, vec![ban(None)]);
+        let (_view, vcx) = cx.add_window_view(move |_, _| host(state, c));
+        let w = vcx.update(|window, _| window.window_handle().window_id());
+        vcx.update(|_, cx| {
+            let u = ui(w, cx);
+            u.asked.insert(("bans", c));
+            read_failed(u, "bans", c, "E_FORBIDDEN".to_owned());
+        });
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("bans-error").is_some(), "the alert shows");
+        let hex = UserId([2; 16]).hex();
+        assert!(
+            vcx.debug_bounds(Box::leak(format!("ban-text-{hex}").into_boxed_str()))
+                .is_none(),
+            "the alert takes the list's place"
+        );
+        let retry = vcx.debug_bounds("bans-retry").expect("the retry shows");
+        vcx.simulate_click(retry.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        vcx.update(|_, cx| {
+            let u = ui(w, cx);
+            assert!(u.bans_error.is_empty(), "the failure is forgotten");
+            assert!(!u.asked.contains(&("bans", c)), "the list is read again");
+        });
+        vcx.update(|window, _| window.refresh());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("bans-error").is_none());
+        assert!(
+            vcx.debug_bounds(Box::leak(format!("ban-text-{hex}").into_boxed_str()))
+                .is_some(),
+            "the list is back"
+        );
+    }
 }

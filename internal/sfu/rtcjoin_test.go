@@ -9,7 +9,7 @@ import (
 )
 
 // The /rtc gate admits exactly the signalling protocols dilla's clients speak: 17 (livekit-client
-// 2.22.3 and server-sdk-go) and 18 (the desktop's livekit 0.10.1 Rust SDK, livekit-signaling 0.1.9).
+// 2.22.3 and server-sdk-go) and 18 (the desktop's livekit 0.11.0 Rust SDK, livekit-signaling 0.2.0).
 // A neighbour of either, and a value that does not parse, is refused before LiveKit labels a metric.
 func TestCheckClientAdmitsExactlyTheProtocolsDillaClientsSpeak(t *testing.T) {
 	if ClientProtocols() != [2]int32{17, 18} {

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use crate::gateway::frames::Value;
 use crate::sync::value::{DecodeError, Rows, arr, bin16, bin32, opt, text, u53, uint};
 
-use super::{ChannelGroupState, ChannelId, DeviceId, MessageId, UserId, hex};
+use super::{ChannelGroupState, ChannelId, DeviceId, MessageId, Redacted, UserId, hex};
 
 /// types.ts `TIMELINE_PAGE`: the rows read for an open timeline.
 pub const TIMELINE_PAGE: u32 = 100;
@@ -24,7 +24,7 @@ pub enum TimelineItemState {
 }
 
 /// `ReplyRef`, as the core resolved it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReplyRef {
     pub msg_id: MessageId,
     /// 0 ok, 1 missing, 2 deleted.
@@ -34,8 +34,8 @@ pub struct ReplyRef {
     pub seq: Option<u64>,
 }
 
-/// `ReactionSummary`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `ReactionSummary`. Its Debug prints the emoji's length only: a reaction is message content.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Reaction {
     pub emoji: String,
     pub count: u32,
@@ -43,7 +43,7 @@ pub struct Reaction {
 }
 
 /// What the UI may know of an attachment: never its key, nonce or blob id.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Attachment {
     pub index: u32,
     pub size: u64,
@@ -66,7 +66,7 @@ pub struct PendingAction {
 }
 
 /// `TimelineItem`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TimelineItem {
     /// `o<msg id hex>` for an outbox row and an own stored row with a known message id; `s<seq>` otherwise.
     pub key: String,
@@ -112,7 +112,7 @@ impl Timeline {
 }
 
 /// core-port.ts `TimelineRow` (18 elements, 19 since web3.7).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct TimelineRow {
     pub seq: u64,
     pub recv_ts: u64,
@@ -134,7 +134,7 @@ pub(crate) struct TimelineRow {
 }
 
 /// core-port.ts `OutboxRow`: `[msg_id, state, error, created, body, type, reply_to|null, attachments]`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct OutboxRow {
     pub msg_id: [u8; 16],
     /// 0 queued, 1 in flight, 2 failed.
@@ -148,6 +148,106 @@ pub(crate) struct OutboxRow {
     /// The attachments' blob ids, in the same order: a discarded row's references are deleted (send.ts `discardSend`,
     /// controller.ts `onDiscarded`).
     pub blobs: Vec<[u8; 32]>,
+}
+
+// R21: the decrypted texts of a message (its body, a reply's excerpt, an attachment's name) never reach Debug output; it
+// shows their lengths, beside the ids and states that are not content.
+
+impl std::fmt::Debug for ReplyRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReplyRef")
+            .field("msg_id", &self.msg_id)
+            .field("state", &self.state)
+            .field("sender_user", &self.sender_user)
+            .field("excerpt", &Redacted(&self.excerpt))
+            .field("seq", &self.seq)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Reaction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reaction")
+            .field("emoji", &Redacted(&self.emoji))
+            .field("count", &self.count)
+            .field("mine", &self.mine)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Attachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attachment")
+            .field("index", &self.index)
+            .field("size", &self.size)
+            .field("mime", &self.mime)
+            .field("name", &Redacted(&self.name))
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for TimelineItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TimelineItem")
+            .field("key", &self.key)
+            .field("state", &self.state)
+            .field("reason", &self.reason)
+            .field("sender_user", &self.sender_user)
+            .field("sender_device", &self.sender_device)
+            .field("own", &self.own)
+            .field("bot", &self.bot)
+            .field("ts", &self.ts)
+            .field("body", &Redacted(&self.body))
+            .field("msg_id", &self.msg_id)
+            .field("seq", &self.seq)
+            .field("edited", &self.edited)
+            .field("reply", &self.reply)
+            .field("reactions", &self.reactions)
+            .field("pinned", &self.pinned)
+            .field("attachments", &self.attachments)
+            .field("mention", &self.mention)
+            .field("actions", &self.actions)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for TimelineRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TimelineRow")
+            .field("seq", &self.seq)
+            .field("status", &self.status)
+            .field("msg_id", &self.msg_id)
+            .field("kind", &self.kind)
+            .field("body", &Redacted(&self.body))
+            .field("reply", &self.reply)
+            .field("attachments", &self.attachments)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for OutboxRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboxRow")
+            .field("msg_id", &self.msg_id)
+            .field("state", &self.state)
+            .field("error", &self.error)
+            .field("body", &Redacted(&self.body))
+            .field("kind", &self.kind)
+            .field("attachments", &self.attachments)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for PinnedItem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinnedItem")
+            .field("msg_id", &self.msg_id)
+            .field("seq", &self.seq)
+            .field("excerpt", &Redacted(&self.excerpt))
+            .field("pinned_seq", &self.pinned_seq)
+            .field("thread_root", &self.thread_root)
+            .finish_non_exhaustive()
+    }
 }
 
 fn flag(v: &Value) -> Result<bool, DecodeError> {
@@ -442,6 +542,168 @@ mod tests {
         }
     }
 
+    /// R21: a stored row, an outbox row, the timeline built from them (its items, their reply excerpts, attachment
+    /// names and reaction emoji), a pinned item, and the whole `AppState` holding them, a reply target, a search, a tray
+    /// file, a poll and a reminder never print a decrypted text in Debug output.
+    #[test]
+    fn decrypted_texts_stay_out_of_debug() {
+        const SECRET: &str = "zebra-body-7";
+        let ch = ChannelId([9; 16]);
+        let mut row = stored(1, 1, Some(5), &format!("{SECRET} stored"));
+        row.reply = Some(ReplyRef {
+            msg_id: MessageId([4; 16]),
+            state: 0,
+            sender_user: None,
+            excerpt: format!("{SECRET} excerpt"),
+            seq: Some(1),
+        });
+        row.attachments = vec![Attachment {
+            index: 0,
+            size: 3,
+            mime: "image/png".into(),
+            name: format!("{SECRET}.png"),
+        }];
+        let out = queued(7, &format!("{SECRET} outbox"));
+        let t = build_timeline(
+            ch,
+            ChannelGroupState::Active,
+            std::slice::from_ref(&row),
+            std::slice::from_ref(&out),
+            [1; 16],
+            [1; 16],
+            100,
+        );
+        assert!(
+            t.items.iter().any(|i| i.body.contains(SECRET)),
+            "the body is held"
+        );
+        let mut t = t;
+        t.items[0].reactions.push(Reaction {
+            emoji: format!("{SECRET}-emoji"),
+            count: 1,
+            mine: true,
+        });
+        let pin = PinnedItem {
+            msg_id: MessageId([5; 16]),
+            seq: 1,
+            sender_user: None,
+            excerpt: format!("{SECRET} pinned"),
+            pinned_by: UserId([1; 16]),
+            pinned_seq: 2,
+            ts: 3,
+            thread_root: None,
+        };
+        let mut state = crate::state::AppState::default();
+        state.timelines.insert(ch, t.clone());
+        state.messages.pins.insert(ch, vec![pin.clone()]);
+        state.threads.replying = Some(crate::state::threads::ReplyTarget {
+            channel: ch,
+            msg_id: MessageId([5; 16]),
+            sender: None,
+            excerpt: format!("{SECRET} replying"),
+        });
+        state.search = crate::state::search::SearchState {
+            request: 1,
+            query: SECRET.into(),
+            hits: vec![crate::state::search::SearchHit {
+                channel: ch,
+                community: None,
+                seq: 1,
+                snippet: format!("{SECRET} snippet"),
+                author: None,
+                ts: None,
+                thread_root: None,
+            }],
+            loading: false,
+        };
+        state.attachments.trays.insert(
+            ch,
+            vec![crate::state::attachments::TrayItem {
+                id: "t1".into(),
+                name: format!("{SECRET}.txt"),
+                size: 1,
+                mime: "text/plain".into(),
+                image: false,
+                phase: crate::state::attachments::TrayPhase::Ready,
+                reason: String::new(),
+            }],
+        );
+        state.bot.polls.insert(
+            MessageId([5; 16]),
+            crate::state::bot::PollView {
+                id: [1; 16],
+                channel: ch,
+                thread: None,
+                creator: UserId([1; 16]),
+                question: format!("{SECRET} question"),
+                answers: vec![format!("{SECRET} answer")],
+                multi: false,
+                created_at: 0,
+                due_at: 0,
+                closed: false,
+                counts: vec![0],
+                my_choices: None,
+                revision: 1,
+                previews: vec![Vec::new()],
+                distinct: 0,
+                capped: false,
+            },
+        );
+        state.bot.reminders.insert(
+            crate::state::CommunityId([2; 16]),
+            vec![crate::state::bot::ReminderView {
+                id: [2; 16],
+                text: format!("{SECRET} reminder"),
+                due: 0,
+                timezone: "UTC".into(),
+                source_channel: None,
+                source_thread: None,
+                state: crate::state::bot::ReminderStatus::Scheduled,
+                revision: 1,
+            }],
+        );
+        state.bot.private_results.insert(
+            crate::state::bot::Conversation {
+                channel: ch,
+                thread: None,
+            },
+            vec![crate::state::bot::PrivateResult {
+                id: 1,
+                at: 0,
+                status: crate::state::bot::ResultStatus::Success,
+                text: format!("{SECRET} private"),
+                provider: crate::state::bot::ResultProvider::Bot,
+                hold: false,
+                settled_at: None,
+            }],
+        );
+        for shown in [
+            format!("{row:?}"),
+            format!("{out:?}"),
+            format!("{t:#?}"),
+            format!("{pin:?}"),
+            format!("{state:?}"),
+            format!("{state:#?}"),
+        ] {
+            assert!(
+                !shown.contains("zebra"),
+                "a decrypted text: {} bytes",
+                shown.len()
+            );
+        }
+        // The tests' way to look for a plaintext in the state (`testing::decrypted_texts`) still finds each one.
+        let texts = crate::testing::decrypted_texts(&state);
+        for kind in [
+            "stored", "excerpt", ".png", "outbox", "pinned", "replying", "snippet", ".txt",
+            "question", "answer", "reminder", "private",
+        ] {
+            assert!(
+                texts.iter().any(|t| t.contains(SECRET) && t.contains(kind)),
+                "{kind} is read"
+            );
+        }
+    }
+
     /// derive.ts: an edit, delete, reaction or pin in the outbox is no item of its own; it shows on the message it aims
     /// at, pending or failed with its code, in queue order; one aimed at nothing held is dropped.
     #[test]
@@ -527,7 +789,7 @@ pub struct Typer {
 }
 
 /// A pinned message (`PinnedItem`): what the pins dialog lists.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PinnedItem {
     pub msg_id: MessageId,
     pub seq: u64,

@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use dilla_parity::{
     Driver, ElementInfo, GlyphCoverage, Os, ParityFailure, RgbaImage, Tolerance, assert_parity,
-    assert_parity_with, glyph_coverage, target_dir, tolerance_for,
+    assert_parity_with, glyph_coverage, nested_cargo, target_dir, tolerance_for,
 };
 use image::Rgba;
 
@@ -48,9 +47,8 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 #[test]
 #[ignore = "slow: run explicitly in CI (cargo test -p dilla-parity -- --ignored)"]
 fn release_build_has_no_automation() {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Positive control: the needles below really are in an automation build, so their absence means something.
-    let status = Command::new(&cargo)
+    let status = nested_cargo()
         .args(["build", "-p", "dilla-desktop", "--features", "automation"])
         .current_dir(workspace_root())
         .status()
@@ -62,7 +60,7 @@ fn release_build_has_no_automation() {
         "the marker is missing from the automation build"
     );
 
-    let status = Command::new(&cargo)
+    let status = nested_cargo()
         .args(["build", "--release", "-p", "dilla-desktop"])
         .current_dir(workspace_root())
         .status()
@@ -380,5 +378,37 @@ fn a_bar_without_the_inset_is_under_the_traffic_lights() {
     assert!(
         hits.iter().any(|h| h.starts_with("topbar-brand ")),
         "the brand mark of a bar 14 px in must be under the lights: {hits:?}"
+    );
+}
+
+/// `assert_native_screen` (through its explicit-root form) blesses a GPUI-only frame into its references root, then compares with it: the frame passes
+/// against its own golden and fails a gate against a golden shifted 1 px down (measured: the whole-frame gate, which runs
+/// first, fails it at 0.89 % of the pixels over delta 64, before the chrome gate is reached).
+#[test]
+#[cfg_attr(windows, ignore = "GPUI headless has no renderer on Windows")]
+fn native_screen_blesses_then_compares() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = shell_fixture("shell/channel-view");
+    let check = |bless: bool, golden: &str| {
+        dilla_parity::screen::assert_native_screen_at(root.path(), bless, &fixture, golden, |_| {})
+    };
+
+    check(true, "channel").expect("blessing passes");
+    let golden = root.path().join("channel-2x.png");
+    assert!(golden.exists(), "the bless wrote {}", golden.display());
+
+    check(false, "channel").expect("the frame passes against its own golden");
+
+    let original = image::open(&golden).unwrap().to_rgba8();
+    let mut shifted = RgbaImage::new(original.width(), original.height());
+    image::imageops::replace(&mut shifted, &original, 0, 1);
+    shifted.save(root.path().join("shifted-2x.png")).unwrap();
+    let outcome = check(false, "shifted");
+    assert!(
+        matches!(
+            outcome,
+            Err(ParityFailure::Pixels { .. } | ParityFailure::Chrome { .. })
+        ),
+        "a golden 1 px down fails the whole-frame or the chrome gate: {outcome:?}"
     );
 }

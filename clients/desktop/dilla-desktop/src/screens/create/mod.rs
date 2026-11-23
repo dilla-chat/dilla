@@ -65,7 +65,12 @@ struct Windows {
     flows: HashMap<WindowId, Entity<CreateFlows>>,
     pending: HashMap<WindowId, Open>,
     attached: HashMap<WindowId, (Rc<Client>, OnNavigate)>,
+    /// What each window's `/invite` waits for ([`open_invite_then`]), until its pending open reaches the flows.
+    waiting: HashMap<WindowId, InviteDone>,
 }
+
+/// What a `/invite` does with the flow's end: `true` once the dialog shows a link, `false` when it closed without one.
+pub type InviteDone = Box<dyn FnOnce(bool, &mut App)>;
 
 impl Global for Windows {}
 
@@ -88,6 +93,21 @@ pub fn open_in(window: &Window, which: Open, cx: &mut App) {
     windows(cx)
         .pending
         .insert(window.window_handle().window_id(), which);
+    cx.refresh_windows();
+}
+
+/// Opens the invite dialog of `community` in `window` and tells `done` how it ended (CommandHost.tsx `openInvite`, which
+/// resolves `true` from the flow's `onCreated` and `false` from its `onClose`): `true` the moment the dialog shows its link
+/// (also a reusable one it found), `false` when it closes first, by itself or because another dialog opened over it.
+/// `done` is dropped unanswered when the window or its client goes.
+pub fn open_invite_then(window: WindowId, community: CommunityId, done: InviteDone, cx: &mut App) {
+    // A second `/invite` before the first dialog drew: the first never opened, so it ends as a closed one does.
+    if let Some(first) = windows(cx).waiting.insert(window, done) {
+        first(false, cx);
+    }
+    windows(cx)
+        .pending
+        .insert(window, Open::Invite { community });
     cx.refresh_windows();
 }
 
@@ -174,6 +194,7 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
         w.attached.remove(&id);
         w.flows.remove(&id);
         w.pending.remove(&id);
+        w.waiting.remove(&id);
     }
 }
 
@@ -187,6 +208,7 @@ pub fn window_closed(window: WindowId, cx: &mut App) {
     w.attached.remove(&window);
     w.flows.remove(&window);
     w.pending.remove(&window);
+    w.waiting.remove(&window);
 }
 
 /// The windows `client` is attached to (each shell window of it), for a release that clears what those windows keep.
@@ -228,7 +250,11 @@ pub fn overlay(
     // The shell's state: the roles and access the create-channel dialog offers (a fixture's, when no client runs).
     flows.update(cx, |f, _| f.set_state(state.clone()));
     if let Some(which) = pending {
-        flows.update(cx, |f, cx| f.open(which, window, cx));
+        let done = windows(cx).waiting.remove(&id);
+        flows.update(cx, |f, cx| {
+            f.invite_waiting = done;
+            f.open(which, window, cx);
+        });
     }
     // Over the shell, never in its flow (the shell lays its overlays out after its body in a column).
     flows.read(cx).is_open().then(|| {
@@ -331,6 +357,51 @@ mod tests {
         ) -> impl gpui::IntoElement {
             gpui::div()
         }
+    }
+
+    /// CommandHost.tsx `openInvite`: a `/invite`'s row ends `true` once the dialog shows its link and `false` when it closes
+    /// first; a second `/invite` while the first dialog is open ends the first row as a closed dialog does.
+    #[gpui::test]
+    fn an_invite_command_ends_with_its_link_or_its_close(cx: &mut gpui::TestAppContext) {
+        use std::cell::RefCell;
+        let a = cx.add_window(|_, _| Blank);
+        let community = CommunityId([1; 16]);
+        let ends: Rc<RefCell<Vec<(u8, bool)>>> = Rc::default();
+        let ask = |n: u8, cx: &mut gpui::TestAppContext| {
+            let ends = ends.clone();
+            a.update(cx, |_, window, cx| {
+                open_invite_then(
+                    window.window_handle().window_id(),
+                    community,
+                    Box::new(move |created, _| ends.borrow_mut().push((n, created))),
+                    cx,
+                );
+                // The shell draws its overlays each frame: the pending open reaches the flows.
+                drop(overlay(&Default::default(), window, cx));
+            })
+            .unwrap();
+        };
+        // The link shows: true, once.
+        ask(1, cx);
+        let flows = cx.update(|cx| windows(cx).flows.values().next().cloned().unwrap());
+        a.update(cx, |_, _, cx| {
+            flows.update(cx, |f, cx| {
+                f.settle_invite(true, cx);
+                f.settle_invite(false, cx);
+            })
+        })
+        .unwrap();
+        assert_eq!(*ends.borrow(), [(1, true)], "the first answer stands");
+        // A second /invite over an open dialog: the first row ends closed, the second waits.
+        ask(2, cx);
+        ask(3, cx);
+        assert_eq!(*ends.borrow(), [(1, true), (2, false)]);
+        // The dialog closes without a link: the waiting row ends closed.
+        a.update(cx, |_, window, cx| {
+            flows.update(cx, |f, cx| f.close(window, cx))
+        })
+        .unwrap();
+        assert_eq!(*ends.borrow(), [(1, true), (2, false), (3, false)]);
     }
 
     /// Review M3: an invite a window was opened with opens its join dialog in that window, not in the active one.

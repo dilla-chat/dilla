@@ -349,7 +349,7 @@ func installLiveKitLogger(next slog.Handler) {
 	}
 	liveKitSink.Store(&next)
 	liveKitOnce.Do(func() {
-		logger.SetLogger(logger.LogRLogger(logr.FromSlogHandler(NewLogBridge(&swapHandler{}))), "livekit")
+		logger.SetLogger(pionGated{logger.LogRLogger(logr.FromSlogHandler(NewLogBridge(&swapHandler{})))}, "livekit")
 	})
 }
 

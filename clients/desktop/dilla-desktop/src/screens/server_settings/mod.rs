@@ -11,10 +11,11 @@
 //! [`Body`] holds the sections' state and draws one section. The hook [`settings_section`] that `crate::slots` calls
 //! hosts a `Body` of its own, for a shell that has its own frame; [`ServerSettingsView`] hosts one inside the frame.
 
-mod body;
+pub mod body;
 pub mod keys;
 pub mod model;
 mod view;
+pub mod welcome;
 
 pub use body::{Body, BodyEvent};
 pub use view::{AccessChange, ServerSettingsView, SettingsEvent, access_change, open_section};

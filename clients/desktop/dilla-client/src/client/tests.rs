@@ -289,9 +289,12 @@ fn offline_publisher() -> (
         own_user: [1; 16],
         own_device: [2; 16],
         focus: None,
+        pages: HashMap::new(),
         not_member: HashSet::new(),
         resyncing: HashSet::new(),
         listed: None,
+        self_removed: Arc::default(),
+        removal_seq: 0,
         renew: RenewGate::default(),
         upkeep,
         inner: Arc::default(),
@@ -786,4 +789,39 @@ fn a_structure_read_ending_after_a_newer_one_is_dropped() {
     let (a, b) = (order.start(), order.start());
     assert!(order.lands(a));
     assert!(order.lands(b));
+}
+
+/// Review I1 (controller.ts `listWritten`, `seq < listApplied`): a structure read that began before this account's own
+/// leave and lands after it is discarded, so it neither lists the server again (which would clear the self-removed
+/// mark) nor makes the next read tell a removal.
+#[tokio::test]
+async fn a_stale_read_after_an_own_leave_tells_no_removal() {
+    use crate::state::Community;
+    let (mut p, _rx, _state_rx, _core, _engine) = offline_publisher();
+    let gone = CommunityId([7; 16]);
+    let community = |name: &str| Community {
+        id: gone,
+        name: name.into(),
+        owner: UserId([1; 16]),
+        policy_version: 1,
+    };
+    let loaded = |communities: Vec<Community>| Loaded {
+        communities,
+        channels: Vec::new(),
+        members: HashMap::new(),
+    };
+    // The server is listed; a read starts; the leave runs and ends; then the read lands.
+    let first = p.structure.start();
+    assert!(p.structure.lands(first));
+    p.on_loaded(loaded(vec![community("Midgard")])).await;
+    let stale = p.structure.start();
+    p.self_removed.lock().unwrap().begin(gone);
+    p.self_removed.lock().unwrap().end(gone, None);
+    p.list_written(gone);
+    assert!(!p.structure.lands(stale), "the older read is discarded");
+    // The next read, started after the leave, does not list it: no notice.
+    let fresh = p.structure.start();
+    assert!(p.structure.lands(fresh));
+    p.on_loaded(loaded(Vec::new())).await;
+    assert!(p.state.removal_notices.is_empty());
 }

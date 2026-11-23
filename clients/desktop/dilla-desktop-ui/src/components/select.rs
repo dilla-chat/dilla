@@ -14,7 +14,7 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{OPACITY_MUTED, focus_ring, shadow_menu};
 use crate::roving::menu_next;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, radius, text};
 use gpui::prelude::FluentBuilder as _;
 
@@ -25,6 +25,16 @@ struct Memory {
     open: bool,
     /// The highlighted option while the list is open.
     cursor: usize,
+}
+
+/// The start padding Chromium's `<select>` gives its value on top of the field's own.
+const SELECT_VALUE_INSET: f32 = 4.0;
+
+/// The value's line box: `line-height: normal` of 12.5px JetBrains Mono, its rounded ascent plus its rounded descent.
+fn select_value_line() -> f32 {
+    let (ascent, descent) =
+        crate::text::ascent_descent(crate::text::Face::Mono, f32::from(text::SM));
+    ascent + descent
 }
 
 /// The index of `value` among the options, else the first.
@@ -176,7 +186,15 @@ impl RenderOnce for Select {
             .border_color(edge)
             .hover(|s| s.border_color(color::FG_3))
             .focus_visible(|s| s.border_color(color::ACCENT))
-            .child(line(current, text::SM, line_height(text::SM, 1.5), color::FG).ellipsis())
+            // The native `<select>`'s value is an inner block with 4px of its own start padding (`line-height: normal`, the
+            // font's rounded ascent and descent: 17px at 12.5px), so it sits 4px further in and a pixel lower than a line at
+            // the root's leading would.
+            .child(
+                div()
+                    .min_w_0()
+                    .ml(px(SELECT_VALUE_INSET))
+                    .child(line(current, text::SM, select_value_line(), color::FG).ellipsis()),
+            )
             // The web's field is a native <select>: Chromium draws its arrow in the text colour, 9 x 5.5px with its right
             // tip 5px in from the outer edge, past the 10px padding. A 16px chevron-down (whose path spans 6..18 of 24)
             // reaching 10px into that padding draws the same.
@@ -266,7 +284,7 @@ impl RenderOnce for Select {
                         .child(line(
                             label.clone(),
                             text::SM,
-                            line_height(text::SM, 1.5),
+                            crate::text::root_line_height(text::SM),
                             if *value == self.value {
                                 color::ACCENT
                             } else {
@@ -295,7 +313,7 @@ impl RenderOnce for Select {
             root = root.child(line(
                 self.label,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ));
         }
@@ -323,6 +341,14 @@ fn _ring() -> Vec<gpui::BoxShadow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chromium's `<select>` value: 4px in from the field's padding on a 17px line (12.5px JetBrains Mono's rounded
+    /// ascent 13 and descent 4), 1.1px lower in the 34px box than a line at 1.5.
+    #[test]
+    fn the_value_sits_four_in_on_a_seventeen_pixel_line() {
+        assert_eq!(SELECT_VALUE_INSET, 4.0);
+        assert_eq!(select_value_line(), 17.0);
+    }
 
     #[test]
     fn the_chosen_option_is_found_else_the_first() {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/livekit/protocol/auth"
+	"github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/dilla-chat/dilla/internal/api"
@@ -535,11 +536,27 @@ func TestWithholdDropsParticipantLeftOnly(t *testing.T) {
 		t.Fatalf("GetGroup: %v", err)
 	}
 	channel := g.TargetID.String()
+	// join returns once LiveKit holds the session ACTIVE. LiveKit sends participant_joined only when a
+	// participant goes active (livekit-server pkg/telemetry/events.go ParticipantActive), and a session
+	// closed before that is reported as participant_connection_aborted, not participant_left
+	// (ParticipantLeft, !worker.IsConnected()). The instance then never saw that session join, still
+	// holds the device under the earlier session's sid, and drops the abort as a leave of another
+	// session: leaving before the rejoin is active would leave the participant listed for good.
 	join := func() *lksdk.Room {
 		room, err := lksdk.ConnectToRoomWithToken(h.SFU().URL(), token, &lksdk.RoomCallback{}, lksdk.WithAutoSubscribe(false))
 		if err != nil {
 			t.Fatalf("connect to the call's room: %v", err)
 		}
+		sid := room.LocalParticipant.SID()
+		eventually(t, "the joined session going active", 30*time.Second, func() bool {
+			parts, err := h.SFU().Participants(t.Context(), room.Name())
+			if err != nil {
+				t.Fatalf("list the participants of %s: %v", room.Name(), err)
+			}
+			return slices.ContainsFunc(parts, func(p *livekit.ParticipantInfo) bool {
+				return p.GetSid() == sid && p.GetState() == livekit.ParticipantInfo_ACTIVE
+			})
+		})
 		return room
 	}
 

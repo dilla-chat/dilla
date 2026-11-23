@@ -16,7 +16,7 @@ use dilla_client::features::voice::{CallStatsReport, MediaLink, Voice};
 use dilla_client::features::voice_prefs::speaking::SpeakingDetector;
 use dilla_client::features::voice_prefs::values::{InputMode, NoisePreference, VoiceValues};
 use dilla_client::features::voice_prefs::volume::{GainState, gain_of};
-use dilla_client::state::voice::{LocalShare, VoiceNotice};
+use dilla_client::state::voice::{LocalShare, SfuRemote, VoiceNotice};
 use dilla_client::state::{AppState, DeviceId};
 use dilla_media::apm::ApmFlags;
 use dilla_media::devices::AudioHost;
@@ -103,12 +103,27 @@ const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 /// What a share asks for.
 pub enum Command {
+    /// A camera share starts or stops, or the screen share stops (a screen share starts with [`Command::ShareScreen`]).
     Share(ShareKind, bool, ShareOptions),
-    /// A screen share of the source the person chose in the picker.
-    ShareSource(DesktopSource, ShareOptions),
+    /// A screen share starts, together with its sound, in one command (Task 44 fix round 4), so no order of the loop's
+    /// arms can see the start without it.
+    ShareScreen {
+        /// The source the person chose in the picker; `None`: the system's own dialog chooses.
+        source: Option<DesktopSource>,
+        options: ShareOptions,
+        /// The UI's token of this start, which the window's sound ([`Command::WindowSound`]) names.
+        token: u64,
+        /// The sound section's state when the share started: the person's choice, or `Unset` (the window's own
+        /// application, once found).
+        sound: crate::screens::voice::ShareSound,
+    },
+    /// The application the shared window of the start `u64` plays, once found. It only ever reaches the share that start
+    /// brought up, and never one whose sound the person chose.
+    WindowSound(u64, Option<dilla_media::app_audio::AppSource>),
     /// The stream quality changed while sharing: the running screen share goes on at it (the same source).
     Quality(ShareOptions),
-    /// The running screen share carries the sound of this application from now on (`None`: no sound).
+    /// The person's own choice: the running screen share carries the sound of this application from now on (`None`: no
+    /// sound), and so does a share still opening.
     AppAudio(Option<dilla_media::app_audio::AppSource>),
 }
 
@@ -190,13 +205,24 @@ fn lock_rtt(rtt: &Mutex<RttReport>) -> std::sync::MutexGuard<'_, RttReport> {
 
 /// The running session (see the module docs). Dropping it leaves the call's media.
 pub struct MediaSession {
-    _runtime: tokio::runtime::Runtime,
-    commands: mpsc::UnboundedSender<Command>,
+    /// The session's runtime and its loop ([`run`]); `Drop` hands both to a thread that lets the loop leave the call.
+    running: Option<(tokio::runtime::Runtime, tokio::task::JoinHandle<()>)>,
+    /// `None` once the session is dropping: the closed channel is what tells [`run`] the session is gone.
+    commands: Option<mpsc::UnboundedSender<Command>>,
+    /// Dropped with the session: [`in_call`]'s loop is cancelled at once (`Ctx::closed`).
+    closing: Option<watch::Sender<()>>,
+    /// Whether a call's media is live in the session: what the drop waits on.
+    live: Arc<MediaLive>,
+    /// The room closes of this session's dropped calls (`CallOptions::room_closes`): its end thread awaits them before
+    /// the runtime shuts down.
+    room_closes: dilla_media::RoomCloses,
     videos: Arc<Mutex<RemoteVideos>>,
     /// Bumped on every new remote video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
     /// The devices (hex) whose screen share carries sound.
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
+    /// The application the running screen share publishes the sound of ([`MediaSession::app_sound`]).
+    app_sound: Arc<Mutex<Option<dilla_media::app_audio::AppSource>>>,
 }
 
 /// What a share asks its [`SourceFactory`] for.
@@ -324,9 +350,13 @@ impl MediaSession {
             .enable_all()
             .build()?;
         let (commands, rx) = mpsc::unbounded_channel();
+        let live = Arc::new(MediaLive::default());
+        let room_closes = dilla_media::RoomCloses::default();
+        let (closing, closed) = watch::channel(());
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
+        let app_sound = Arc::new(Mutex::new(None));
         let ctx = Ctx {
             voice: client.voice(),
             states: client.state(),
@@ -334,37 +364,79 @@ impl MediaSession {
             videos: videos.clone(),
             video_seq: video_seq.clone(),
             screen_sound: screen_sound.clone(),
+            app_sound: app_sound.clone(),
             sources,
             host,
+            live: live.clone(),
+            room_closes: room_closes.clone(),
+            closed,
         };
-        runtime.spawn(run(ctx, rx));
+        let task = runtime.spawn(run(ctx, rx));
         Ok(MediaSession {
-            _runtime: runtime,
-            commands,
+            running: Some((runtime, task)),
+            commands: Some(commands),
+            closing: Some(closing),
+            live,
+            room_closes,
             videos,
             video_seq,
             screen_sound,
+            app_sound,
         })
     }
 
-    /// Starts or stops a share.
+    fn send(&self, command: Command) {
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(command);
+        }
+    }
+
+    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one).
     pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions) {
-        let _ = self.commands.send(Command::Share(kind, on, options));
+        self.send(Command::Share(kind, on, options));
     }
 
-    /// Starts a screen share of the source the person chose in the picker.
-    pub fn share_source(&self, source: DesktopSource, options: ShareOptions) {
-        let _ = self.commands.send(Command::ShareSource(source, options));
+    /// Starts a screen share of `source` (`None`: the system's own dialog chooses) with the sound section's state
+    /// `sound`. `token` names this start for [`MediaSession::window_sound`].
+    pub fn share_screen(
+        &self,
+        source: Option<DesktopSource>,
+        options: ShareOptions,
+        token: u64,
+        sound: crate::screens::voice::ShareSound,
+    ) {
+        self.send(Command::ShareScreen {
+            source,
+            options,
+            token,
+            sound,
+        });
     }
 
-    /// Shares the sound of `source` with the running screen share (`None` stops it). Nothing while no screen is shared.
+    /// The application the shared window of the start `token` plays. While that start is opening it waits for it; once
+    /// the start is up it plays at once; a start that failed or was replaced drops it, and so does the person's own
+    /// choice.
+    pub fn window_sound(&self, token: u64, app: Option<dilla_media::app_audio::AppSource>) {
+        self.send(Command::WindowSound(token, app));
+    }
+
+    /// The application whose sound the running screen share publishes now (what the share menu's sound row shows).
+    pub fn app_sound(&self) -> Option<dilla_media::app_audio::AppSource> {
+        self.app_sound
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// The person's choice: shares the sound of `source` with the running screen share (`None` stops it) at once, and
+    /// with a screen share still opening once it is up.
     pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>) {
-        let _ = self.commands.send(Command::AppAudio(source));
+        self.send(Command::AppAudio(source));
     }
 
     /// Applies a new stream quality to the running screen share.
     pub fn quality(&self, options: ShareOptions) {
-        let _ = self.commands.send(Command::Quality(options));
+        self.send(Command::Quality(options));
     }
 
     /// The devices (hex) whose screen share carries sound: a remote screen without it shows the "no sound" mark.
@@ -373,6 +445,14 @@ impl MediaSession {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// Whether this session's call media is live: from the start of a join (the process's media router may be this
+    /// session's from then on) until the call's media ended or its join was dropped (the router is free again). A join
+    /// in another window waits for it to clear ([`super::after_leaving_other_calls`]): the router takes one call per
+    /// process, so a join whose media starts before it clears fails with `E_CALL_BUSY`.
+    pub fn media_live(&self) -> bool {
+        self.live.is_live()
     }
 
     /// Every remote video stream's newest frame.
@@ -384,8 +464,73 @@ impl MediaSession {
     }
 }
 
+impl Drop for MediaSession {
+    /// Leaves the call the way a leave does, not by tearing its runtime down under it. Dropping the runtime cancelled the
+    /// call's task: the `Call` was dropped on a runtime that was shutting down, so its room was never closed and its
+    /// PeerConnection (with its sockets, threads and frame transformers) lived until the process exited. Here the
+    /// session's end is signalled first (`closing` and the commands channel close), which cancels a join in flight or
+    /// the call's loop and ends [`run`] (a call in progress leaves first: `Call::leave` closes its room); the runtime is
+    /// dropped after that, on a thread of its own so the window never waits on the network. That wait is bounded
+    /// ([`end_wait`]); past it the runtime is shut down with whatever is still running.
+    ///
+    /// The call's media itself ends before this returns, as it did when the runtime was dropped here: the shares stop
+    /// (their sources are let go) and the media router is free for the next call at once; only the room's close runs
+    /// on after. The window waits for that only while a call's media is live ([`MediaLive`]), and
+    /// [`super::QUIT_WAIT`] at most; a call that already ended (a leave, its room closing) is not waited for.
+    fn drop(&mut self) {
+        let Some((runtime, task)) = self.running.take() else {
+            return;
+        };
+        // Closing these ends the session's loop (see `run` and `in_call`): a join or a call's loop is cancelled at once.
+        self.closing.take();
+        self.commands.take();
+        if !self.live.wait_ended(super::QUIT_WAIT) {
+            log::warn!(
+                "voice: the call's media did not end within {:?} of its window",
+                super::QUIT_WAIT
+            );
+        }
+        let wait = end_wait();
+        let room_closes = self.room_closes.clone();
+        let ended = std::thread::Builder::new()
+            .name("dilla-call-end".into())
+            .spawn(move || {
+                // The session's loop first, then every room one of this session's dropped calls is still closing on
+                // this runtime (a join cancelled after its room connected drops its call): the shutdown below would
+                // cancel them. Only this session's: another window's slow close holds nothing up here.
+                if runtime
+                    .block_on(async {
+                        tokio::time::timeout(wait, async {
+                            let _ = task.await;
+                            room_closes.closed().await;
+                        })
+                        .await
+                    })
+                    .is_err()
+                {
+                    log::warn!(
+                        "voice: the call did not end within {wait:?}: its runtime is shut down"
+                    );
+                }
+                runtime.shutdown_timeout(super::QUIT_WAIT);
+            });
+        if let Err(e) = ended {
+            // The runtime came back with the error and is dropped here: the call's room is not closed.
+            log::warn!("voice: the call's end could not run on a thread of its own: {e}");
+        }
+    }
+}
+
+/// How long a dropped session's call may take to end. A join in flight waits for its first key at most the call's
+/// `key_timeout` (the desktop joins with `CallOptions::default()`'s) and then leaves; the leave gets [`super::QUIT_WAIT`],
+/// what quitting the app gives a call's leave.
+fn end_wait() -> std::time::Duration {
+    CallOptions::default().key_timeout + super::QUIT_WAIT
+}
+
 struct Ctx {
     voice: Voice,
+    app_sound: Arc<Mutex<Option<dilla_media::app_audio::AppSource>>>,
     states: watch::Receiver<Arc<AppState>>,
     prefs: dilla_client::prefs::Prefs,
     videos: Arc<Mutex<RemoteVideos>>,
@@ -393,6 +538,57 @@ struct Ctx {
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
     host: Arc<dyn AudioHost>,
+    /// Set while a call's media is live ([`in_call`]); [`MediaSession`]'s drop waits for it to clear.
+    live: Arc<MediaLive>,
+    /// This session's room closes, given to every call it joins.
+    room_closes: dilla_media::RoomCloses,
+    /// Changes (closes) when the session is dropped.
+    closed: watch::Receiver<()>,
+}
+
+/// Whether a call's media is live in the session: from the start of a join until the call's media ended (or the join
+/// or the call's task went). A dropped session waits for it to clear, and only while it is set: a call that already ended (and is
+/// only closing its room) holds nothing up.
+#[derive(Default)]
+struct MediaLive {
+    live: Mutex<bool>,
+    cleared: std::sync::Condvar,
+}
+
+/// A live call's media; clears [`MediaLive`] when dropped, however the call's task ends.
+struct LiveGuard(Arc<MediaLive>);
+
+impl MediaLive {
+    fn begin(self: &Arc<Self>) -> LiveGuard {
+        *self.live.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        LiveGuard(self.clone())
+    }
+
+    fn is_live(&self) -> bool {
+        *self.live.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Waits until no call's media is live, at most `bound`; true when none is.
+    fn wait_ended(&self, bound: std::time::Duration) -> bool {
+        let live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+        let (live, _) = self
+            .cleared
+            .wait_timeout_while(live, bound, |live| *live)
+            .unwrap_or_else(|p| p.into_inner());
+        !*live
+    }
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        *self.0.live.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        self.0.cleared.notify_all();
+    }
+}
+
+/// Resolves once the session is dropped (`Ctx::closed`'s sender is gone).
+async fn session_closed(mut closed: watch::Receiver<()>) {
+    while closed.changed().await.is_ok() {}
 }
 
 impl Ctx {
@@ -408,7 +604,10 @@ impl Ctx {
     /// The call's microphone from Settings -> Voice (integration 3: Task 19's values, so its echo and gain control and
     /// its noise choice reach the call mic): Automatic is the enhanced suppressor where it runs, Lightweight libwebrtc's.
     fn options(&self) -> CallOptions {
-        call_options(self.values())
+        CallOptions {
+            room_closes: self.room_closes.clone(),
+            ..call_options(self.values())
+        }
     }
 }
 
@@ -420,6 +619,10 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
             in_call(&ctx, &link, &mut links, &mut commands).await;
             // A move replaces the link while the old call runs (its loop saw the change and left): the new call's link
             // is already here, so it is joined now, not after some later change.
+            // A dropped session (its commands channel closed) joins nothing more, a move's next call included.
+            if commands.is_closed() {
+                return;
+            }
             if links
                 .borrow()
                 .as_ref()
@@ -428,8 +631,11 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
                 continue;
             }
         }
-        if links.changed().await.is_err() {
-            return;
+        // Biased, the session's end first: a dropped session whose link changed at the same moment joins nothing.
+        tokio::select! {
+            biased;
+            None = commands.recv() => return,
+            r = links.changed() => if r.is_err() { return },
         }
     }
 }
@@ -542,7 +748,16 @@ async fn in_call(
     // The join runs while the person may already have moved on (Move to, another join, a leave): a join whose link is
     // no longer the current one is dropped at once (its guard ends its media), and it never fails or leaves the call
     // that replaced it.
+    // From the join until `end_media` below (or a return before it) the call's media is live: a dropped session waits
+    // for it to end. A dropped session cancels the join outright, as it cancels the call's loop: the join's guard ends
+    // its media (the router is free) before this guard, declared first, goes.
+    let live = ctx.live.begin();
     let joined = tokio::select! {
+        biased;
+        () = session_closed(ctx.closed.clone()) => {
+            feeder.abort();
+            return;
+        }
         r = Call::join_on(token_of(link), feed.clone(), options, ctx.host.clone()) => r,
         () = superseded(links.clone(), link.call_id) => {
             feeder.abort();
@@ -562,6 +777,11 @@ async fn in_call(
                 ..ctx.options()
             };
             let joined = tokio::select! {
+                biased;
+                () = session_closed(ctx.closed.clone()) => {
+                    feeder.abort();
+                    return;
+                }
                 r = Call::join_on(token_of(link), feed, listen, ctx.host.clone()) => r,
                 () = superseded(links.clone(), link.call_id) => {
                     feeder.abort();
@@ -583,11 +803,17 @@ async fn in_call(
     let mut states = ctx.states.clone();
     let mut levels = call.remote_audio_levels();
     let mut videos = call.remote_videos();
+    let mut remotes = call.remote_participants();
     let mut events = call.events();
     let mut ended = call.shares_ended();
     let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
+    // The remote devices with a verified audio track, and those with a video stream: the media peers the stage's tiles are.
+    let mut sfu_peers: Vec<SfuRemote> = Vec::new();
+    let mut audio_peers: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut video_peers: BTreeSet<DeviceId> = BTreeSet::new();
+    let mut screen_peers: BTreeSet<DeviceId> = BTreeSet::new();
     let mut stats = tokio::time::interval(dilla_client::features::voice::STATS_EVERY);
     let mut link_read = tokio::time::interval(LINK_EVERY);
     let mut ping: PingRead<'_, dilla_media::LinkRead> = PingRead::default();
@@ -598,150 +824,227 @@ async fn in_call(
     let mut applied: Option<(bool, bool)> = None;
     let mut opens = Opens::default();
     // The application sound asked for before the screen share is up: it starts with the share.
-    let mut pending_app: Option<dilla_media::app_audio::AppSource> = None;
+    let mut sound = AppSoundSlot::default();
     let (opened_tx, mut opened) = mpsc::unbounded_channel::<Opened>();
     let mut gained = std::collections::BTreeMap::new();
-    loop {
-        let s = states.borrow_and_update().clone();
-        // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
-        let want = mic_want(&ctx.prefs, &s);
-        if applied != Some(want) {
-            call.set_muted(want.0);
-            call.set_deafened(want.1);
-            applied = Some(want);
-        }
-        // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
-        let now = gains(&ctx.values(), &s);
-        if now != gained {
-            for ((device, stream), gain) in &now {
-                if gained.get(&(device.clone(), *stream)) != Some(gain) {
-                    call.set_gain(device, *stream, *gain);
-                }
+    // The loop is cancelled outright when the session is dropped: whatever an arm was awaiting (a share being
+    // published, an answer from the client) is let go, as a dropped runtime let it go, and the call's media ends at
+    // once below.
+    let session = async {
+        loop {
+            let s = states.borrow_and_update().clone();
+            // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
+            let want = mic_want(&ctx.prefs, &s);
+            if applied != Some(want) {
+                call.set_muted(want.0);
+                call.set_deafened(want.1);
+                applied = Some(want);
             }
-            gained = now;
-        }
-        tokio::select! {
-            r = links.changed() => {
-                if r.is_err() || links.borrow().as_ref().is_none_or(|l| l.call_id != link.call_id) {
-                    break;
-                }
-            }
-            r = states.changed() => if r.is_err() { break },
-            // session.ts `onRoomEnd` → `leave('lost')`: the room ended on its own (a newer device took voice over,
-            // the room closed, the connection gave up). The call ends, saying why, and the takeover notice shows.
-            r = room_end.changed() => {
-                let end = *room_end.borrow_and_update();
-                if r.is_err() || end.is_some() {
-                    let code = end.map_or("E_DISCONNECTED", dilla_media::RoomEnd::code);
-                    log::warn!("voice: the call's room ended on its own ({code})");
-                    drop(ctx.voice.lost(link.call_id, code));
-                    break;
-                }
-            }
-            r = levels.changed() => {
-                if r.is_ok() {
-                    let now = speaking.update(&levels.borrow_and_update(), Instant::now());
-                    let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
-                    set.retain(|d| Some(*d) != own);
-                    ctx.voice.set_speaking(set);
-                }
-            }
-            r = videos.changed() => {
-                if r.is_ok() {
-                    let next = videos.borrow_and_update().clone();
-                    *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
-                    *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
-                    ctx.video_seq.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            Some(e) = async { match events.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
-                ctx.voice.set_notice(Some(notice_of(e)));
-            }
-            Some(kind) = async { match ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
-                let mut share = ctx.states.borrow().voice.share;
-                set_kind(&mut share, kind, false);
-                let _ = ctx.voice.set_share(share).await;
-            }
-            Some(()) = async { match app_ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
-                // The application went away: the share goes on without sound, and says so.
-                let mut share = ctx.states.borrow().voice.share;
-                share.screen_audio = false;
-                let _ = ctx.voice.set_share(share).await;
-                ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
-            }
-            Some(cmd) = commands.recv() => match cmd {
-                Command::Share(kind, false, _) => stop_share(ctx, &call, &mut opens, kind).await,
-                Command::Share(kind, true, options) => opens.start(ctx, &opened_tx, kind, None, options),
-                Command::ShareSource(source, options) => {
-                    opens.start(ctx, &opened_tx, ShareKind::Screen, Some(source), options);
-                }
-                Command::AppAudio(source) => {
-                    if source.is_some() && !ctx.states.borrow().voice.share.screen {
-                        pending_app = source;
-                    } else {
-                        pending_app = None;
-                        app_audio(ctx, &call, source).await;
+            // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
+            let now = gains(&ctx.values(), &s);
+            if now != gained {
+                for ((device, stream), gain) in &now {
+                    if gained.get(&(device.clone(), *stream)) != Some(gain) {
+                        call.set_gain(device, *stream, *gain);
                     }
                 }
-                Command::Quality(options) => {
-                    if ctx.states.borrow().voice.share.screen
-                        && let Err(e) = call.configure_video(ShareKind::Screen, options).await
-                    {
-                        log::warn!("voice: the new stream quality did not apply: {e}");
-                    }
-                }
-            },
-            Some(done) = opened.recv() => {
-                if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
-                    publish_share(ctx, &call, done.kind, result, done.options).await;
-                    if done.kind == ShareKind::Screen
-                        && ctx.states.borrow().voice.share.screen
-                        && let Some(source) = pending_app.take()
-                    {
-                        app_audio(ctx, &call, Some(source)).await;
-                    }
-                }
+                gained = now;
             }
-            // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
-            // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
-            _ = link_read.tick() => ping.start(call.link()),
-            read = ping.answer() => {
-                let ms = read.as_ref().and_then(|r| r.rtt_ms);
-                ctx.voice.set_ping(link.call_id, ms);
-                // A read that failed is no data: the next one spans the gap from the last that answered.
-                if let Some(read) = read {
-                    let now = Instant::now();
-                    if let Some((at, before)) = &last_link {
-                        let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
-                        ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+            tokio::select! {
+                r = links.changed() => {
+                    if r.is_err() || links.borrow().as_ref().is_none_or(|l| l.call_id != link.call_id) {
+                        break;
                     }
-                    last_link = Some((now, read));
                 }
-                // session.ts `publishRtt`: the others see this device's ping through the instance.
-                let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
-                if let Some(send) = send {
-                    let (answer, rtt) = (ctx.voice.report_rtt(Some(send)), rtt.clone());
-                    tokio::spawn(async move {
-                        let stored = matches!(answer.await, Ok(Ok(true)));
-                        lock_rtt(&rtt).answered(send, stored);
+                r = states.changed() => if r.is_err() { break },
+                // session.ts `onRoomEnd` → `leave('lost')`: the room ended on its own (a newer device took voice over,
+                // the room closed, the connection gave up). The call ends, saying why, and the takeover notice shows.
+                r = room_end.changed() => {
+                    let end = *room_end.borrow_and_update();
+                    if r.is_err() || end.is_some() {
+                        let code = end.map_or("E_DISCONNECTED", dilla_media::RoomEnd::code);
+                        log::warn!("voice: the call's room ended on its own ({code})");
+                        drop(ctx.voice.lost(link.call_id, code));
+                        break;
+                    }
+                }
+                r = levels.changed() => {
+                    if r.is_ok() {
+                        let heard = levels.borrow_and_update().clone();
+                        audio_peers = heard.keys().filter_map(|h| unhex(h).map(DeviceId)).collect();
+                        audio_peers.retain(|d| Some(*d) != own);
+                        publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
+                        let now = speaking.update(&heard, Instant::now());
+                        let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
+                        set.retain(|d| Some(*d) != own);
+                        ctx.voice.set_speaking(set);
+                    }
+                }
+                r = remotes.changed() => {
+                    if r.is_ok() {
+                        // Every remote of the room, in its order: an identity that is not a device id is a stranger's
+                        // stream, which the stage shows as unverified.
+                        sfu_peers = remotes
+                            .borrow_and_update()
+                            .iter()
+                            .map(|h| match unhex(h) {
+                                Some(d) => SfuRemote::Device(DeviceId(d)),
+                                None => SfuRemote::Other(h.clone()),
+                            })
+                            .filter(|r| !matches!(r, SfuRemote::Device(d) if Some(*d) == own))
+                            .collect();
+                        publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
+                    }
+                }
+                r = videos.changed() => {
+                    if r.is_ok() {
+                        let next = videos.borrow_and_update().clone();
+                        video_peers = next
+                            .keys()
+                            .filter_map(|k| unhex(&k.device).map(DeviceId))
+                            .filter(|d| Some(*d) != own)
+                            .collect();
+                        screen_peers = next
+                            .keys()
+                            .filter(|k| k.kind == ShareKind::Screen)
+                            .filter_map(|k| unhex(&k.device).map(DeviceId))
+                            .filter(|d| Some(*d) != own)
+                            .collect();
+                        publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
+                        *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
+                        *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
+                        ctx.video_seq.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Some(e) = async { match events.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    ctx.voice.set_notice(Some(notice_of(e)));
+                }
+                Some(kind) = async { match ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    // Client review M1: a replaced share's end can land after its replacement went live (its feeder
+                    // took it out of the call, then awaited the unpublish while the new one was published here). The
+                    // replacement is the call's share of the kind now: that end is stale, and the new share keeps its
+                    // UI and its sound.
+                    if !share_end_is_current(call.share_frames(kind)) {
+                        continue;
+                    }
+                    if kind == ShareKind::Screen {
+                        // The share's sound ends with it (the media ends only its video), and no lookup or choice
+                        // reaches the ended share.
+                        perform(ctx, &call, sound.ended()).await;
+                    }
+                    let mut share = ctx.states.borrow().voice.share;
+                    set_kind(&mut share, kind, false);
+                    let _ = ctx.voice.set_share(share).await;
+                }
+                Some(()) = async { match app_ended.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    // The application went away: the share goes on without sound, and says so.
+                    let mut share = ctx.states.borrow().voice.share;
+                    share.screen_audio = false;
+                    *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    let _ = ctx.voice.set_share(share).await;
+                    ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+                }
+                // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
+                cmd = commands.recv() => match cmd {
+                    None => break,
+                    Some(Command::Share(kind, false, _)) => {
+                        if kind == ShareKind::Screen {
+                            sound.stopped();
+                        }
+                        stop_share(ctx, &call, &mut opens, kind).await;
+                    }
+                    Some(Command::Share(kind, true, options)) => {
+                        // Not sent for a screen (`share_screen` is); one would start without any sound.
+                        if kind == ShareKind::Screen {
+                            sound.started(NO_TOKEN, &crate::screens::voice::ShareSound::Person(None));
+                        }
+                        opens.start(ctx, &opened_tx, kind, None, options, NO_TOKEN);
+                    }
+                    Some(Command::ShareScreen { source, options, token, sound: chosen }) => {
+                        sound.started(token, &chosen);
+                        opens.start(ctx, &opened_tx, ShareKind::Screen, source, options, token);
+                    }
+                    Some(Command::AppAudio(source)) => perform(ctx, &call, sound.asked(source)).await,
+                    Some(Command::WindowSound(token, app)) => {
+                        perform(ctx, &call, sound.window_found(token, app)).await;
+                    }
+                    Some(Command::Quality(options)) => {
+                        if ctx.states.borrow().voice.share.screen
+                            && let Err(e) = call.configure_video(ShareKind::Screen, options).await
+                        {
+                            log::warn!("voice: the new stream quality did not apply: {e}");
+                        }
+                    }
+                },
+                Some(done) = opened.recv() => {
+                    if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
+                        let outcome = publish_share(ctx, &call, done.kind, result, done.options).await;
+                        if done.kind == ShareKind::Screen {
+                            let act = match outcome {
+                                Published::Up => sound.opened(done.token),
+                                Published::Kept => sound.not_opened(done.token),
+                                Published::Down => sound.down(done.token),
+                            };
+                            perform(ctx, &call, act).await;
+                        }
+                    }
+                }
+                // session.ts `linkTick`: the link's ping, for the dock and the call bar; a read that does not settle within
+                // [`LINK_STALL`] says none. The read runs beside the other arms (w2-fix2 re-review), never blocking them.
+                _ = link_read.tick() => ping.start(call.link()),
+                read = ping.answer() => {
+                    let ms = read.as_ref().and_then(|r| r.rtt_ms);
+                    ctx.voice.set_ping(link.call_id, ms);
+                    // A read that failed is no data: the next one spans the gap from the last that answered.
+                    if let Some(read) = read {
+                        let now = Instant::now();
+                        if let Some((at, before)) = &last_link {
+                            let ms = now.duration_since(*at).as_secs_f64() * 1000.0;
+                            ctx.voice.set_rate(link.call_id, read.rate_since(before, ms));
+                            ctx.voice
+                                .set_loss(link.call_id, Some(read.loss_since(before)));
+                        }
+                        last_link = Some((now, read));
+                    }
+                    // session.ts `publishRtt`: the others see this device's ping through the instance.
+                    let send = ms.and_then(|ms| lock_rtt(&rtt).want(ms));
+                    if let Some(send) = send {
+                        let (answer, rtt) = (ctx.voice.report_rtt(Some(send)), rtt.clone());
+                        tokio::spawn(async move {
+                            let stored = matches!(answer.await, Ok(Ok(true)));
+                            lock_rtt(&rtt).answered(send, stored);
+                        });
+                    }
+                }
+                _ = stats.tick() => {
+                    let st = call.stats();
+                    ctx.voice.send_stats(CallStatsReport {
+                        frames_encrypted: st.encrypted.values().sum(),
+                        decrypt_failures: st.failed.values().sum(),
+                        ..CallStatsReport::default()
                     });
                 }
             }
-            _ = stats.tick() => {
-                let st = call.stats();
-                ctx.voice.send_stats(CallStatsReport {
-                    frames_encrypted: st.encrypted.values().sum(),
-                    decrypt_failures: st.failed.values().sum(),
-                    ..CallStatsReport::default()
-                });
-            }
         }
+    };
+    tokio::select! {
+        biased;
+        () = session_closed(ctx.closed.clone()) => {}
+        () = session => {}
     }
+    // Shares still opening let their sources go now, not after the room's close.
+    drop(opened);
+    drop(opens);
     ctx.videos.lock().unwrap_or_else(|p| p.into_inner()).clear();
     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
+    // The call's end stops every share and the application sound with them (`Call::end_media`): none is published.
+    *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
     ctx.voice.set_speaking(BTreeSet::new());
     feeder.abort();
     drop(ping);
+    // The media ends at once (shares, keys, the router), then the room is left.
+    call.end_media();
+    drop(live);
     call.leave().await;
 }
 
@@ -767,6 +1070,27 @@ async fn superseded(mut links: watch::Receiver<Option<Arc<MediaLink>>>, call_id:
 
 /// The media did not start (the room refused, no key in time): the person is told the join failed and the call is
 /// left, so the signalling never stays "in" a call nobody hears.
+/// Tells the state which remote devices are in the call's SFU room, which of them are verified (an authenticated audio or
+/// video stream) and which send a screen: the stage's tiles (`voice::tiles`).
+fn publish_peers(
+    ctx: &Ctx,
+    sfu: &[SfuRemote],
+    audio: &BTreeSet<DeviceId>,
+    video: &BTreeSet<DeviceId>,
+    screens: &BTreeSet<DeviceId>,
+) {
+    // A device with an authenticated stream is in the room whatever the participant list said first.
+    let verified: BTreeSet<DeviceId> = audio.union(video).copied().collect();
+    let mut remotes: Vec<SfuRemote> = sfu.to_vec();
+    for d in &verified {
+        if !remotes.contains(&SfuRemote::Device(*d)) {
+            remotes.push(SfuRemote::Device(*d));
+        }
+    }
+    ctx.voice
+        .set_media_peers(remotes, verified, screens.clone());
+}
+
 fn failed(
     ctx: &Ctx,
     links: &watch::Receiver<Option<Arc<MediaLink>>>,
@@ -785,6 +1109,13 @@ fn failed(
     drop(ctx.voice.leave());
 }
 
+/// Whether a share's end (`Call::shares_ended`) is the call's current share of its kind going: `live` is what the call
+/// holds of that kind now (`Call::share_frames`). An ended share takes itself out of the call before it is reported,
+/// and this loop publishes shares in line, so a share still held when the end is read is a newer one that replaced it.
+fn share_end_is_current(live: Option<u64>) -> bool {
+    live.is_none()
+}
+
 fn set_kind(share: &mut LocalShare, kind: ShareKind, on: bool) {
     match kind {
         ShareKind::Camera => share.camera = on,
@@ -801,6 +1132,8 @@ fn set_kind(share: &mut LocalShare, kind: ShareKind, on: bool) {
 struct Opened {
     kind: ShareKind,
     generation: u64,
+    /// The UI's token of the start ([`Command::ShareScreen`]); [`NO_TOKEN`] for a camera.
+    token: u64,
     options: ShareOptions,
     result: Result<Box<dyn CaptureSource>, OpenError>,
 }
@@ -832,6 +1165,7 @@ impl Opens {
         kind: ShareKind,
         source: Option<DesktopSource>,
         options: ShareOptions,
+        token: u64,
     ) {
         self.withdraw(kind);
         self.next += 1;
@@ -853,6 +1187,7 @@ impl Opens {
             let _ = done.send(Opened {
                 kind,
                 generation,
+                token,
                 options,
                 result,
             });
@@ -878,12 +1213,169 @@ impl Opens {
     }
 }
 
+/// What the loop does with the screen share's application sound.
+#[derive(Debug, PartialEq)]
+enum Act {
+    Nothing,
+    Publish(dilla_media::app_audio::AppSource),
+    Unpublish,
+}
+
+/// The token of a start the UI did not name (a camera, or a screen start without a picker's source): no window's sound
+/// names it, because the UI's tokens start at 1.
+const NO_TOKEN: u64 = 0;
+
+/// The screen share's application sound, decided in one place so the published sound is never another application's
+/// than the one the live share shows (Task 44 fix rounds 1 to 4). Every answer is an [`Act`] that [`perform`] carries
+/// out, and no order in which the loop handles its arms changes the outcome:
+/// - A start carries its own sound ([`Command::ShareScreen`]); while it opens the running share (if any) keeps exactly
+///   its own sound, and when it comes up its sound replaces the old one entirely (none: the old one goes). A start that
+///   fails, is cancelled or is replaced by a newer start takes its sound with it.
+/// - The window's application ([`Command::WindowSound`]) names its start by token and only ever reaches the share that
+///   start brought up: waiting while it opens, at once once it is up, never after it failed, was replaced or stopped.
+/// - The person's own choice ([`Command::AppAudio`]) applies to the running share at once and to the one opening when it
+///   comes up, and no window's application replaces it afterwards.
+#[derive(Default)]
+struct AppSoundSlot {
+    /// The start being opened (the newest; an older one was withdrawn with it).
+    opening: Option<StartSound>,
+    /// The start whose share is up.
+    live: Option<StartSound>,
+}
+
+/// One start's sound.
+#[derive(Clone)]
+struct StartSound {
+    token: u64,
+    sound: Option<dilla_media::app_audio::AppSource>,
+    /// The person chose `sound`: a window's application no longer applies.
+    person: bool,
+}
+
+impl AppSoundSlot {
+    /// A screen share starts (`token`: the UI's; `chosen`: the sound section's state then). The running share keeps its
+    /// sound until this one is up.
+    fn started(&mut self, token: u64, chosen: &crate::screens::voice::ShareSound) {
+        use crate::screens::voice::ShareSound;
+        let (sound, person) = match chosen {
+            ShareSound::Person(app) => (app.clone(), true),
+            // A share starts with no window's application of its own (`ShareSound::on_share`): it is looked up anew.
+            ShareSound::Unset | ShareSound::Window(_) => (None, false),
+        };
+        self.opening = Some(StartSound {
+            token,
+            sound,
+            person,
+        });
+    }
+
+    /// `Command::AppAudio(source)`: the person's choice (`None`: no sound). Switching off always unpublishes whatever is
+    /// published, with or without a share that is up.
+    fn asked(&mut self, source: Option<dilla_media::app_audio::AppSource>) -> Act {
+        if let Some(opening) = &mut self.opening {
+            opening.sound = source.clone();
+            opening.person = true;
+        }
+        if let Some(live) = &mut self.live {
+            live.sound = source.clone();
+            live.person = true;
+        }
+        match source {
+            Some(app) if self.live.is_some() => Act::Publish(app),
+            Some(_) => Act::Nothing,
+            None => Act::Unpublish,
+        }
+    }
+
+    /// `Command::WindowSound`: the shared window's application, for the start `token`.
+    fn window_found(&mut self, token: u64, app: Option<dilla_media::app_audio::AppSource>) -> Act {
+        let Some(app) = app else {
+            return Act::Nothing;
+        };
+        let applies = |start: &Option<StartSound>| {
+            start
+                .as_ref()
+                .is_some_and(|s| s.token == token && !s.person)
+        };
+        if applies(&self.opening) {
+            if let Some(opening) = &mut self.opening {
+                opening.sound = Some(app);
+            }
+            return Act::Nothing;
+        }
+        if applies(&self.live) {
+            if let Some(live) = &mut self.live {
+                live.sound = Some(app.clone());
+            }
+            return Act::Publish(app);
+        }
+        Act::Nothing
+    }
+
+    /// The start `token` opened: its share is up (replacing the old one, if any) with exactly its own sound.
+    fn opened(&mut self, token: u64) -> Act {
+        let start = match self.opening.take() {
+            Some(start) if start.token == token => start,
+            // Not the start being opened (`Opens::finish` drops those, so this does not happen): the share that is up
+            // gets no sound, and nothing found later applies to it.
+            other => {
+                self.opening = other;
+                StartSound {
+                    token,
+                    sound: None,
+                    person: true,
+                }
+            }
+        };
+        let act = start.sound.clone().map_or(Act::Unpublish, Act::Publish);
+        self.live = Some(start);
+        act
+    }
+
+    /// The start `token` did not open or was cancelled: the running share (if any) is untouched, so its sound is too.
+    fn not_opened(&mut self, token: u64) -> Act {
+        if self.opening.as_ref().is_some_and(|s| s.token == token) {
+            self.opening = None;
+        }
+        Act::Nothing
+    }
+
+    /// The start `token` opened but its track did not publish: the share is over, and its sound goes.
+    fn down(&mut self, token: u64) -> Act {
+        self.not_opened(token);
+        self.live = None;
+        Act::Unpublish
+    }
+
+    /// The screen share's source ended by itself: the share is over, and its sound goes with it.
+    fn ended(&mut self) -> Act {
+        self.stopped();
+        Act::Unpublish
+    }
+
+    /// A screen share was stopped: what waited for it goes, and so does every later lookup.
+    fn stopped(&mut self) {
+        self.opening = None;
+        self.live = None;
+    }
+}
+
+/// Carries out an [`Act`].
+async fn perform(ctx: &Ctx, call: &Call, act: Act) {
+    match act {
+        Act::Nothing => {}
+        Act::Publish(app) => app_audio(ctx, call, Some(app)).await,
+        Act::Unpublish => app_audio(ctx, call, None).await,
+    }
+}
+
 /// Starts or stops the screen share's application sound (parity plan Package 3). Only with a running screen share; the
 /// instance's sharing slot says whether the share carries sound. A capture that cannot start leaves the share silent and
 /// says so.
 async fn app_audio(ctx: &Ctx, call: &Call, source: Option<dilla_media::app_audio::AppSource>) {
     let mut share = ctx.states.borrow().voice.share;
     let Some(source) = source.filter(|_| share.screen) else {
+        *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
         call.unpublish_app_audio().await;
         if share.screen_audio {
             share.screen_audio = false;
@@ -893,11 +1385,13 @@ async fn app_audio(ctx: &Ctx, call: &Call, source: Option<dilla_media::app_audio
     };
     match call.publish_app_audio(&source).await {
         Ok(_) => {
+            *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = Some(source);
             share.screen_audio = true;
             let _ = ctx.voice.set_share(share).await;
             ctx.voice.set_notice(None);
         }
         Err(e) => {
+            *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
             log::warn!("voice: the application sound did not start: {e}");
             ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
         }
@@ -912,6 +1406,7 @@ async fn stop_share(ctx: &Ctx, call: &Call, opens: &mut Opens, kind: ShareKind) 
     call.unpublish_video(kind).await;
     if kind == ShareKind::Screen {
         // The share's sound goes with it.
+        *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
         call.unpublish_app_audio().await;
     }
     set_kind(&mut next, kind, false);
@@ -926,7 +1421,7 @@ async fn publish_share(
     kind: ShareKind,
     result: Result<Box<dyn CaptureSource>, OpenError>,
     options: ShareOptions,
-) {
+) -> Published {
     let source = match result {
         Ok(source) => source,
         Err(e) => {
@@ -934,7 +1429,7 @@ async fn publish_share(
                 log::warn!("voice: the {kind:?} share did not open: {e}");
             }
             ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
-            return;
+            return Published::Kept;
         }
     };
     let mut next = ctx.states.borrow().voice.share;
@@ -948,12 +1443,24 @@ async fn publish_share(
             log::warn!("voice: the share did not start: {e}");
             set_kind(&mut next, kind, false);
             let _ = ctx.voice.set_share(next).await;
-            return;
+            return Published::Down;
         }
         if kind == ShareKind::Screen && !audio {
             ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
         }
+        return Published::Up;
     }
+    Published::Kept
+}
+
+/// What [`publish_share`] did.
+enum Published {
+    /// The source is published: the share is up (or switched to it).
+    Up,
+    /// Nothing was published (the source did not open, or the instance refused): a running share is untouched.
+    Kept,
+    /// The track did not publish: the share's slot is freed, the share is over.
+    Down,
 }
 
 fn notice_of(e: MediaEvent) -> VoiceNotice {
@@ -980,6 +1487,414 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Client review M1: the end of a share that a newer one replaced (the call holds a share of the kind when the end is
+    /// read) is stale: the new share's flag, UI and sound stay. With nothing held, the end is the share's going.
+    #[test]
+    fn a_replaced_share_s_late_end_is_ignored() {
+        assert!(!share_end_is_current(Some(0)), "a new share, no frame yet");
+        assert!(!share_end_is_current(Some(120)));
+        assert!(share_end_is_current(None));
+    }
+
+    fn app(pid: u32, label: &str) -> dilla_media::app_audio::AppSource {
+        dilla_media::app_audio::AppSource {
+            serial: u64::from(pid),
+            pid,
+            label: label.to_owned(),
+        }
+    }
+
+    fn music() -> dilla_media::app_audio::AppSource {
+        app(2, "Music")
+    }
+
+    /// What waits in the loop's command queue behind a start.
+    enum Queued {
+        Ask(Option<dilla_media::app_audio::AppSource>),
+        Found(u64, Option<dilla_media::app_audio::AppSource>),
+    }
+
+    /// The slot driven the way the loop drives it, with what the session publishes (`published`: what the sound row
+    /// shows). Commands queue in order; an open's end may be handled before what is queued (the loop's `select!` is
+    /// not biased), so the tests say when the queue is handled ([`Sim::deliver`]).
+    #[derive(Default)]
+    struct Sim {
+        slot: AppSoundSlot,
+        published: Option<dilla_media::app_audio::AppSource>,
+        live: bool,
+        /// The token of the start being opened.
+        opening: Option<u64>,
+        queue: std::collections::VecDeque<Queued>,
+    }
+
+    impl Sim {
+        fn run(&mut self, act: Act) {
+            match act {
+                Act::Nothing => {}
+                Act::Publish(app) => self.published = self.live.then_some(app),
+                Act::Unpublish => self.published = None,
+            }
+        }
+
+        /// The person picks a source: the UI's `share_source` sends one [`Command::ShareScreen`] with the sound
+        /// section's state. What was sent before the start is handled before it.
+        fn start(&mut self, token: u64, sound: &crate::screens::voice::ShareSound) {
+            self.deliver();
+            self.slot.started(token, sound);
+            self.opening = Some(token);
+        }
+
+        /// The person's own choice in the sound section.
+        fn ask(&mut self, source: Option<dilla_media::app_audio::AppSource>) {
+            self.queue.push_back(Queued::Ask(source));
+        }
+
+        /// The window's lookup lands.
+        fn found(&mut self, token: u64, app: Option<dilla_media::app_audio::AppSource>) {
+            self.queue.push_back(Queued::Found(token, app));
+        }
+
+        /// The loop handles what is queued.
+        fn deliver(&mut self) {
+            while let Some(q) = self.queue.pop_front() {
+                let act = match q {
+                    Queued::Ask(source) => self.slot.asked(source),
+                    Queued::Found(token, app) => self.slot.window_found(token, app),
+                };
+                self.run(act);
+            }
+        }
+
+        /// The open ends: `Published::Up`, `Kept` (failed or cancelled) or `Down`.
+        fn end(&mut self, outcome: Published) {
+            let token = self.opening.take().expect("a start is opening");
+            let act = match outcome {
+                Published::Up => {
+                    self.live = true;
+                    self.slot.opened(token)
+                }
+                Published::Kept => self.slot.not_opened(token),
+                Published::Down => {
+                    self.live = false;
+                    self.slot.down(token)
+                }
+            };
+            self.run(act);
+        }
+
+        /// The share's source ends by itself (the loop's `ended` arm).
+        fn ended(&mut self) {
+            self.deliver();
+            self.live = false;
+            self.opening = None;
+            let act = self.slot.ended();
+            self.run(act);
+        }
+
+        /// The person stops the share.
+        fn stop(&mut self) {
+            self.deliver();
+            self.slot.stopped();
+            self.live = false;
+            self.opening = None;
+            self.published = None;
+        }
+    }
+
+    use crate::screens::voice::ShareSound;
+
+    /// A share running window `a`'s sound (start 1, its lookup, its open).
+    fn live_with(a: &dilla_media::app_audio::AppSource) -> Sim {
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Unset);
+        sim.found(1, Some(a.clone()));
+        sim.deliver();
+        sim.end(Published::Up);
+        assert_eq!(sim.published.as_ref(), Some(a), "window A shares its sound");
+        sim
+    }
+
+    /// Task 44 fix round 3: a share running window A's sound, switched to window B: while B opens, A's share keeps
+    /// A's sound (B's application, found meanwhile, waits); B failing or being cancelled leaves A's sound published;
+    /// B opening replaces it with B's.
+    #[test]
+    fn a_source_switch_keeps_the_old_sound_until_the_new_source_opens() {
+        let (a, b) = (app(10, "A"), app(20, "B"));
+        for outcome in [Published::Kept, Published::Up] {
+            let mut sim = live_with(&a);
+            // The switch to B (the UI's share_sound went Window(a) to Unset): nothing changes while B opens.
+            sim.start(2, &ShareSound::Unset);
+            sim.deliver();
+            assert_eq!(sim.published, Some(a.clone()), "while B opens");
+            sim.found(2, Some(b.clone()));
+            sim.deliver();
+            assert_eq!(sim.published, Some(a.clone()), "B's sound waits for B");
+            let up = matches!(outcome, Published::Up);
+            sim.end(outcome);
+            assert_eq!(sim.published, Some(if up { b.clone() } else { a.clone() }));
+            // B's lookup landing after a failed start is dropped.
+            if !up {
+                sim.found(2, Some(b.clone()));
+                sim.deliver();
+                assert_eq!(sim.published, Some(a.clone()), "a late B is dropped");
+            }
+        }
+        // A window whose application is silent replaces A's sound with none once it opens.
+        let mut sim = live_with(&a);
+        sim.start(2, &ShareSound::Unset);
+        sim.deliver();
+        assert_eq!(sim.published, Some(a));
+        sim.end(Published::Up);
+        assert_eq!(sim.published, None);
+    }
+
+    /// Task 44 fix round 4: the start and its sound are one command, so the order in which a source's open and the
+    /// queued commands are handled (the loop's `select!` is not biased) never matters: a switch from A to B, or a first
+    /// share, ends with exactly the window's own application whether its lookup lands before or after the open, and
+    /// B's share never carries A's sound, not even for one pass of the loop.
+    #[test]
+    fn a_switch_brings_the_new_window_s_sound_whichever_lands_first() {
+        let (a, b) = (app(10, "A"), app(20, "B"));
+        for lookup_first in [true, false] {
+            let mut sim = live_with(&a);
+            sim.start(2, &ShareSound::Unset);
+            sim.found(2, Some(b.clone()));
+            if lookup_first {
+                sim.deliver();
+                assert_eq!(
+                    sim.published,
+                    Some(a.clone()),
+                    "A's share keeps A's sound while B opens"
+                );
+                sim.end(Published::Up);
+            } else {
+                // B opens before anything queued behind its start is handled.
+                sim.end(Published::Up);
+                assert_eq!(sim.published, None, "B's share never carries A's sound");
+                sim.deliver();
+            }
+            assert_eq!(
+                sim.published,
+                Some(b.clone()),
+                "lookup first: {lookup_first}"
+            );
+            // A first share, in either order.
+            let mut sim = Sim::default();
+            sim.start(1, &ShareSound::Unset);
+            sim.found(1, Some(a.clone()));
+            if lookup_first {
+                sim.deliver();
+                sim.end(Published::Up);
+            } else {
+                sim.end(Published::Up);
+                assert_eq!(sim.published, None);
+                sim.deliver();
+            }
+            assert_eq!(
+                sim.published,
+                Some(a.clone()),
+                "first share, lookup first: {lookup_first}"
+            );
+        }
+    }
+
+    /// Task 44 fix round 4: window A's lookup lands while A is still opening, then the person picks B, which opens
+    /// before its queued commands are handled: A's application never reaches B's share, and A's late lookup is dropped.
+    #[test]
+    fn a_superseded_start_s_sound_never_reaches_the_next_share() {
+        let (a, b) = (app(10, "A"), app(20, "B"));
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Unset);
+        sim.found(1, Some(a.clone()));
+        sim.deliver();
+        sim.start(2, &ShareSound::Unset);
+        sim.end(Published::Up);
+        assert_eq!(sim.published, None, "B's share never carries A's sound");
+        sim.deliver();
+        sim.found(1, Some(a.clone()));
+        sim.deliver();
+        assert_eq!(sim.published, None, "a late A is dropped");
+        sim.found(2, Some(b.clone()));
+        sim.deliver();
+        assert_eq!(sim.published, Some(b));
+    }
+
+    /// Task 44 fix round 4: the person's own choice in the sound section, made while a source switch is still opening,
+    /// applies to the running share at once and stays whatever the switch does: switched off, A's share goes silent
+    /// immediately, stays silent when B fails, and B (opening) stays silent even when B's lookup was already on its way;
+    /// an application chosen meanwhile plays at once and goes on with B.
+    #[test]
+    fn the_person_s_sound_choice_applies_at_once_during_a_switch() {
+        let (a, b, x) = (app(10, "A"), app(20, "B"), app(30, "X"));
+        for up in [false, true] {
+            for lookup_before in [true, false] {
+                let mut sim = live_with(&a);
+                sim.start(2, &ShareSound::Unset);
+                sim.deliver();
+                if lookup_before {
+                    sim.found(2, Some(b.clone()));
+                }
+                sim.ask(None);
+                sim.deliver();
+                assert_eq!(sim.published, None, "switched off at once");
+                sim.found(2, Some(b.clone()));
+                sim.deliver();
+                assert_eq!(sim.published, None, "B's lookup never overrides the person");
+                sim.end(if up { Published::Up } else { Published::Kept });
+                assert_eq!(sim.published, None, "off stays off");
+                sim.found(2, Some(b.clone()));
+                sim.deliver();
+                assert_eq!(sim.published, None, "a late B stays off");
+            }
+        }
+        let mut sim = live_with(&a);
+        sim.start(2, &ShareSound::Unset);
+        sim.deliver();
+        sim.ask(Some(x.clone()));
+        sim.deliver();
+        assert_eq!(
+            sim.published,
+            Some(x.clone()),
+            "the chosen application at once"
+        );
+        sim.found(2, Some(b));
+        sim.deliver();
+        sim.end(Published::Up);
+        assert_eq!(sim.published, Some(x), "and with B");
+    }
+
+    /// Task 44 fix round 4: two quick switches A to B to C, C opening before the queued commands are handled: C's share
+    /// carries neither A's nor B's sound, only C's own once found, and B's lookup is dropped whenever it lands.
+    #[test]
+    fn two_quick_switches_keep_only_the_last_start_s_sound() {
+        let (a, b, c) = (app(10, "A"), app(20, "B"), app(30, "C"));
+        let mut sim = live_with(&a);
+        sim.start(2, &ShareSound::Unset);
+        sim.start(3, &ShareSound::Unset);
+        sim.found(2, Some(b.clone()));
+        sim.end(Published::Up);
+        assert_eq!(
+            sim.published, None,
+            "C's share carries neither A's nor B's sound"
+        );
+        sim.deliver();
+        assert_eq!(sim.published, None, "B's lookup is dropped");
+        sim.found(3, Some(c.clone()));
+        sim.deliver();
+        assert_eq!(sim.published, Some(c.clone()));
+        sim.found(2, Some(b));
+        sim.deliver();
+        assert_eq!(sim.published, Some(c));
+    }
+
+    /// Task 44 fix rounds 2 and 3: a window share whose application is found and whose open then fails leaves no
+    /// sound for the next share (a screen, or a window with a silent application), and the person's own choice goes out.
+    #[test]
+    fn a_failed_window_share_leaves_no_sound_for_the_next_share() {
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Unset);
+        sim.found(1, Some(music()));
+        sim.deliver();
+        sim.end(Published::Kept);
+        sim.start(2, &ShareSound::Unset);
+        sim.end(Published::Up);
+        sim.deliver();
+        assert_eq!(sim.published, None);
+        // A person who switched the sound off gets none; one who chose an application gets it.
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Person(None));
+        // The UI looks nothing up for a person who chose (voice/mod.rs `share_source`).
+        sim.deliver();
+        sim.end(Published::Up);
+        assert_eq!(sim.published, None);
+        let mut sim = Sim::default();
+        sim.start(1, &ShareSound::Person(Some(app(30, "Radio"))));
+        sim.deliver();
+        sim.end(Published::Up);
+        assert_eq!(sim.published, Some(app(30, "Radio")));
+    }
+
+    /// Task 44 fix round 3: a screen share whose track did not publish is over and its application sound goes with
+    /// it ([`AppSoundSlot::down`] is what the loop performs), and a stop drops what waited and every late lookup.
+    #[test]
+    fn a_failed_screen_start_unpublishes_its_sound() {
+        let mut sim = live_with(&music());
+        sim.start(2, &ShareSound::Unset);
+        sim.deliver();
+        sim.end(Published::Down);
+        assert_eq!(sim.published, None);
+        let mut sim = live_with(&music());
+        sim.stop();
+        sim.found(1, Some(music()));
+        sim.deliver();
+        assert_eq!(sim.published, None, "a lookup after the stop is dropped");
+    }
+
+    /// Task 44 fix round 5: a screen share whose source ends by itself takes its application sound with it (what the
+    /// session publishes, and so the sound row, is none), and nothing found or chosen later reaches the ended share.
+    #[test]
+    fn a_share_that_ends_by_itself_takes_its_sound_with_it() {
+        let (a, x) = (app(10, "A"), app(30, "X"));
+        let mut sim = live_with(&a);
+        sim.ended();
+        assert_eq!(sim.published, None, "the ended share's sound goes");
+        // The row then reads the UI's sound, which the share's end clears too.
+        assert_eq!(ShareSound::Window(a.clone()).ended().app(), None);
+        sim.found(1, Some(a));
+        sim.ask(Some(x));
+        sim.deliver();
+        assert_eq!(sim.published, None, "nothing reaches the ended share");
+    }
+
+    /// Task 44 fix round 5: the person switching the sound off unpublishes whatever is published, with or without a
+    /// share that is up (a share still opening, or none at all).
+    #[test]
+    fn switching_the_sound_off_always_unpublishes() {
+        for opening in [false, true] {
+            let mut sim = Sim {
+                published: Some(app(10, "A")),
+                ..Sim::default()
+            };
+            if opening {
+                sim.start(1, &ShareSound::Unset);
+            }
+            sim.ask(None);
+            sim.deliver();
+            assert_eq!(sim.published, None, "opening: {opening}");
+        }
+    }
+
+    /// Share fix review I1: a dropped session waits only while a call's media is live. A call whose media already
+    /// ended (and which is only closing its room) holds the drop up not at all; a live one holds it up until its media
+    /// ends, however its task ends, and no longer than the bound.
+    #[test]
+    fn a_dropped_session_waits_only_while_a_call_s_media_is_live() {
+        use std::time::{Duration, Instant};
+        let live = Arc::new(MediaLive::default());
+        // No call, or one that ended: at once, whatever the bound.
+        let at = Instant::now();
+        assert!(live.wait_ended(Duration::from_secs(3)));
+        drop(live.begin());
+        assert!(live.wait_ended(Duration::from_secs(3)));
+        assert!(
+            at.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            at.elapsed()
+        );
+        // A live call: the bound passes without its end.
+        let guard = live.begin();
+        assert!(!live.wait_ended(Duration::from_millis(50)));
+        // Its media ends on another thread: the wait ends with it, well before the bound.
+        let at = Instant::now();
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(guard);
+        });
+        assert!(live.wait_ended(Duration::from_secs(3)));
+        assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
+        ender.join().unwrap();
+    }
 
     fn epoch(n: u64, key: u8) -> dilla_client::calls::MediaEpoch {
         dilla_client::calls::MediaEpoch {

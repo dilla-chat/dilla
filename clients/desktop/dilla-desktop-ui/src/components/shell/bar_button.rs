@@ -13,7 +13,7 @@ use crate::components::button::ClickHandler;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 const HEIGHT: f32 = 28.0;
@@ -104,7 +104,13 @@ impl RenderOnce for BarButton {
             .focus_visible(|s| s.shadow(focus_ring()))
             .child(Icon::new(self.icon).size(Pixels::from(GLYPH)).color(fg))
             .child(
-                line(self.label, text::XS, line_height(text::XS, 1.5), fg).weight(font::WEIGHT_BTN),
+                line(
+                    self.label,
+                    text::XS,
+                    crate::text::root_line_height(text::XS),
+                    fg,
+                )
+                .weight(font::WEIGHT_BTN),
             );
         match self.on_click {
             Some(handler) => base.on_click(handler),

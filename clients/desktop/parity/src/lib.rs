@@ -15,7 +15,7 @@ pub use diff::{
     assert_parity_masked_with, assert_parity_with, chrome_difference_pct, colour_difference_pct,
     tolerance_for, tolerance_for_screen, whole_difference_pct,
 };
-pub use driver::{Driver, ElementInfo, NoReply, target_dir};
+pub use driver::{Driver, ElementInfo, NoReply, nested_cargo, target_dir};
 pub use glyphs::{GlyphCoverage, glyph_coverage};
 pub use image::RgbaImage;
 pub use screen::{ScreenReport, assert_screen, text_mask};

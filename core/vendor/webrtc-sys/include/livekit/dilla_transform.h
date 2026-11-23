@@ -28,8 +28,10 @@
  * Opus frame on an audio transformer (protocol/05 "No plaintext path"); for anything else it is a
  * drop. Held frames are one strict FIFO per transformer (protocol/05 "Rotation": 2 000 ms, 256
  * frames, 8 MiB); while anything is held, later frames queue behind it. The FIFO is retried on every
- * new frame and whenever dilla_drain_all runs (Rust calls it on a timer and after every key
- * install); a frame past a limit is dropped, oldest first, never released unauthenticated.
+ * new frame, whenever dilla_drain_all runs (Rust calls it after every key install) and on the hook's
+ * own timer thread (dilla-hold-tick, dilla_hold_timer_run; stopped and joined when exit() runs the
+ * static destructors); a frame past a limit is dropped, oldest first, never released
+ * unauthenticated.
  */
 
 #pragma once
@@ -60,6 +62,10 @@ class DillaTransformCore;
 /// Installs the process-wide hook. False (and the hook is dropped) when one is already installed.
 bool dilla_install_hook(rust::Box<DillaHook> hook);
 
+/// The hold timer's loop (every tick_ms: dilla_drain_all and the hook's key-frame requests), run on
+/// the thread Rust starts once after installing the hook; it returns when exit() stops the timer.
+void dilla_hold_timer_run(uint64_t tick_ms);
+
 /// True once a hook is installed: dilla then owns every encoded-frame transform.
 bool dilla_owns_transforms();
 
@@ -89,6 +95,11 @@ uint64_t dilla_sender_handle(const MediaStreamTrack& track);
 
 /// Retries every transformer's held frames now (expiring those past a limit).
 void dilla_drain_all();
+
+/// How many transformers are alive now: the registry's entries whose core still locks, counted
+/// under the registry mutex. A snapshot for tests and diagnostics (a call that ended must have
+/// released every transformer its PeerConnections held).
+size_t dilla_live_transformer_count();
 
 /// Asks the publisher of a receiving video transformer's track for a key frame (an RTCP PLI through
 /// the SFU). Blocks on libwebrtc's worker thread: never call it from inside a transform.

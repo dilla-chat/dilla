@@ -1,6 +1,7 @@
 //! Task 22's parity, behaviour and keyboard tests for the notify area (standard procedure S4-S6).
 //!
-//! - `parity_notify_*`: each fixture of `parity/fixtures/notify/` against its web reference (`assert_screen`, Linux only).
+//! - `parity_notify_*`: each fixture of `parity/fixtures/notify/` against its web reference (`assert_screen`, Linux only); `unread-badge-b`
+//!   is the exception, a GPUI-only reference (`assert_native_screen`).
 //!   The two `settings` fixtures are drawn in the settings host.
 //! - `keyboard_notify_focus_order`: Tab goes through the section's controls in the web's order, and each control reports
 //!   its change.
@@ -68,7 +69,14 @@ fn parity_notify_unread_badge() {
     ignore = "references are Linux and macOS only"
 )]
 fn parity_notify_unread_badge_b() {
-    parity("unread-badge-b");
+    // A GPUI-only reference: the web's live unread count for channels it does not show is nondeterministic (one random
+    // pill per shoot), while the app marks every channel that got a message meanwhile (Jonas, 2026-11-19).
+    dilla_parity::screen::assert_native_screen(
+        &fixture("unread-badge-b"),
+        "unread-badge-b",
+        |_| {},
+    )
+    .unwrap_or_else(|e| panic!("notify/unread-badge-b differs from its golden shot: {e}"));
 }
 
 #[test]

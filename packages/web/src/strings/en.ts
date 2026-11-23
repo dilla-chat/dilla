@@ -379,6 +379,10 @@ export const en = {
   'shell.dms.open': 'message',
   'shell.channels.rowLabel': '{name}, unread {unread}, mentions {mentions}',
   'shell.channels.rowLabelMuted': '{name}, muted, mentions {mentions}',
+  // Native desktop only (Jonas 2026-11-19): the channel row menu's "Mark as read"; the web's row menu has no such item.
+  'shell.channels.markRead': 'Mark as read',
+  // Native desktop only (Jonas 2026-11-19): the macOS share picker without Screen Recording (GPUI gaps Task 45, D22).
+  'callStage.share.pickerPermission': 'Dilla needs Screen Recording to show your screens and windows. Allow it in System Settings → Privacy & Security → Screen Recording, then quit and reopen Dilla.',
   'shell.rail.itemLabel': '{name}, unread {unread}, mentions {mentions}',
   'shell.dm.log': 'messages with {name}',
   'shell.dm.topic': '@{handle} · {status}',

@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use dilla_desktop_ui::a11y::{Accessible, Role, announce_once};
 use dilla_desktop_ui::metrics::focus_ring;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, radius, text};
 use gpui::{
     App, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
@@ -97,7 +97,7 @@ pub fn button(
         .child(line(
             t("readAloud.label"),
             text::XS,
-            line_height(text::XS, 1.5),
+            dilla_desktop_ui::text::root_line_height(text::XS),
             color::FG_2,
         ))
         // Enter reads it too, before a step's own Enter (the onboarding's Submit) hears it.

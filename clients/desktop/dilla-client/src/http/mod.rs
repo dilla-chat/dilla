@@ -418,6 +418,7 @@ impl ReqwestHttp {
                     status,
                     code: Some("E_BODY_TOO_LARGE".to_owned()),
                     retry_after_ms: None,
+                    rule: None,
                 })
                 .await?
             }
@@ -459,6 +460,11 @@ pub(crate) fn refused(status: u16, body: Option<&[u8]>) -> HttpError {
             .as_ref()
             .filter(|e| e.code != "E_HTTP")
             .map(|e| e.code.clone()),
+        rule: e
+            .as_ref()
+            .and_then(|e| e.extra.first())
+            .and_then(|v| v.as_text())
+            .map(str::to_owned),
         retry_after_ms: e.and_then(|e| e.retry_after_ms),
     }
 }
@@ -530,5 +536,39 @@ mod clock_tests {
             rem % 3600 / 60,
             rem % 60
         )
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    fn body(v: &Value) -> Vec<u8> {
+        let mut out = Vec::new();
+        ciborium::into_writer(v, &mut out).unwrap();
+        out
+    }
+
+    /// A refusal's first extra element, when a text, is its rule (`E_COMMIT_INVALID`'s `"epoch"`).
+    #[test]
+    fn a_refusal_carries_its_rule() {
+        let ruled = body(&Value::Array(vec![
+            Value::Text("E_COMMIT_INVALID".into()),
+            Value::Text("proposal is for epoch 0, group is at 1".into()),
+            Value::Null,
+            Value::Text("epoch".into()),
+        ]));
+        let e = refused(422, Some(&ruled));
+        assert!(e.is(422, "E_COMMIT_INVALID"));
+        assert!(matches!(e, HttpError::Status { rule: Some(ref r), .. } if r == "epoch"));
+        let bare = body(&Value::Array(vec![
+            Value::Text("E_COMMIT_INVALID".into()),
+            Value::Text(String::new()),
+            Value::Null,
+        ]));
+        assert!(matches!(
+            refused(422, Some(&bare)),
+            HttpError::Status { rule: None, .. }
+        ));
     }
 }

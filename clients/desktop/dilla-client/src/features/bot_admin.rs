@@ -19,6 +19,7 @@ use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
 use crate::client::{Client, ClientError, Inner};
+use crate::features::server_admin::{decode_welcome, encode_welcome};
 use crate::gateway::frames::Value;
 use crate::http::fill_path;
 use crate::http::routes::{self as r, lookup};
@@ -29,19 +30,31 @@ use crate::state::bot_admin::{
     PROVIDER_STALE_S, PROVIDER_STATUS, ProviderStatusState, decode_bot_status, decode_bot_webhooks,
     decode_installation, decode_moderation_page, decode_music_provider_status, sealed_operation,
 };
+use crate::state::server_admin::WelcomeSettings;
 use crate::state::{ChannelId, CommunityId, hex};
 use crate::sync::api::ApiError;
 use crate::sync::value::{self as v, bin16};
 
 // ---- the sealed command seam (operations.ts) ----
 
-/// One argument of a sealed command.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One argument of a sealed command. Its Debug gives a text's or bytes' length only (R21: the arguments are sealed).
+#[derive(Clone, PartialEq, Eq)]
 pub enum BotArg {
     Uint(u64),
     Text(String),
     Bytes(Vec<u8>),
     Null,
+}
+
+impl std::fmt::Debug for BotArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uint(n) => write!(f, "Uint({n})"),
+            Self::Text(t) => write!(f, "Text({:?})", crate::state::Redacted(t)),
+            Self::Bytes(b) => write!(f, "Bytes(<{} bytes>)", b.len()),
+            Self::Null => write!(f, "Null"),
+        }
+    }
 }
 
 /// Review A M1: an argument's text and bytes (a removal's reason and excerpt, a music search, a poll's choice) are wiped
@@ -91,10 +104,22 @@ impl SealedCommand {
 }
 
 /// The Bot's final answer: `200 [revision|null, data, extra?]`, or a bare refusal code as the body of another status.
-#[derive(Clone, Debug)]
+/// Its Debug gives the opened body's length only (R21).
+#[derive(Clone)]
 pub struct SealedAnswer {
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for SealedAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SealedAnswer({}, {} bytes)",
+            self.status,
+            self.body.len()
+        )
+    }
 }
 
 /// Why a command did not get an answer.
@@ -155,6 +180,10 @@ pub enum OpError {
     Refused { code: String, request_id: [u8; 16] },
     #[error("the Bot did not answer in time")]
     Uncertain { request_id: [u8; 16] },
+    /// The Bot took the request and answered 200, but its answer cannot be read (Task 30, R30). A mutation reads it as
+    /// [`OpError::Uncertain`]: it may have acted. A read (the provider status) reads it as unavailable, as the web does.
+    #[error("the Bot's answer could not be read")]
+    Unreadable { request_id: [u8; 16] },
     #[error("invalid Bot request")]
     Invalid,
 }
@@ -184,26 +213,26 @@ fn status_of_code(code: &str) -> Option<u8> {
     })
 }
 
-/// `appOperationAnswer`: 200 `[revision, data, extra?]`, or a refusal's v1 status.
+/// `appOperationAnswer`: 200 `[revision, data, extra?]`, or a refusal's v1 status. A 200 whose body cannot be read is
+/// [`OpError::Unreadable`] (Task 30, R30): the Bot took the request and may have acted, so a mutation keeps its attempt
+/// and request id for the resend, as the web's decode throw is no `BotOperationRefusedError` (operations.ts:64-145).
 fn app_answer(request_id: [u8; 16], answer: &SealedAnswer) -> Result<BotResult, OpError> {
     let refused = |code: &str| OpError::Refused {
         code: code.to_owned(),
         request_id,
     };
     if answer.status == 200 {
-        let value = Value::decode(&answer.body).map_err(|_| refused("E_BOT_ANSWER"))?;
-        let f = value.as_array().ok_or_else(|| refused("E_BOT_ANSWER"))?;
+        let unreadable = || OpError::Unreadable { request_id };
+        let value = Value::decode(&answer.body).map_err(|_| unreadable())?;
+        let f = value.as_array().ok_or_else(unreadable)?;
         if !(2..=3).contains(&f.len()) {
-            return Err(refused("E_BOT_ANSWER"));
+            return Err(unreadable());
         }
         let revision = match &f[0] {
             Value::Null => None,
-            other => Some(v::u53(other).map_err(|_| refused("E_BOT_ANSWER"))?),
+            other => Some(v::u53(other).map_err(|_| unreadable())?),
         };
-        let data = f[1]
-            .as_bytes()
-            .ok_or_else(|| refused("E_BOT_ANSWER"))?
-            .to_vec();
+        let data = f[1].as_bytes().ok_or_else(unreadable)?.to_vec();
         return Ok(BotResult {
             request_id,
             status: 0,
@@ -1105,6 +1134,7 @@ impl BotAdmin {
                     _ => ProviderStatusState::Unavailable,
                 },
                 Ok(_) => ProviderStatusState::Unavailable,
+                // Only no answer in time is partial (MusicProviderStatus.tsx:46): an unreadable one is unavailable.
                 Err(OpError::Uncertain { .. }) => ProviderStatusState::Partial,
                 Err(_) => ProviderStatusState::Unavailable,
             };
@@ -1261,7 +1291,9 @@ fn wipe_values(items: &mut [Value]) {
 fn op_err(e: OpError) -> ClientError {
     match e {
         OpError::Refused { code, .. } => ClientError::Sync(clean_code(&code)),
-        OpError::Uncertain { .. } => ClientError::Sync("E_BOT_UNCERTAIN".to_owned()),
+        OpError::Uncertain { .. } | OpError::Unreadable { .. } => {
+            ClientError::Sync("E_BOT_UNCERTAIN".to_owned())
+        }
         OpError::Invalid => ClientError::Sync("E_ROUTE_INPUT".to_owned()),
     }
 }
@@ -1269,6 +1301,156 @@ fn op_err(e: OpError) -> ClientError {
 /// Whether a provider snapshot observed at `observed_at` is stale at `now_s`.
 pub fn provider_is_stale(observed_at: u64, now_s: u64) -> bool {
     now_s.saturating_sub(observed_at) > PROVIDER_STALE_S
+}
+
+// ---- welcome settings (operations 1 and 2) ----
+
+/// The Bot feature number the welcome settings live under (the first argument of operations 1 and 2).
+pub const WELCOME_FEATURE: u64 = 5;
+
+/// What the Bot answered a welcome read or save (WelcomeSettingsPanel.tsx).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WelcomeAnswer {
+    /// The settings and the revision a save must quote (`None`: never configured).
+    Read {
+        config: Option<WelcomeSettings>,
+        revision: u64,
+    },
+    /// The save took; the revision is the new one.
+    Saved { revision: u64 },
+    /// The settings changed since they were read (status 4).
+    Conflict,
+    /// Any other refusal, or an answer that is not a valid read or save answer.
+    Failed,
+    /// No answer in time: the Bot may have acted. [`retry_welcome`] with this id settles it.
+    Uncertain { request_id: [u8; 16] },
+}
+
+/// `validRevision` and the answer rules of the panel: valid only with status 0 and a revision up to `i64::MAX`; status 4 is
+/// a conflict and any other non-zero status a failure. A read's data is the document, a save's data must be the empty one.
+fn welcome_answer(op: u64, r: BotResult) -> WelcomeAnswer {
+    match r.status {
+        0 => {}
+        4 => return WelcomeAnswer::Conflict,
+        _ => return WelcomeAnswer::Failed,
+    }
+    let Some(revision) = r.revision.filter(|n| *n <= i64::MAX as u64) else {
+        return WelcomeAnswer::Failed;
+    };
+    match (op, decode_welcome(&r.data)) {
+        (1, Ok(config)) => WelcomeAnswer::Read { config, revision },
+        (2, Ok(None)) => WelcomeAnswer::Saved { revision },
+        _ => WelcomeAnswer::Failed,
+    }
+}
+
+/// A `Refused` stays an error; an unanswered request is an answer the page can retry.
+fn welcome_outcome(op: u64, r: Result<BotResult, OpError>) -> Result<WelcomeAnswer, OpError> {
+    match r {
+        Ok(result) => Ok(welcome_answer(op, result)),
+        Err(OpError::Uncertain { request_id } | OpError::Unreadable { request_id }) => {
+            Ok(WelcomeAnswer::Uncertain { request_id })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Reads the welcome settings (operation 1, no revision).
+pub async fn read_welcome(ops: &BotOperations) -> Result<WelcomeAnswer, OpError> {
+    let r = ops
+        .request(BotRequest {
+            operation: 1,
+            args: vec![BotArg::Uint(WELCOME_FEATURE)],
+            ..BotRequest::default()
+        })
+        .await;
+    welcome_outcome(1, r)
+}
+
+/// Saves the welcome settings (operation 2) over the revision the read answered.
+pub async fn save_welcome(
+    ops: &BotOperations,
+    value: &WelcomeSettings,
+    revision: u64,
+) -> Result<WelcomeAnswer, OpError> {
+    let doc = encode_welcome(value).map_err(|_| OpError::Invalid)?;
+    let r = ops
+        .request(BotRequest {
+            operation: 2,
+            args: vec![BotArg::Uint(WELCOME_FEATURE), BotArg::Bytes(doc)],
+            revision: Some(revision),
+            ..BotRequest::default()
+        })
+        .await;
+    welcome_outcome(2, r)
+}
+
+/// Sends an unanswered read (`operation` 1) or save (2) again with its request id. A request this page never sent is
+/// `Failed`.
+pub async fn retry_welcome(
+    ops: &BotOperations,
+    request_id: [u8; 16],
+    operation: u64,
+) -> Result<WelcomeAnswer, OpError> {
+    match ops.read(request_id, operation).await {
+        Ok(Some(r)) => Ok(welcome_answer(operation, r)),
+        Ok(None) => Ok(WelcomeAnswer::Failed),
+        Err(OpError::Uncertain { request_id } | OpError::Unreadable { request_id }) => {
+            Ok(WelcomeAnswer::Uncertain { request_id })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// What [`BotAdmin::welcome`] does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WelcomeOp {
+    Read,
+    Save {
+        value: WelcomeSettings,
+        revision: u64,
+    },
+    Retry {
+        request_id: [u8; 16],
+        operation: u64,
+    },
+}
+
+impl BotAdmin {
+    /// One welcome settings call. A read or a save that took lands the settings in `server_admin.welcome[community]`.
+    pub fn welcome(
+        &self,
+        community: CommunityId,
+        op: WelcomeOp,
+    ) -> oneshot::Receiver<Result<WelcomeAnswer, ClientError>> {
+        let (this, inner) = (self.clone(), self.inner.clone());
+        self.spawn(async move {
+            let ops = this.operations(community);
+            let (answer, saved) = match op {
+                WelcomeOp::Read => (read_welcome(&ops).await, None),
+                WelcomeOp::Save { value, revision } => (
+                    save_welcome(&ops, &value, revision).await,
+                    Some(Some(value)),
+                ),
+                WelcomeOp::Retry {
+                    request_id,
+                    operation,
+                } => (retry_welcome(&ops, request_id, operation).await, None),
+            };
+            let answer = answer.map_err(op_err)?;
+            let landed = match (&answer, saved) {
+                (WelcomeAnswer::Read { config, .. }, _) => Some(config.clone()),
+                (WelcomeAnswer::Saved { .. }, Some(value)) => Some(value),
+                _ => None,
+            };
+            if let Some(config) = landed {
+                inner.publish(move |s| {
+                    s.server_admin.welcome.insert(community, config);
+                });
+            }
+            Ok(answer)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1383,6 +1565,144 @@ mod tests {
         });
     }
 
+    fn welcome_cfg() -> WelcomeSettings {
+        WelcomeSettings {
+            channel: ChannelId([0x33; 16]),
+            template: "Welcome {member} to {server}!".to_owned(),
+            server_name: "gpui".to_owned(),
+        }
+    }
+
+    /// R21: the welcome template never prints in a read answer's or a save's Debug.
+    #[test]
+    fn the_welcome_template_stays_out_of_debug() {
+        let mut cfg = welcome_cfg();
+        cfg.template = "zebra-welcome-7 {member}".into();
+        let shown = [
+            format!(
+                "{:?}",
+                WelcomeAnswer::Read {
+                    config: Some(cfg.clone()),
+                    revision: 1
+                }
+            ),
+            format!(
+                "{:#?}",
+                WelcomeOp::Save {
+                    value: cfg.clone(),
+                    revision: 1
+                }
+            ),
+            format!("{cfg:?}"),
+        ];
+        for s in shown {
+            assert!(!s.contains("zebra"), "{} bytes", s.len());
+            assert!(s.contains("<24 bytes>"), "{} bytes", s.len());
+        }
+    }
+
+    #[test]
+    fn a_welcome_read_decodes_the_document_and_its_revision() {
+        let cfg = welcome_cfg();
+        let doc = encode_welcome(&cfg).unwrap();
+        let t = fake(move |_| ok(Some(7), doc.clone()));
+        let ops = BotOperations::new(COMMUNITY, t.clone());
+        assert_eq!(
+            run(read_welcome(&ops)).unwrap(),
+            WelcomeAnswer::Read {
+                config: Some(cfg),
+                revision: 7
+            }
+        );
+        let sent = t.sent.lock().unwrap();
+        assert_eq!(
+            (sent[0].operation, &sent[0].args[..]),
+            (101, &[BotArg::Uint(5)][..])
+        );
+        drop(sent);
+        let t = fake(|_| ok(Some(7), vec![0x80]));
+        let ops = BotOperations::new(COMMUNITY, t);
+        assert_eq!(
+            run(read_welcome(&ops)).unwrap(),
+            WelcomeAnswer::Read {
+                config: None,
+                revision: 7
+            }
+        );
+    }
+
+    #[test]
+    fn a_welcome_answer_without_a_revision_failed() {
+        let t = fake(|_| ok(None, vec![0x80]));
+        let ops = BotOperations::new(COMMUNITY, t);
+        assert_eq!(run(read_welcome(&ops)).unwrap(), WelcomeAnswer::Failed);
+    }
+
+    #[test]
+    fn a_welcome_save_that_returns_data_failed() {
+        let cfg = welcome_cfg();
+        let doc = encode_welcome(&cfg).unwrap();
+        let t = fake(move |_| ok(Some(8), doc.clone()));
+        let ops = BotOperations::new(COMMUNITY, t.clone());
+        assert_eq!(
+            run(save_welcome(&ops, &cfg, 7)).unwrap(),
+            WelcomeAnswer::Failed
+        );
+        assert_eq!(t.sent.lock().unwrap()[0].args[0], BotArg::Uint(7));
+        let t = fake(|_| ok(Some(8), vec![0x80]));
+        let ops = BotOperations::new(COMMUNITY, t);
+        assert_eq!(
+            run(save_welcome(&ops, &cfg, 7)).unwrap(),
+            WelcomeAnswer::Saved { revision: 8 }
+        );
+    }
+
+    #[test]
+    fn a_welcome_conflict_is_status_4() {
+        let cfg = welcome_cfg();
+        for (code, want) in [
+            ("E_CONFLICT", WelcomeAnswer::Conflict),
+            ("E_BUSY", WelcomeAnswer::Failed),
+        ] {
+            let t = fake(move |_| {
+                Ok(SealedAnswer {
+                    status: 409,
+                    body: code.as_bytes().to_vec(),
+                })
+            });
+            let ops = BotOperations::new(COMMUNITY, t);
+            assert_eq!(run(save_welcome(&ops, &cfg, 7)).unwrap(), want);
+        }
+    }
+
+    #[test]
+    fn an_unanswered_welcome_save_is_retried_with_its_request_id() {
+        let cfg = welcome_cfg();
+        let calls = Arc::new(StdMutex::new(0u32));
+        let seen = calls.clone();
+        let t = fake(move |_| {
+            let mut n = seen.lock().unwrap();
+            *n += 1;
+            if *n == 1 {
+                Err(SendError::Timeout)
+            } else {
+                ok(Some(9), vec![0x80])
+            }
+        });
+        let ops = BotOperations::new(COMMUNITY, t.clone());
+        let WelcomeAnswer::Uncertain { request_id } = run(save_welcome(&ops, &cfg, 8)).unwrap()
+        else {
+            panic!("the first save is uncertain");
+        };
+        assert_eq!(
+            run(retry_welcome(&ops, request_id, 2)).unwrap(),
+            WelcomeAnswer::Saved { revision: 9 }
+        );
+        let sent = t.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|c| c.request_id == request_id));
+    }
+
     #[test]
     fn moderation_evidence_is_161_with_revision_zero_first_and_the_receipt_as_16_bytes() {
         let t = fake(|_| ok(None, Vec::new()));
@@ -1491,6 +1811,37 @@ mod tests {
         assert_eq!(sent[0], sent[1]);
         // A request this page never sent is not read.
         assert_eq!(run(ops.read([1; 16], 16)).unwrap(), None);
+    }
+
+    /// Task 30 (R30): a 200 whose body cannot be read is uncertain, never a refusal: the Bot may have acted, so the
+    /// caller keeps its request id for the resend. A refusal stays a refusal.
+    #[test]
+    fn an_accepted_answer_that_cannot_be_read_is_uncertain() {
+        let id = [3u8; 16];
+        let short = Value::Array(vec![Value::Null]).encode();
+        let not_bytes = Value::Array(vec![Value::Null, Value::Uint(1)]).encode();
+        let bad_revision =
+            Value::Array(vec![Value::Text("x".into()), Value::Bytes(vec![])]).encode();
+        for body in [
+            vec![0xff],
+            Value::Uint(1).encode(),
+            short,
+            not_bytes,
+            bad_revision,
+        ] {
+            assert_eq!(
+                app_answer(id, &SealedAnswer { status: 200, body }),
+                Err(OpError::Unreadable { request_id: id })
+            );
+        }
+        let refused = SealedAnswer {
+            status: 409,
+            body: b"E_NOPE".to_vec(),
+        };
+        assert!(matches!(
+            app_answer(id, &refused),
+            Err(OpError::Refused { .. })
+        ));
     }
 
     #[test]

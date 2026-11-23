@@ -46,6 +46,31 @@ pub(super) fn apply(fixture: &ScreenFixture, ids: Ids<'_>, state: &mut AppState)
             }
         }
     }
+    // The same rule for the viewer's DMs: a message another person sent to a DM the route does not show is unread (Task 42).
+    for dm in world
+        .dms
+        .iter()
+        .filter(|d| d.members.iter().any(|m| m == viewer))
+    {
+        let path = format!("dm/{}", dm.id);
+        if fixture.route.contains(&format!("{{{path}}}")) {
+            continue;
+        }
+        let unread = world
+            .messages
+            .iter()
+            .filter(|m| m.channel == path && m.sender != viewer)
+            .count();
+        if unread > 0 {
+            state.unread.insert(
+                ids.dm(&dm.id),
+                BadgeState {
+                    unread: u32::try_from(unread).unwrap_or(u32::MAX),
+                    mentions: 0,
+                },
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -83,6 +108,28 @@ mod tests {
             ("weekly-triage-notes-for-the-whole-collective", 1),
         ];
         assert_eq!(counts(&b), want.map(|(n, c)| (n.to_owned(), c)).to_vec());
+    }
+
+    #[test]
+    fn a_dm_the_route_does_not_show_is_unread_by_what_others_sent_to_it() {
+        // dms/home: Mira wrote in dm/mira, Ada alone in dm/bjorn, and the route is the DM list.
+        let f = load("dms/home.json");
+        let id_of = |name: &str| {
+            f.state
+                .dms
+                .all()
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap()
+                .id
+        };
+        assert_eq!(
+            f.state.unread.get(&id_of("Mira")).map(|b| b.unread),
+            Some(1)
+        );
+        assert_eq!(f.state.unread.get(&id_of("Björn")), None);
+        // dms/conversation shows dm/mira: nothing is unread there.
+        assert!(load("dms/conversation.json").state.unread.is_empty());
     }
 
     #[test]

@@ -60,8 +60,15 @@ only for the person whose track just started, at most once a minute, and only in
 a channel where that person may post. Queuing more tracks, pausing, skipping and
 the other commands stay private.
 
+In the desktop app the "started music" message carries a now-playing card under it: the track, a progress bar, pause,
+skip and stop, the volume and "Up next". When another track plays, the card turns into "played this in {channel}".
+
+![The now-playing card under the Bot's message](screenshots/gpui-music-card.png)
+
 While you are in the voice channel with the bot, the same player sits in your
-voice panel and at the top of the voice stage. Its controls work for DJs, owners
+voice panel and, in the desktop app, in a bar at the top of the voice stage.
+
+![The voice stage with the now-playing bar](screenshots/gpui-music-stage.png) Its controls work for DJs, owners
 and administrators who are in that voice channel; anyone else sees a note saying
 why. Commands target the voice channel the requester joined. Playback changes
 require **Control music (DJ)** in that voice channel (owners and administrators have

@@ -26,13 +26,49 @@ use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING_WIDE, focus_ring};
 use crate::text::{line, line_height, paragraph};
-use crate::tokens::{color, font, radius, text};
+use crate::tokens::{color, font, motion, radius, text};
 
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 struct Memory {
     panel: FocusHandle,
     focus: OpenFocus,
+    /// Whether this frame arrived as a handoff from the other settings frame, decided when it first drew (SettingsFrame.css:6
+    /// `data-handoff`): its panel then has no entrance, for as long as this frame stays.
+    handoff: Option<bool>,
+}
+
+/// The windows whose next settings frame arrives as the other one's replacement (SettingsFrame.css:6 `data-handoff`).
+#[derive(Default)]
+struct Handoffs {
+    pending: std::collections::HashSet<gpui::WindowId>,
+    /// What the window's latest settings frame decided when it first drew (for tests).
+    last: std::collections::HashMap<gpui::WindowId, bool>,
+}
+
+impl gpui::Global for Handoffs {}
+
+/// Marks that the settings frame `window` draws next replaces the one it draws now (the server settings handing over to the
+/// user settings or the other way): that frame has no entrance. Call it where the host opens the other frame.
+pub fn mark_handoff(window: &Window, cx: &mut App) {
+    cx.default_global::<Handoffs>()
+        .pending
+        .insert(window.window_handle().window_id());
+}
+
+/// Takes the mark of `window`: whether the frame drawing now is the arriving half of a handoff.
+fn take_handoff(window: &Window, cx: &mut App) -> bool {
+    cx.default_global::<Handoffs>()
+        .pending
+        .remove(&window.window_handle().window_id())
+}
+
+/// Whether the latest settings frame drawn in `window` arrived as a handoff (`None` before any), for tests.
+pub fn last_frame_was_handoff(window: &Window, cx: &App) -> Option<bool> {
+    cx.try_global::<Handoffs>()?
+        .last
+        .get(&window.window_handle().window_id())
+        .copied()
 }
 
 impl HasOpenFocus for Memory {
@@ -179,7 +215,7 @@ fn header_at(title: impl Into<SharedString>, sub: Option<&str>, measure: f32) ->
                 .children(paragraph(
                     sub,
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::FG_2,
                     measure,
                 )),
@@ -255,12 +291,21 @@ impl RenderOnce for SettingsFrame {
         let memory = window.use_keyed_state((self.id.clone(), "frame"), cx, |_, cx| Memory {
             panel: cx.focus_handle().tab_stop(true),
             focus: OpenFocus::default(),
+            handoff: None,
         });
         let panel = memory.read(cx).panel.clone();
         sync_open_focus(&memory, self.open, &panel, panel.clone(), window, cx);
         let root = div().id(self.id.clone());
         if !self.open {
             return root.size_0().into_any_element();
+        }
+        // Decided once, when this frame first draws: the mark is read and cleared then, so it is no timing guess.
+        let first = memory.read(cx).handoff.is_none();
+        let marked = first && take_handoff(window, cx);
+        let handoff = memory.update(cx, |m, _| *m.handoff.get_or_insert(marked));
+        if first {
+            let key = window.window_handle().window_id();
+            cx.default_global::<Handoffs>().last.insert(key, handoff);
         }
 
         let on_close = self.on_close;
@@ -328,7 +373,9 @@ impl RenderOnce for SettingsFrame {
                 .px(px(40.0))
                 .pt(px(36.0))
                 .pb(px(60.0))
-                .child(
+                // SettingsFrame.css:30: the section rises in (`d-up` over `--duration-slow`) each time a section opens, not
+                // when its own content redraws: the entrance is keyed to the section's title.
+                .child(crate::motion::up_in(
                     div()
                         .flex()
                         .flex_col()
@@ -336,7 +383,15 @@ impl RenderOnce for SettingsFrame {
                         .w_full()
                         .max_w(px(section_width(self.wide)))
                         .children(self.body),
-                ),
+                    ElementId::from(SharedString::from(format!(
+                        "settings-section-{}",
+                        self.title
+                    ))),
+                    std::time::Duration::ZERO,
+                    motion::SLOW,
+                    motion::EASE_OUT,
+                    cx,
+                )),
         );
         if let Some(footer) = self.footer {
             pane = pane.child(
@@ -399,7 +454,7 @@ impl RenderOnce for SettingsFrame {
             .justify_center()
             .bg(color::BG)
             .occlude()
-            .child(
+            .child(crate::motion::modal_in_unless(
                 div()
                     .id((self.id.clone(), "panel"))
                     .modal_dialog(self.title.clone())
@@ -425,7 +480,12 @@ impl RenderOnce for SettingsFrame {
                     .child(side)
                     .child(pane)
                     .child(close),
-            );
+                // SettingsFrame.css:5: the panel's `d-modal` over `--duration-modal`; none for a handoff (css:6).
+                (self.id.clone(), "panel-enter"),
+                motion::MODAL,
+                handoff,
+                cx,
+            ));
         deferred(frame).with_priority(8).into_any_element()
     }
 }
@@ -438,5 +498,25 @@ mod tests {
     fn the_content_column_is_720_or_1024_wide() {
         assert_eq!(section_width(false), 720.0);
         assert_eq!(section_width(true), 1024.0);
+    }
+
+    /// SettingsFrame.css:6: a frame opened as the other's replacement (marked) has no entrance and clears the mark; one opened
+    /// fresh has none to take.
+    #[gpui::test]
+    fn the_mark_is_taken_once_by_the_arriving_frame(cx: &mut gpui::TestAppContext) {
+        let window = cx.add_empty_window();
+        assert!(
+            !window.update(|w, cx| take_handoff(w, cx)),
+            "a fresh open has no mark"
+        );
+        window.update(|w, cx| mark_handoff(w, cx));
+        assert!(
+            window.update(|w, cx| take_handoff(w, cx)),
+            "the arriving frame takes it"
+        );
+        assert!(
+            !window.update(|w, cx| take_handoff(w, cx)),
+            "and it is gone"
+        );
     }
 }

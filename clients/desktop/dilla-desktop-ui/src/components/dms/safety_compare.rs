@@ -13,12 +13,13 @@ use gpui::{
 
 use crate::a11y::{Accessible, Role};
 use crate::components::button::Button;
+use crate::components::check_list::check_box;
 use crate::components::qr_code::QrCode;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::text::line;
+use crate::tokens::{color, font, text};
 
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
@@ -132,14 +133,14 @@ impl SafetyCompareBody {
 fn para(text_: SharedString, colour: gpui::Hsla) -> gpui::Div {
     div()
         .text_size(text::SM)
-        .line_height(px(line_height(text::SM, 1.5)))
+        .line_height(px(crate::text::root_line_height(text::SM)))
         .text_color(colour)
         .child(text_)
 }
 
 impl RenderOnce for SafetyCompareBody {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let lh = line_height(text::SM, 1.5);
+        let lh = crate::text::root_line_height(text::SM);
         let mut body = div()
             .id("safety-compare")
             .flex()
@@ -248,21 +249,6 @@ impl RenderOnce for SafetyCompareBody {
             );
         }
         let (confirm_label, checked, on_confirm) = self.confirm;
-        let mut box_ = div()
-            .size(px(CHECK))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(radius::SM)
-            .border_1()
-            .border_color(color::CONTROL_EDGE);
-        if checked {
-            box_ = box_.bg(color::ACCENT).border_color(color::ACCENT).child(
-                Icon::new(IconName::Check)
-                    .size(px(14.0))
-                    .color(color::ACCENT_INK),
-            );
-        }
         actions = actions.child(
             div()
                 .id("safety-confirm")
@@ -275,7 +261,7 @@ impl RenderOnce for SafetyCompareBody {
                 .cursor_pointer()
                 .focus_visible(|s| s.shadow(focus_ring()))
                 .on_click(on_confirm)
-                .child(box_)
+                .child(check_box("safety-confirm-box", checked, false))
                 .child(line(confirm_label, text::SM, lh, color::FG)),
         );
         body.child(actions)

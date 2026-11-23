@@ -1,24 +1,34 @@
-//! Screens and windows through libwebrtc's desktop capturer (see the module docs of [`crate::sources`]).
+//! Screens and windows through libwebrtc's desktop capturer, and on macOS through ScreenCaptureKit directly (see the
+//! module docs of [`crate::sources`]).
 //!
 //! - [`portal`]: Linux on Wayland, where the XDG ScreenCast portal is the only chooser (beta.5 `screenPortal`): there
 //!   is no list, [`open`] with no source opens the portal's own dialog, and its Cancel is [`OpenError::Cancelled`].
-//! - Elsewhere [`list`] names the screens and windows, [`thumbnail`] grabs one frame of a source for the picker, and
-//!   [`open`] captures the chosen one.
+//! - Elsewhere [`list`] names the screens and windows, [`snapshot`] lists them with a thumbnail each for the picker
+//!   ([`thumbnail`] grabs one frame of a source), and [`open`] captures the chosen one.
+//! - macOS (GPUI gaps Task 45, D22): Dilla's own picker, as on X11 and Windows, through webrtc-sys's `dilla_screen`
+//!   bridge (`super::desktop_mac`): `SCShareableContent` lists, an own `SCStream` captures. Listing needs Screen
+//!   Recording; without it [`snapshot`] says the system refused ([`Snapshot::denied`]).
 //!
 //! The capturer is used on one thread only (libwebrtc's desktop capturers are not thread-safe): each [`DesktopCapture`]
-//! owns a thread that creates it, pulls a frame per interval and keeps the newest. A permanent capture error (the window
-//! closed, the portal session ended, the person cancelled the portal) ends the source.
+//! owns a thread that creates it, pulls a frame per interval and keeps the newest (on macOS the thread holds the
+//! stream, whose frames arrive on its own queue). A permanent capture error (the window closed, the portal session
+//! ended, the person cancelled the portal) ends the source.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_os = "macos"))]
+use std::time::Instant;
 
+#[cfg(not(target_os = "macos"))]
 use livekit::webrtc::desktop_capturer::{
     CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions, DesktopFrame,
 };
 
 use super::{Latest, OpenError};
-use crate::capture_source::{CaptureSource, Frame, PixelFormat, Pull, ShareKind};
+#[cfg(not(target_os = "macos"))]
+use crate::capture_source::PixelFormat;
+use crate::capture_source::{CaptureSource, Frame, Pull, ShareKind};
 
 /// A screen or a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -34,6 +44,9 @@ pub struct DesktopSource {
     pub kind: SourceKind,
     pub id: u64,
     pub title: String,
+    /// The window's owning process as the system's window list gave it (macOS, Task 45); `None` for a screen and on
+    /// Linux and Windows, where `window_owner_pid` asks the system instead. Never shown, never leaves the process.
+    pub owner: Option<u32>,
 }
 
 /// The longest wait for a chosen source's first frame (beta.5's broker gave a start 15 s).
@@ -42,28 +55,26 @@ pub const START_WAIT: Duration = Duration::from_secs(15);
 pub const PORTAL_WAIT: Duration = Duration::from_secs(120);
 
 /// Whether the system chooses the source instead of Dilla's picker: Linux on Wayland (the XDG portal, beta.5's
-/// `screenPortal`), and macOS (ScreenCaptureKit's own picker: libwebrtc's ScreenCaptureKit capturer lists no displays
-/// without it, so there is nothing to draw thumbnails of).
+/// `screenPortal`). macOS has Dilla's own picker since Task 45 (D22), as X11 and Windows do.
 pub fn portal() -> bool {
     portal_in(|k| std::env::var(k).ok())
 }
 
 fn portal_in(env: impl Fn(&str) -> Option<String>) -> bool {
-    cfg!(target_os = "macos")
-        || (cfg!(target_os = "linux")
-            && (env("XDG_SESSION_TYPE").as_deref() == Some("wayland")
-                || env("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())))
+    cfg!(target_os = "linux")
+        && (env("XDG_SESSION_TYPE").as_deref() == Some("wayland")
+            || env("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn options(kind: Option<SourceKind>) -> DesktopCapturerOptions {
     let source_type = match kind {
         Some(SourceKind::Screen) => DesktopCaptureSourceType::Screen,
         Some(SourceKind::Window) => DesktopCaptureSourceType::Window,
-        // The system's one dialog offers screens and windows together (Chromium's "generic" capture): the XDG portal,
-        // ScreenCaptureKit's picker (allowed by default in `DesktopCapturerOptions`).
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        // The XDG portal's one dialog offers screens and windows together (Chromium's "generic" capture).
+        #[cfg(target_os = "linux")]
         None => DesktopCaptureSourceType::Generic,
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(not(target_os = "linux"))]
         None => DesktopCaptureSourceType::Screen,
     };
     let mut o = DesktopCapturerOptions::new(source_type);
@@ -71,23 +82,152 @@ fn options(kind: Option<SourceKind>) -> DesktopCapturerOptions {
     o
 }
 
-/// The screens or windows that can be shared now (empty under the portal, or when the system offers none).
+/// The screens or windows that can be shared now (empty under the portal, without Screen Recording on macOS, or when
+/// the system offers none).
 pub fn list(kind: SourceKind) -> Vec<DesktopSource> {
     if portal() {
         return Vec::new();
     }
-    let Some(capturer) = DesktopCapturer::new(options(Some(kind))) else {
-        return Vec::new();
-    };
-    capturer
-        .get_source_list()
-        .into_iter()
-        .map(|s| DesktopSource {
-            kind,
-            id: s.id(),
-            title: s.title(),
-        })
-        .collect()
+    #[cfg(target_os = "macos")]
+    {
+        super::desktop_mac::list(kind)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let Some(capturer) = DesktopCapturer::new(options(Some(kind))) else {
+            return Vec::new();
+        };
+        capturer
+            .get_source_list()
+            .into_iter()
+            .map(|s| DesktopSource {
+                kind,
+                id: s.id(),
+                title: s.title(),
+                owner: None,
+            })
+            .collect()
+    }
+}
+
+/// What the picker shows: every screen, then every window, at most `max`, each with a thumbnail fitting
+/// `max_w` x `max_h` (`None`: it gave none), and whether the system refused the listing (macOS without Screen
+/// Recording: then `sources` is empty).
+#[derive(Default)]
+pub struct Snapshot {
+    pub sources: Vec<(DesktopSource, Option<Frame>)>,
+    pub denied: bool,
+}
+
+/// The picker's enumeration ([`Snapshot`]). Linux and Windows: [`list`] the screens, then the windows, and take one
+/// [`thumbnail`] each; never denied. macOS: `desktop_mac::snapshot` (`SCScreenshotManager` thumbnails on 14+, one
+/// captured frame on 13). Empty under the portal. Blocking: call it off the UI thread.
+pub fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
+    if portal() {
+        return Snapshot::default();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        super::desktop_mac::snapshot(max, max_w, max_h)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Snapshot {
+            sources: [SourceKind::Screen, SourceKind::Window]
+                .into_iter()
+                .flat_map(list)
+                .take(max)
+                .map(|source| {
+                    let thumbnail = thumbnail(&source, max_w, max_h);
+                    (source, thumbnail)
+                })
+                .collect(),
+            denied: false,
+        }
+    }
+}
+
+/// Asks for what listing needs, from the picker's open (a press on the focused window came first). macOS: Screen
+/// Recording, whose system prompt shows only the first time in a process (`dilla_screen_access(true)`); the answer is
+/// whether it is granted now (a grant needs a relaunch to count). Elsewhere true. Never blocks long; never on the UI
+/// thread all the same.
+pub fn request_access() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        super::desktop_mac::request_access()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// The process that owns a shared window, for its sound (Task 44). `None` for a screen, under the portal (Linux on
+/// Wayland: the system's dialog chooses and Dilla never holds a window id), and when the system does not say.
+///
+/// macOS (Task 45): the owner the window list carried (`SCWindow.owningApplication`, the WindowServer's record), with
+/// no system call; the share is checked against that same list.
+///
+/// Blocking (an X11 round trip): call it off the UI thread.
+pub fn window_owner_pid(source: &DesktopSource) -> Option<u32> {
+    if source.kind != SourceKind::Window || portal() {
+        return None;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        x11_client_pid(u32::try_from(source.id).ok()?)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        hwnd_pid(source.id)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        source.owner.filter(|&pid| pid > 1)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// The process behind an X11 client window, from the X server's own record of the client's socket peer (XRes 1.2
+/// `LOCAL_CLIENT_PID`), so a window cannot claim another process's pid. `_NET_WM_PID` is client-written and is
+/// deliberately not read. No XRes 1.2, a remote client or any error is `None`.
+#[cfg(target_os = "linux")]
+fn x11_client_pid(window: u32) -> Option<u32> {
+    use x11rb::protocol::res::{ClientIdMask, ClientIdSpec, ConnectionExt};
+    let (conn, _) = x11rb::rust_connection::RustConnection::connect(None).ok()?;
+    let reply = conn
+        .res_query_client_ids(&[ClientIdSpec {
+            client: window,
+            mask: ClientIdMask::LOCAL_CLIENT_PID,
+        }])
+        .ok()?
+        .reply()
+        .ok()?;
+    let pid = *reply.ids.first()?.value.first()?;
+    (pid != 0).then_some(pid)
+}
+
+/// The process of a window handle; `None` when the window is gone or the system gives no process. Store (UWP) windows
+/// belong to `ApplicationFrameHost.exe`, which never plays, so they fall back to no application (documented, not
+/// worked around).
+#[cfg(target_os = "windows")]
+#[allow(unsafe_code)]
+fn hwnd_pid(hwnd: u64) -> Option<u32> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
+    let hwnd = HWND(hwnd as usize as *mut _);
+    // SAFETY: both calls take a handle value only; a stale or invalid one answers false or 0.
+    unsafe {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return None;
+        }
+        let mut pid = 0u32;
+        let thread = GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        (thread != 0 && pid != 0).then_some(pid)
+    }
 }
 
 /// One frame of `source`, scaled to fit `max_w` x `max_h` (RGBA), for the picker's tile; `None` when the source gives
@@ -178,6 +318,7 @@ impl CaptureSource for DesktopCapture {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn copy(frame: &DesktopFrame) -> Option<Frame> {
     let (w, h) = (
         u32::try_from(frame.width()).ok()?,
@@ -217,12 +358,13 @@ pub fn open(
     let latest = Latest::default();
     let stop = Arc::new(AtomicBool::new(false));
     let fps = Arc::new(AtomicU32::new(fps.clamp(1, 60)));
-    let (kind, id) = (source.map(|s| s.kind), source.map(|s| s.id));
+    let kind = source.map(|s| s.kind);
     let thread = {
         let (latest, stop, fps) = (latest.clone(), stop.clone(), fps.clone());
+        let source = source.cloned();
         std::thread::Builder::new()
             .name("dilla-screen".to_owned())
-            .spawn(move || run(kind, id, &latest, &stop, &fps))
+            .spawn(move || run(source, &latest, &stop, &fps))
     };
     if let Err(e) = thread {
         return Err(OpenError::Unavailable(e.to_string()));
@@ -239,13 +381,22 @@ pub fn open(
     Ok(capture)
 }
 
-fn run(
-    kind: Option<SourceKind>,
-    id: Option<u64>,
-    latest: &Latest,
-    stop: &AtomicBool,
-    fps: &AtomicU32,
-) {
+/// The capture thread on macOS: an own `SCStream` (`super::desktop_mac`). There is no portal there, so a source was
+/// always chosen.
+#[cfg(target_os = "macos")]
+fn run(source: Option<DesktopSource>, latest: &Latest, stop: &AtomicBool, fps: &AtomicU32) {
+    match source {
+        Some(source) => super::desktop_mac::run(&source, latest, stop, fps),
+        None => latest.end(),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run(source: Option<DesktopSource>, latest: &Latest, stop: &AtomicBool, fps: &AtomicU32) {
+    let (kind, id) = (
+        source.as_ref().map(|s| s.kind),
+        source.as_ref().map(|s| s.id),
+    );
     #[cfg(target_os = "linux")]
     let glib = super::glib::ThreadContext::push();
     let Some(mut capturer) = DesktopCapturer::new(options(kind)) else {
@@ -297,9 +448,10 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture_source::PixelFormat;
 
     #[test]
-    fn the_system_chooses_on_wayland_and_macos_only() {
+    fn the_system_chooses_on_wayland_only() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
             move |k: &str| {
                 pairs
@@ -308,21 +460,15 @@ mod tests {
                     .map(|(_, v)| (*v).to_owned())
             }
         };
+        // macOS has Dilla's own picker (D22): the system never chooses there, whatever the environment says.
         let linux = cfg!(target_os = "linux");
-        let mac = cfg!(target_os = "macos");
-        assert_eq!(
-            portal_in(env(&[("XDG_SESSION_TYPE", "wayland")])),
-            linux || mac
-        );
-        assert_eq!(
-            portal_in(env(&[("WAYLAND_DISPLAY", "wayland-0")])),
-            linux || mac
-        );
-        assert_eq!(
-            portal_in(env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", ":0")])),
-            mac
-        );
-        assert_eq!(portal_in(env(&[("WAYLAND_DISPLAY", "")])), mac);
+        assert_eq!(portal_in(env(&[("XDG_SESSION_TYPE", "wayland")])), linux);
+        assert_eq!(portal_in(env(&[("WAYLAND_DISPLAY", "wayland-0")])), linux);
+        assert!(!portal_in(env(&[
+            ("XDG_SESSION_TYPE", "x11"),
+            ("DISPLAY", ":0")
+        ])));
+        assert!(!portal_in(env(&[("WAYLAND_DISPLAY", "")])));
     }
 
     #[test]
@@ -350,6 +496,69 @@ mod tests {
         assert_eq!(&t.data, &[0, 0, 255, 255, 255, 0, 0, 255]);
         let same = fit_rgba(&f, 320, 180);
         assert_eq!((same.width, same.height), (4, 2), "never scaled up");
+    }
+
+    #[test]
+    fn a_screen_has_no_window_owner() {
+        let screen = DesktopSource {
+            kind: SourceKind::Screen,
+            id: 1,
+            title: "Screen 1".to_owned(),
+            // Even with an owner (none is listed for a screen), a screen brings no window's sound.
+            owner: Some(4242),
+        };
+        assert_eq!(window_owner_pid(&screen), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_window_s_listed_owner_is_its_owner_on_macos() {
+        let window = DesktopSource {
+            kind: SourceKind::Window,
+            id: 7,
+            title: "Notes".to_owned(),
+            owner: Some(4242),
+        };
+        assert_eq!(window_owner_pid(&window), Some(4242));
+        let unowned = DesktopSource {
+            owner: None,
+            ..window
+        };
+        assert_eq!(window_owner_pid(&unowned), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs an X11 display: DISPLAY set (Xorg or Xwayland with X-Resource)"]
+    fn an_x11_window_s_owner_is_the_process_that_made_it() {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{ConnectionExt, CreateWindowAux, WindowClass};
+        let (conn, screen) = x11rb::connect(None).expect("an X11 display");
+        let root = conn.setup().roots[screen].root;
+        let win = conn.generate_id().expect("an id");
+        conn.create_window(
+            0,
+            win,
+            root,
+            0,
+            0,
+            8,
+            8,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .expect("create")
+        .check()
+        .expect("created");
+        assert_eq!(x11_client_pid(win), Some(std::process::id()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_window_that_is_gone_has_no_owner() {
+        assert_eq!(hwnd_pid(1), None);
     }
 
     #[test]

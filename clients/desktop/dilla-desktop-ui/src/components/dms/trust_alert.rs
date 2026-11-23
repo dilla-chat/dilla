@@ -54,11 +54,12 @@ impl TrustAlert {
 }
 
 impl RenderOnce for TrustAlert {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tone = BannerTone::Danger;
         let accent = tone.accent();
-        let density = Density::Regular;
-        let lh = line_height(text::SM, 1.5);
+        // A Banner: the window's density steps its padding, and its text takes the root's `--line-height`.
+        let density = Density::of(window, cx);
+        let lh = line_height(text::SM, density.line_height());
         let glyph = tone.glyph().map(|icon| {
             div()
                 .flex_none()

@@ -988,6 +988,7 @@ mod tests {
             status: 429,
             code: Some("E_RATE_LIMITED".into()),
             retry_after_ms,
+            rule: None,
         };
         assert!(matches!(
             http_error(&st(Some(30_000))),

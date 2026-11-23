@@ -171,16 +171,7 @@ impl Threads {
     /// fills when the read answers. A second thread in the same client closes the first (the worker keeps one open).
     pub fn open(&self, channel: ChannelId, root: MessageId) -> Done<()> {
         let open = OpenThread { channel, root };
-        self.inner.publish(move |s| {
-            if let Some(old) = s.threads.open
-                && old.root != root
-            {
-                s.threads.threads.remove(&old.root);
-            }
-            s.threads.open = Some(open);
-            s.threads.last_open = Some(open);
-            s.threads.tracked.insert(channel);
-        });
+        self.inner.publish(move |s| show(s, open));
         self.start_loop();
         let (inner, me) = (self.inner.clone(), self.me.clone());
         self.inner.spawn(async move {
@@ -208,11 +199,7 @@ impl Threads {
     ///
     /// [`ThreadState::last_open`]: crate::state::threads::ThreadState::last_open
     pub fn close(&self) {
-        self.inner.publish(|s| {
-            if let Some(open) = s.threads.open.take() {
-                s.threads.threads.remove(&open.root);
-            }
-        });
+        self.inner.publish(hide);
     }
 
     /// Reopens the thread the aside showed last (the header's "Threads" button), if any.
@@ -301,6 +288,17 @@ impl Threads {
     /// Posts `text` in `channel` as a reply to `to`. Answers the message id once the post is in the outbox.
     pub fn reply(&self, channel: ChannelId, to: MessageId, text: String) -> Done<MessageId> {
         self.send(channel, Some(to), None, text)
+    }
+
+    /// Posts `text` in the thread of `root` as a reply to `to` (`/reply` in a thread composer).
+    pub fn reply_in_thread(
+        &self,
+        channel: ChannelId,
+        root: MessageId,
+        to: MessageId,
+        text: String,
+    ) -> Done<MessageId> {
+        self.send(channel, Some(to), Some(root), text)
     }
 
     /// Posts `text` in the thread of `root`.
@@ -691,6 +689,29 @@ async fn refresh(inner: &Arc<Inner>, me: &PerClient, extra: Option<ChannelId>) {
     }
 }
 
+/// The aside shows `open` ([`Threads::open`]). A thread it showed before, if another, is forgotten: what was read of it,
+/// and its root card's poll checks, so a later open reads the poll again as the web's remounted card does (the log's
+/// checks of the post stay).
+fn show(s: &mut AppState, open: OpenThread) {
+    if let Some(old) = s.threads.open
+        && old.root != open.root
+    {
+        s.threads.threads.remove(&old.root);
+        s.bot.forget_root_checks(old.root);
+    }
+    s.threads.open = Some(open);
+    s.threads.last_open = Some(open);
+    s.threads.tracked.insert(open.channel);
+}
+
+/// The aside closes ([`Threads::close`]): what it read of its thread, and its root card's poll checks, are forgotten.
+fn hide(s: &mut AppState) {
+    if let Some(open) = s.threads.open.take() {
+        s.threads.threads.remove(&open.root);
+        s.bot.forget_root_checks(open.root);
+    }
+}
+
 /// `newest` (the page just read) with the earlier pages `current` already holds in front of it.
 fn with_earlier(mut newest: ThreadData, current: Option<&ThreadData>) -> ThreadData {
     let Some(current) = current else {
@@ -741,6 +762,32 @@ mod tests {
             Value::Array(vec![Value::Uint(c), Value::Uint(t)])
         }));
         Value::Array(cols)
+    }
+
+    /// The web's `PollCard` state goes with the card: closing the pane, or showing another thread in it, drops the shown
+    /// root card's poll checks (reopening reads the poll again), and never the log's checks of the same post.
+    #[test]
+    fn leaving_a_thread_drops_its_root_cards_poll_checks() {
+        use crate::state::bot::PollCheck;
+        let channel = ChannelId([1; 16]);
+        let (a, b) = (MessageId([0xa; 16]), MessageId([0xb; 16]));
+        let mut s = AppState::default();
+        show(&mut s, OpenThread { channel, root: a });
+        s.bot.root_poll_checks.insert(a, PollCheck::GaveUp(channel));
+        s.bot.poll_checks.insert(a, PollCheck::GaveUp(channel));
+        show(&mut s, OpenThread { channel, root: a });
+        assert_eq!(
+            s.bot.root_poll_checks.get(&a),
+            Some(&PollCheck::GaveUp(channel)),
+            "the same thread again keeps its card"
+        );
+        show(&mut s, OpenThread { channel, root: b });
+        assert_eq!(s.bot.root_poll_checks.get(&a), None, "another thread");
+        s.bot.root_poll_checks.insert(b, PollCheck::Pending);
+        hide(&mut s);
+        assert_eq!(s.bot.root_poll_checks.get(&b), None, "closed");
+        assert_eq!(s.bot.poll_checks.get(&a), Some(&PollCheck::GaveUp(channel)));
+        assert_eq!(s.threads.last_open, Some(OpenThread { channel, root: b }));
     }
 
     #[test]

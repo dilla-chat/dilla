@@ -30,6 +30,13 @@ pub(crate) fn drain_holds() {
     webrtc_sys::dilla_transform::drain();
 }
 
+/// How many frame transformers are alive in this process now (each sender and receiver of every
+/// PeerConnection holds one). A snapshot, for tests and diagnostics only: a call that ended has
+/// released all of its own.
+pub fn live_transformers() -> usize {
+    webrtc_sys::dilla_transform::live_transformers()
+}
+
 /// The receiver transformer attached for exactly this remote audio track object.
 pub(crate) fn receiver_handle_audio(track: &RtcAudioTrack) -> Option<u64> {
     webrtc_sys::dilla_transform::receiver_handle(&track.sys_handle())

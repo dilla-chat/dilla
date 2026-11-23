@@ -6,8 +6,10 @@
 //!   `register_role_panel`: [`dilla_client::features::role_panels`]). No answer in time keeps the request, and Retry
 //!   sends the same request id (the Bot answers it again and never posts twice).
 //!
-//! The boxes are the browser's own `<fieldset>` and checkboxes (the web leaves them unstyled): a 2px edge, the legend on
-//! it, `0.35em 0.75em 0.625em` inside, 13px boxes with `3px 3px 3px 4px` around them, the labels in the body's text.
+//! The boxes are drawn with the design system's `CheckList` (Decision D19, Jonas 2026-11-19), not the browser's own
+//! `<fieldset>` and checkboxes that SelfRolesSection.tsx leaves unstyled: the legend becomes the list's label, the rows
+//! are 32px apart with hairlines. Text and order stay the web's, so this screen's reference is GPUI-only
+//! (`native/server-settings-self-roles`): the prototype has no self-roles page to compare with.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -19,34 +21,24 @@ use dilla_client::state::roles::{RoleId, RoleSummary};
 use dilla_client::state::{AppState, ChannelId, CommunityId};
 use gpui::{
     AnyElement, App, AppContext as _, Entity, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, Window, WindowId, div, px,
+    SharedString, Styled, Window, WindowId, div, px,
 };
 use gpui_component::input::{Input, InputState};
 
 use dilla_desktop_ui::components::button::Button;
+use dilla_desktop_ui::components::check_list::{CheckList, CheckListItem};
 use dilla_desktop_ui::components::select::Select;
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::SettingsRow;
 use dilla_desktop_ui::text::{line, line_height, paragraph};
-use dilla_desktop_ui::tokens::{color, font, radius, text};
+use dilla_desktop_ui::tokens::{color, font, text};
 
 use super::{ensure_loaded, hex, sorted_roles};
 use crate::slots::SlotCx;
 use crate::strings::{t, tf};
 
-/// The browser's `<fieldset>` and checkbox metrics (html.css): `padding: 0.35em 0.75em 0.625em`, `margin: 0 2px`, a 2px
-/// edge; the legend `padding-inline: 2px`; a checkbox 13px with `margin: 3px 3px 3px 4px`.
-const FIELDSET_PAD_TOP_EM: f32 = 0.35;
-const FIELDSET_PAD_X_EM: f32 = 0.75;
-const FIELDSET_PAD_BOTTOM_EM: f32 = 0.625;
-const FIELDSET_MARGIN_X: f32 = 2.0;
-const FIELDSET_EDGE: f32 = 2.0;
-const LEGEND_PAD_X: f32 = 2.0;
-const CHECKBOX: f32 = 13.0;
-const CHECKBOX_MARGIN: f32 = 3.0;
-const CHECKBOX_MARGIN_START: f32 = 4.0;
-/// The tick inside a checked box.
-const CHECK_ICON: f32 = 11.0;
+/// The check lists' width: the section's measure.
+const LIST_WIDTH: f32 = 720.0;
 /// The section header's own 22px is replaced by the siblings' gaps below.
 const NO_GAP: f32 = 0.0;
 /// The emoji `<input maxlength=32>`'s box (a native text input is 20 characters at the UA's 13.33px sans, ~120px).
@@ -192,84 +184,36 @@ fn body_paragraph(s: &str, width: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// A browser checkbox and its label, as `<label><input type="checkbox"> name</label>`.
-fn checkbox(
-    id: String,
+/// A role list as a `CheckList`: one row per role, keyed by the role's hex id, and `on_toggle(role, on)` for a click on
+/// a row that is not disabled. `id` is the list's automation id.
+fn role_list(
+    id: &'static str,
     label: &str,
-    checked: bool,
+    roles: &[(RoleId, String, u32, bool)],
     disabled: bool,
-    on_toggle: impl Fn(bool, &mut Window, &mut App) + 'static,
+    on_toggle: impl Fn(RoleId, bool, &mut App) + 'static,
 ) -> AnyElement {
-    let mut boxed = div()
-        .size(px(CHECKBOX))
-        .ml(px(CHECKBOX_MARGIN_START))
-        .mr(px(CHECKBOX_MARGIN))
-        .my(px(CHECKBOX_MARGIN))
-        .flex_none()
-        .rounded(radius::SM)
-        .border_1()
-        .border_color(color::LINE_STRONG)
-        .bg(if checked {
-            color::ACCENT
-        } else {
-            color::SURFACE_HI
-        });
-    if checked {
-        boxed = boxed.child(
-            dilla_desktop_ui::icon::Icon::new(dilla_desktop_ui::IconName::Check)
-                .size(px(CHECK_ICON))
-                .color(color::ACCENT_INK),
-        );
-    }
-    let mut el = div()
-        .id(SharedString::from(id))
-        .flex()
-        .items_center()
-        .child(boxed)
-        // `<input> {name}`: the space before the name is text.
-        .child(body_line(format!(" {label}"), color::FG));
-    if !disabled {
-        el = el
-            .cursor_pointer()
-            .on_click(move |_, window, cx| on_toggle(!checked, window, cx));
-    }
-    el.into_any_element()
-}
-
-/// A `<fieldset>` with its legend on the top edge.
-fn fieldset(legend: &str, items: Vec<AnyElement>) -> AnyElement {
-    let size = f32::from(text::BASE);
-    let legend_h = size * NORMAL_LINE;
-    div()
-        .relative()
-        .mx(px(FIELDSET_MARGIN_X))
-        // The legend's line sits on the edge: half of it above.
-        .pt(px(legend_h / 2.0))
-        .child(
-            div()
-                .border(px(FIELDSET_EDGE))
-                .border_color(color::FG_STRONG)
-                .pt(px(
-                    legend_h / 2.0 + size * FIELDSET_PAD_TOP_EM - FIELDSET_EDGE
-                ))
-                .px(px(size * FIELDSET_PAD_X_EM))
-                .pb(px(size * FIELDSET_PAD_BOTTOM_EM))
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_x(px(size * 0.6))
-                .children(items),
-        )
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .left(px(size * FIELDSET_PAD_X_EM))
-                .px(px(LEGEND_PAD_X))
-                .bg(color::BG)
-                .child(body_line(legend.to_owned(), color::FG)),
-        )
-        .into_any_element()
+    let items: Vec<CheckListItem> = roles
+        .iter()
+        .map(|(r, name, colour, checked)| {
+            CheckListItem::new(hex(r), name.clone(), *checked)
+                .color(*colour)
+                .disabled(disabled)
+        })
+        .collect();
+    let by_hex: HashMap<String, RoleId> = roles.iter().map(|(r, ..)| (hex(r), *r)).collect();
+    crate::tracked_box(
+        id,
+        div().w(px(LIST_WIDTH)).child(
+            // A list without a role (nothing approved yet) shows its label alone.
+            CheckList::new(id, label.to_owned(), items, "").on_toggle(move |item, on, _w, cx| {
+                if let Some(role) = by_hex.get(item) {
+                    on_toggle(*role, on, cx);
+                }
+            }),
+        ),
+    )
+    .into_any_element()
 }
 
 /// The section (`slots::settings_sections`' Self-assignable roles).
@@ -323,64 +267,57 @@ pub fn section(
             .into_iter()
             .cloned()
             .collect();
-        let items = candidates
+        let rows: Vec<(RoleId, String, u32, bool)> = candidates
             .iter()
-            .map(|r| {
-                let (id, client, now) = (r.id, ctx.client.clone(), approved.clone());
-                checkbox(
-                    format!("self-role-{}", hex(&r.id)),
-                    &r.name,
-                    approved.contains(&r.id),
-                    busy,
-                    move |on, _w, cx| {
-                        let mut next: Vec<RoleId> =
-                            now.iter().copied().filter(|x| *x != id).collect();
-                        if on {
-                            next.push(id);
-                        }
-                        if let Some(client) = &client {
-                            self_roles_job(w, client, cx, move |r| {
-                                Box::pin(
-                                    async move { r.configure_self_roles(community, &next).await },
-                                )
-                            });
-                        }
-                    },
-                )
-            })
+            .map(|r| (r.id, r.name.clone(), r.color, approved.contains(&r.id)))
             .collect();
-        root = root.child(
-            div()
-                .mt(gap(first))
-                .child(fieldset(t("admin.bot.selfRoles.configure"), items)),
+        let (client, now) = (ctx.client.clone(), approved.clone());
+        let list_el = role_list(
+            "self-roles-approve",
+            t("admin.bot.selfRoles.configure"),
+            &rows,
+            busy,
+            move |id, on, cx| {
+                let mut next: Vec<RoleId> = now.iter().copied().filter(|x| *x != id).collect();
+                if on {
+                    next.push(id);
+                }
+                if let Some(client) = &client {
+                    self_roles_job(w, client, cx, move |r| {
+                        Box::pin(async move { r.configure_self_roles(community, &next).await })
+                    });
+                }
+            },
         );
+        root = root.child(div().mt(gap(first)).child(list_el));
         first = false;
     }
     if !list.is_empty() {
-        let items = list
+        let known = state.roles.roles_of(community);
+        let rows: Vec<(RoleId, String, u32, bool)> = list
             .iter()
             .map(|r| {
-                let (id, client) = (r.id, ctx.client.clone());
-                checkbox(
-                    format!("self-pick-{}", hex(&r.id)),
-                    &r.name,
-                    r.self_selected,
-                    busy,
-                    move |on, _w, cx| {
-                        if let Some(client) = &client {
-                            self_roles_job(w, client, cx, move |r| {
-                                Box::pin(async move { r.select_self_role(community, id, on).await })
-                            });
-                        }
-                    },
-                )
+                let colour = known.iter().find(|k| k.id == r.id).map_or(0, |k| k.color);
+                (r.id, r.name.clone(), colour, r.self_selected)
             })
             .collect();
-        root = root.child(
-            div()
-                .mt(gap(first))
-                .child(fieldset(t("admin.bot.selfRoles.select"), items)),
+        let client = ctx.client.clone();
+        let list_el = role_list(
+            "self-roles-mine",
+            t("admin.bot.selfRoles.select"),
+            &rows,
+            busy,
+            move |id, on, cx| {
+                if let Some(client) = &client {
+                    self_roles_job(w, client, cx, move |r| {
+                        Box::pin(async move {
+                            r.select_self_role(community, id, on, request_id()).await
+                        })
+                    });
+                }
+            },
         );
+        root = root.child(div().mt(gap(first)).child(list_el));
         first = false;
     }
     if manages {
@@ -621,7 +558,7 @@ fn publish(
                     u.notice = None;
                     u.error = Some(t("admin.bot.rolePanel.invalid").to_owned());
                 }
-                Err(PanelError::Refused(code)) => {
+                Err(PanelError::Refused(code) | PanelError::Status(code)) => {
                     u.pending = None;
                     u.notice = None;
                     u.error = Some(tf("admin.bot.rolePanel.error", &[("code", &code)]));

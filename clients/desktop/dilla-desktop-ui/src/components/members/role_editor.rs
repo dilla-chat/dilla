@@ -10,9 +10,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, BoxShadow, ClickEvent, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, point, px, rgb,
+    App, ClickEvent, ElementId, Entity, FocusHandle, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, RenderOnce, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, px, rgb,
 };
 use gpui_component::input::InputState;
 
@@ -57,6 +57,27 @@ const ROW_CONTENT_H: f32 = 46.;
 const ROW_INNER_GAP: Pixels = px(12.);
 /// `.d-permission-grid__text { line-height: 1.35 }`.
 const TEXT_LEADING: f32 = 1.35;
+/// A toggle row's switch is centred on its name and description (`.d-toggle`'s grid areas "name sw" "hint sw"). Chromium
+/// truncates the half-difference that centres it onto its 1/64px layout unit: with the name at 16.875px (1080 units) and
+/// one line of description at 14.171875px (907 units), (31.046875 - 24) / 2 is 3.515625 and not the 3.5234375 GPUI keeps,
+/// which lands the switch on 234.5 where the web has 234.484375. The layout snaps to whole px and rounds a tie up, so
+/// GPUI's switch sits a pixel under the web's. A margin of one unit (it also shrinks the switch's outer box, so half of
+/// it is the shift) takes it just under the tie, as the truncation does. It is only a half unit when the description has
+/// an odd number of lines (the name's lines are even units); two lines are 45.21875px and centre exactly.
+const SWITCH_NUDGE: f32 = 1.0 / 64.0;
+/// The text column of a toggle row at the section's width: the editor (the content column less the list and its gap), its
+/// 1px edges, the row's side padding, the gap and the 36px track.
+const TEXT_COLUMN_W: f32 = 720. - 200. - 18. - 2. - 28. - 12. - 36.;
+
+/// How far a row's switch is lifted so that its half-difference truncates as Chromium's does (see [`SWITCH_NUDGE`]).
+fn switch_nudge(hint: &str, text_column: f32) -> f32 {
+    let lines = if hint.is_empty() {
+        0
+    } else {
+        crate::text::wrap_mono(hint, crate::text::columns(text::META, text_column)).len()
+    };
+    if lines % 2 == 1 { SWITCH_NUDGE } else { 0.0 }
+}
 
 /// One role of the list.
 #[derive(Clone, Debug)]
@@ -118,6 +139,7 @@ pub struct RoleEditor {
     name: Entity<InputState>,
     name_read_only: bool,
     name_error: Option<SharedString>,
+    name_overlay: Option<gpui::AnyElement>,
     /// The swatches (value, name); none for @everyone, which has no colour.
     colors: Option<Vec<(u32, SharedString)>>,
     color: u32,
@@ -148,6 +170,7 @@ impl RoleEditor {
             name: name.clone(),
             name_read_only: false,
             name_error: None,
+            name_overlay: None,
             colors: None,
             color: 0,
             on_color: None,
@@ -188,6 +211,12 @@ impl RoleEditor {
 
     pub fn name_read_only(mut self, read_only: bool) -> Self {
         self.name_read_only = read_only;
+        self
+    }
+
+    /// An element laid over the name field's text (the automation build's typed-text probe).
+    pub fn name_overlay(mut self, overlay: impl IntoElement) -> Self {
+        self.name_overlay = Some(overlay.into_any_element());
         self
     }
 
@@ -237,19 +266,30 @@ impl RoleEditor {
 
 /// The chosen swatch's ring: its own colour outside, `--bg` between (the first CSS shadow is painted on top, GPUI paints
 /// them in order).
-fn ring(c: gpui::Hsla) -> Vec<BoxShadow> {
-    let spread = |color, s: f32| BoxShadow {
-        color,
-        offset: point(px(0.), px(0.)),
-        blur_radius: px(0.),
-        spread_radius: px(s),
-        inset: false,
+/// The chosen swatch's ring, `box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--d-swatch)`: a shadow's corners grow with
+/// its spread (the swatch's 6px radius is 8px at the `--bg` ring and 9.5px at the outer one), where GPUI's spread keeps
+/// the element's own radius. So the rings are two rounded squares behind the swatch.
+fn ringed(c: gpui::Hsla, swatch: impl IntoElement) -> impl IntoElement {
+    let layer = |inset: f32, fill: gpui::Hsla| {
+        div()
+            .absolute()
+            .top(px(-inset))
+            .left(px(-inset))
+            .size(SWATCH + px(2. * inset))
+            .rounded(radius::MD + px(inset))
+            .bg(fill)
     };
-    vec![spread(c, RING_OUTER), spread(color::BG, RING_INNER)]
+    div()
+        .relative()
+        .flex_none()
+        .size(SWATCH)
+        .child(layer(RING_OUTER, c))
+        .child(layer(RING_INNER, color::BG))
+        .child(swatch)
 }
 
 impl RenderOnce for RoleEditor {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(mut self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let id_text: SharedString = format!("{:?}", self.id).into();
         let rows_n = self.roles.len() + usize::from(self.on_new.is_some());
         let focus = Rc::new(self.focus);
@@ -314,7 +354,7 @@ impl RenderOnce for RoleEditor {
                         line(
                             role.name.clone(),
                             text::SM,
-                            line_height(text::SM, 1.5),
+                            crate::text::root_line_height(text::SM),
                             color::FG,
                         )
                         .ellipsis(),
@@ -323,7 +363,7 @@ impl RenderOnce for RoleEditor {
                 .child(line(
                     role.count.to_string(),
                     text::META,
-                    line_height(text::META, 1.5),
+                    crate::text::root_line_height(text::META),
                     color::FG_3,
                 ));
             if selected {
@@ -395,7 +435,7 @@ impl RenderOnce for RoleEditor {
                 .child(line(
                     self.labels.new_role.clone(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::ACCENT,
                 ))
                 .relative()
@@ -423,6 +463,9 @@ impl RenderOnce for RoleEditor {
             &self.name,
         )
         .disabled(self.name_read_only);
+        if let Some(overlay) = self.name_overlay.take() {
+            field = field.text_overlay(overlay);
+        }
         if let Some(e) = self.name_error.clone() {
             field = field.error(e);
         }
@@ -453,9 +496,6 @@ impl RenderOnce for RoleEditor {
                     .tab_index(0)
                     .focus_visible(|s| s.shadow(focus_ring()))
                     .tooltip(crate::components::tooltip::tooltip(name.clone(), &[]));
-                if value == chosen {
-                    swatch = swatch.shadow(ring(c));
-                }
                 if let Some(f) = self.on_color.clone() {
                     swatch = swatch.on_click(move |_: &ClickEvent, window, cx| {
                         if value != chosen {
@@ -463,7 +503,11 @@ impl RenderOnce for RoleEditor {
                         }
                     });
                 }
-                group = group.child(swatch);
+                group = group.child(if value == chosen {
+                    ringed(c, swatch).into_any_element()
+                } else {
+                    swatch.into_any_element()
+                });
             }
             head = head.child(
                 div()
@@ -474,7 +518,7 @@ impl RenderOnce for RoleEditor {
                     .child(line(
                         self.labels.color.clone(),
                         text::XS,
-                        line_height(text::XS, 1.5),
+                        crate::text::root_line_height(text::XS),
                         color::FG_2,
                     ))
                     .child(group),
@@ -500,7 +544,7 @@ impl RenderOnce for RoleEditor {
                     line(
                         group.title.to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        crate::text::root_line_height(text::MICRO),
                         color::FG_3,
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -534,7 +578,7 @@ impl RenderOnce for RoleEditor {
             editor = editor.child(line(
                 status,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 if alert { color::DANGER } else { color::FG_2 },
             ));
         }
@@ -614,6 +658,7 @@ fn perm_row(
                     div()
                         .flex_none()
                         .relative()
+                        .mt(px(-switch_nudge(&row.hint, TEXT_COLUMN_W)))
                         .debug_selector({
                             let (key, on) = (row.id.clone(), row.on);
                             move || {
@@ -645,9 +690,25 @@ fn perm_row(
         out = out.child(div().w_full().child(flow_paragraph(
             reason,
             text::META,
-            line_height(text::META, 1.5),
+            crate::text::root_line_height(text::META),
             color::FG_2,
         )));
     }
     out.into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A row with one line of description (the roles fixture: 31.046875px of text, an odd number of layout units, so
+    /// Chromium's centring truncates) lifts its switch; a row of two lines (45.21875px) or none centres exactly and does not.
+    #[test]
+    fn a_single_line_switch_centres_on_its_label() {
+        let hint = "See text and voice channels";
+        assert_eq!(switch_nudge(hint, TEXT_COLUMN_W), SWITCH_NUDGE);
+        let long = "Open the files sent in a channel. Messages sent before someone joins a channel are never shown to them, whatever their roles.";
+        assert_eq!(switch_nudge(long, TEXT_COLUMN_W), 0.0);
+        assert_eq!(switch_nudge("", TEXT_COLUMN_W), 0.0);
+    }
 }

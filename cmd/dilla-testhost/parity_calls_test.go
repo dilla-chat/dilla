@@ -81,6 +81,38 @@ func TestParityCallsDeliverVoiceStateAndRingFrames(t *testing.T) {
 	}
 }
 
+// Task 34: a typing signal goes to its one recipient as dillad's own op 49 payload with typing on, scoped to its channel.
+func TestParityTypingDeliversTheTypingFrame(t *testing.T) {
+	d := &deliveries{}
+	h := parityCalls(func() parityDeliverer { return d })
+	body := `{"to":"` + hexID(1) + `","channel":"` + hexID(9) + `","user":"` + hexID(3) + `","device":"` + hexID(4) + `","expires":1800000010}`
+	if code := post(t, h, "/debug/parity/typing", body); code != http.StatusNoContent {
+		t.Fatalf("typing: %d", code)
+	}
+	if len(d.frames) != 1 || d.to[0] != rep(1) || d.frames[0].Op != gateway.OpTyping {
+		t.Fatalf("typing frames: %+v to %v", d.frames, d.to)
+	}
+	if got := d.frames[0].Scope.Channels; len(got) != 1 || got[0] != rep(9) {
+		t.Fatalf("typing scope %v", got)
+	}
+	want, err := gateway.TypingPayload(rep(9), rep(3), rep(4), true, 1800000010)
+	if err != nil || string(d.frames[0].Payload) != string(want) {
+		t.Fatalf("typing payload %x, want %x (%v)", d.frames[0].Payload, want, err)
+	}
+	for _, bad := range []string{
+		`{"to":"xyz","channel":"` + hexID(9) + `","user":"` + hexID(3) + `","device":"` + hexID(4) + `","expires":1}`,
+		`{"to":"` + hexID(1) + `","channel":"short","user":"` + hexID(3) + `","device":"` + hexID(4) + `","expires":1}`,
+		`not json`,
+	} {
+		if code := post(t, h, "/debug/parity/typing", bad); code != http.StatusBadRequest {
+			t.Fatalf("typing %s: %d", bad, code)
+		}
+	}
+	if len(d.frames) != 1 {
+		t.Fatalf("a refused request delivered frames: %d", len(d.frames))
+	}
+}
+
 func TestParityCallsRefuseBadInput(t *testing.T) {
 	d := &deliveries{}
 	h := parityCalls(func() parityDeliverer { return d })

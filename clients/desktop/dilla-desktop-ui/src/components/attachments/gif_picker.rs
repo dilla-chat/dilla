@@ -5,14 +5,14 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, div, img, px,
+    AnyElement, App, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px,
 };
 
-use super::{LEADING, OnClick};
+use super::OnClick;
 use crate::metrics::LABEL_TRACKING;
-use crate::text::{line, line_height};
-use crate::tokens::{color, radius, text};
+use crate::text::line;
+use crate::tokens::{color, motion, radius, text};
 
 /// `.d-gif-picker`: 23.75rem wide, 0.5rem padding, 0.375rem gaps.
 pub const WIDTH: f32 = 380.0;
@@ -80,7 +80,7 @@ pub struct GifPickerProps {
 }
 
 /// The picker.
-pub fn gif_picker(p: GifPickerProps) -> AnyElement {
+pub fn gif_picker(p: GifPickerProps, cx: &App) -> AnyElement {
     let column = (WIDTH - 2.0 - 2.0 * PAD - (COLUMNS as f32 - 1.0) * GAP) / COLUMNS as f32;
     let dims: Vec<(u32, u32)> = p.tiles.iter().map(|t| (t.width, t.height)).collect();
     let places = place(&dims, column);
@@ -143,12 +143,12 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                 .child(line(
                     label,
                     text::UI,
-                    line_height(text::UI, LEADING),
+                    crate::text::root_line_height(text::UI),
                     color::FG,
                 )),
         );
     }
-    let status_h = line_height(text::SM, LEADING).max(20.0);
+    let status_h = crate::text::root_line_height(text::SM).max(20.0);
     let status = div().min_h(px(20.0)).child(match p.status {
         Some((s, error)) => line(
             s,
@@ -159,7 +159,8 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
         .into_any_element(),
         None => div().into_any_element(),
     });
-    div()
+    // GifPicker.css:2: `d-modal` over `--duration-spin`.
+    let picker = div()
         .id("gif-picker")
         .flex()
         .flex_col()
@@ -185,7 +186,7 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                     line(
                         p.powered,
                         text::CHIP,
-                        line_height(text::CHIP, LEADING),
+                        crate::text::root_line_height(text::CHIP),
                         color::FG_3,
                     )
                     .tracking(LABEL_TRACKING),
@@ -200,8 +201,8 @@ pub fn gif_picker(p: GifPickerProps) -> AnyElement {
                 .child(grid),
         )
         .child(status)
-        .child(foot)
-        .into_any_element()
+        .child(foot);
+    crate::motion::modal_in(picker, "gif-picker-enter", motion::SPIN, cx)
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use super::button::{Button, ButtonVariant, ClickHandler};
-use crate::text::{line, line_height, paragraph};
+use crate::text::{line, paragraph};
 use crate::tokens::{color, font, text};
 
 /// `max-width: 40ch` at the body's 13.5px mono advance.
@@ -101,8 +101,13 @@ impl RenderOnce for EmptyState {
             .child(crate::a11y::heading(
                 2,
                 self.title.clone(),
-                line(self.title, text::LG, line_height(text::LG, 1.5), color::FG)
-                    .weight(font::WEIGHT_DISPLAY),
+                line(
+                    self.title,
+                    text::LG,
+                    crate::text::root_line_height(text::LG),
+                    color::FG,
+                )
+                .weight(font::WEIGHT_DISPLAY),
             ))
             .child(
                 crate::a11y::paragraph(self.body.clone(), div())
@@ -113,7 +118,7 @@ impl RenderOnce for EmptyState {
                     .children(paragraph(
                         &self.body,
                         text::BASE,
-                        line_height(text::BASE, 1.5),
+                        crate::text::root_line_height(text::BASE),
                         color::FG_2,
                         body_width(),
                     )),

@@ -7,6 +7,7 @@ pub mod icon;
 #[rustfmt::skip]
 pub mod icon_names;
 pub mod metrics;
+pub mod motion;
 pub mod roving;
 pub mod text;
 pub mod theme;

@@ -242,13 +242,26 @@ fn publication_community(publication: &[u8]) -> Option<[u8; 16]> {
     a[1].as_bytes()?.try_into().ok()
 }
 
-/// One answer of the Bot (`BotAnswer`), opened.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One answer of the Bot (`BotAnswer`), opened. Its Debug gives the opened body's length only (R21).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Answer {
     pub seq: u32,
     pub status: u16,
     pub body: Vec<u8>,
     pub final_: bool,
+}
+
+impl std::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Answer({}, {}, {} bytes, final: {})",
+            self.seq,
+            self.status,
+            self.body.len(),
+            self.final_
+        )
+    }
 }
 
 /// `decodeBotAnswer`: the sealed plaintext `[status ≤ 65535, body, final 0|1]`.
@@ -313,6 +326,8 @@ pub struct Sealed {
     /// older status never overwrites a newer one.
     reads: Mutex<HashMap<CommunityId, Arc<tokio::sync::Mutex<()>>>>,
     connection: std::sync::atomic::AtomicU64,
+    /// The command memory of this client (Task 30): kept beside the pins, and gone with them at sign-out.
+    memory: Arc<Mutex<super::memory::CommandMemory>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -329,6 +344,7 @@ impl Sealed {
             held: Mutex::default(),
             reads: Mutex::default(),
             connection: std::sync::atomic::AtomicU64::new(0),
+            memory: Arc::default(),
         })
     }
 
@@ -790,10 +806,17 @@ impl Sealed {
         lock(&self.pending).remove(&request_id);
     }
 
-    /// Sign-out, revocation: every reply secret goes, and every held run with it.
+    /// Sign-out, revocation: every reply secret goes, and every held run with it, and the command memory (its drafts and
+    /// attempts).
     pub fn forget_all(&self) {
         lock(&self.held).clear();
         lock(&self.pending).clear();
+        *lock(&self.memory) = super::memory::CommandMemory::default();
+    }
+
+    /// The command memory of this client ([`super::memory`]).
+    pub fn memory(&self) -> Arc<Mutex<super::memory::CommandMemory>> {
+        self.memory.clone()
     }
 
     /// Every gateway ready, loss or refusal starts a new generation: a ready's wait for the structure stops when it ends.

@@ -2145,6 +2145,8 @@ dependencies = [
  "getrandom 0.3.4",
  "hmac 0.13.0",
  "http",
+ "icu_collator",
+ "icu_locale_core",
  "icu_normalizer",
  "image",
  "keyring",
@@ -2238,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "dilla-desktop"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "ashpd",
  "block2 0.6.2",
@@ -2339,6 +2341,7 @@ dependencies = [
  "webrtc-sys",
  "windows 0.62.2",
  "windows-core 0.62.2",
+ "x11rb",
  "zeroize",
 ]
 
@@ -3015,9 +3018,9 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -4471,6 +4474,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "icu_collator"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24cb0205c419b2036da3f9082964905d6849b3f2130dd4a517940c45899a544b"
+dependencies = [
+ "icu_collator_data",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_locale_fallback",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_provider",
+ "smallvec",
+ "utf16_iter",
+ "utf8_iter",
+ "zerovec",
+]
+
+[[package]]
+name = "icu_collator_data"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "183f47e821a327661c1ebe152f61d5b6c2000010d228cadbbf226e0e2b8c2634"
+
+[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5456,7 +5484,7 @@ dependencies = [
 
 [[package]]
 name = "libwebrtc"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "cxx",
  "jni 0.21.1",
@@ -5523,9 +5551,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "livekit"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ae9e2c73d80a565c359ceb014552f84a588f7b14f6817103c1a1715c8cda00c"
+version = "0.11.0"
 dependencies = [
  "bmrng",
  "bytes",
@@ -5552,18 +5578,18 @@ dependencies = [
 
 [[package]]
 name = "livekit-common"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "728a0e2cc2991a3392e2a1c9321b92f3f49d35f02ffc3e071ec75ea66fa9a5bc"
+checksum = "8dc9988885cf3c1ccb622a565f347a4b9e0681c5a0139a5ac58c8c392803469a"
 dependencies = [
  "livekit-protocol",
 ]
 
 [[package]]
 name = "livekit-data-stream"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97cf9d2dc503dc26c365fb90f994e0a5fed0eaf8800cd32abfc53e4645f09c39"
+checksum = "ddf4c804cb77ee305c066e7c0f4e2f8aaf0d91fe44b1d133211cd6875d477b2f"
 dependencies = [
  "async-compression",
  "bmrng",
@@ -5585,9 +5611,9 @@ dependencies = [
 
 [[package]]
 name = "livekit-datatrack"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a610cb4b2a6927fb21dee3d089bfb5d39da1b71de383201a89b7ac9bf80e1c74"
+checksum = "3f5252d30c12ebcf3c75700fd1dbee937b2766c11c2c20dd80c68f9119a94915"
 dependencies = [
  "anyhow",
  "bytes",
@@ -5604,13 +5630,14 @@ dependencies = [
 
 [[package]]
 name = "livekit-net"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ee1131d54701875cf3d0a1ef5ea09f8e328c93afc8845ac65b36cdadf80422"
+checksum = "f0fb7676f2ea3384495fa6d1c56b77305874da9aaacca27e46be78c9410ac35a"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
  "bytes",
+ "flate2",
  "futures-util",
  "http",
  "log",
@@ -5624,9 +5651,9 @@ dependencies = [
 
 [[package]]
 name = "livekit-protocol"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1329f59d49f876eb15aae91b1a6bb72b8d75ea4f9eceba606191af468c2c231d"
+checksum = "c328ca101660ed5cfea2185de9225275f9b513e025d7c42a324a091be1af76d1"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -5645,9 +5672,9 @@ dependencies = [
 
 [[package]]
 name = "livekit-rpc"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64484e0a669d6b6f1ec1572caef775fcab5a67325f3cc41ebc255a86d9e309db"
+checksum = "9e63379493aa0a069fb645aebc703e7e335305a89eb24bef3cc00621cda0763c"
 dependencies = [
  "livekit-common",
  "livekit-data-stream",
@@ -5662,9 +5689,9 @@ dependencies = [
 
 [[package]]
 name = "livekit-signaling"
-version = "0.1.9"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62ffccb3c6dcd01855b2eac592298919048ab261a19d52951c808769b7c9c5db"
+checksum = "592d0b737567e1d4fb845ca010bbcf572e2cc5a1c2ac586afd95ff84030e5f1e"
 dependencies = [
  "base64 0.21.7",
  "device-info",
@@ -10814,9 +10841,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -11281,7 +11308,7 @@ dependencies = [
 
 [[package]]
 name = "webrtc-sys"
-version = "0.3.53"
+version = "0.3.54"
 dependencies = [
  "cc",
  "cxx",

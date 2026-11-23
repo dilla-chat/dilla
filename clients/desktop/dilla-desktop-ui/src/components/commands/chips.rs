@@ -10,11 +10,13 @@ use gpui::{
 use super::halo;
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{MONO_ADVANCE, line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::text::{MONO_ADVANCE, line};
+use crate::tokens::{color, font, motion, radius, text};
 
 /// A chip's height: 26px (`height: 1.625rem`) inside its 1px border.
 pub const CHIP: f32 = 26.0;
+/// `.d-cmd-field__input { padding: 0 0.4375rem }`: 7px each side.
+const INPUT_PAD: f32 = 7.0;
 
 /// `CommandChips`: the `/name` token, then the fields.
 #[derive(IntoElement)]
@@ -42,9 +44,10 @@ impl CommandChips {
 }
 
 impl RenderOnce for CommandChips {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let lh = line_height(text::UI, 1.5);
-        div()
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let lh = crate::text::root_line_height(text::UI);
+        let enter = (self.id.clone(), "enter");
+        let chips = div()
             .id(self.id)
             .flex()
             .flex_1()
@@ -68,7 +71,9 @@ impl RenderOnce for CommandChips {
                         line(self.name, text::UI, lh, color::ACCENT_2).weight(font::WEIGHT_DISPLAY),
                     ),
             )
-            .children(self.fields)
+            .children(self.fields);
+        // CommandPicker.css:31: the chips fade in (`d-fade` over `--duration-tab`, `ease`) when a command is picked.
+        crate::motion::fade_in(chips, enter, motion::TAB, crate::motion::EASE, cx)
     }
 }
 
@@ -133,7 +138,9 @@ impl CommandField {
         self
     }
 
-    /// The input's width: `calc(max(len, placeholder, 4)ch + 1rem)`.
+    /// The input's width as the box is laid out here: `calc(max(len, placeholder, 4)ch + 1rem)` is the web's content width, and
+    /// `.d-cmd-field__input` is content-box (CommandPicker.css:5) with `padding: 0 7px`, so the padding comes on top; this
+    /// box is border-box, which holds the padding inside it.
     pub fn input_width(value: &str, placeholder: &str) -> f32 {
         let longest = value
             .split('\n')
@@ -141,7 +148,7 @@ impl CommandField {
             .max()
             .unwrap_or(0);
         let chars = longest.max(placeholder.chars().count()).max(4);
-        chars as f32 * f32::from(text::INPUT) * MONO_ADVANCE + 16.0
+        chars as f32 * f32::from(text::INPUT) * MONO_ADVANCE + 16.0 + 2.0 * INPUT_PAD
     }
 }
 
@@ -152,7 +159,7 @@ impl RenderOnce for CommandField {
             (true, false) => (color::ACCENT, color::ACCENT_INK, color::ACCENT),
             (false, false) => (color::CONTROL_EDGE_FIELD, color::FG_2, color::HOVER),
         };
-        let lh = line_height(text::META, 1.5);
+        let lh = crate::text::root_line_height(text::META);
         let show_label = !self.ghost && !self.label.is_empty();
         let width = Self::input_width(&self.value, &self.placeholder);
         let value = self.input.unwrap_or_else(|| {
@@ -192,7 +199,7 @@ impl RenderOnce for CommandField {
                     .items_center()
                     .w(px(width))
                     .min_w_0()
-                    .px(px(7.0))
+                    .px(px(INPUT_PAD))
                     .child(value),
             );
         if self.active {
@@ -246,18 +253,19 @@ impl CommandBar {
 
     /// Its height in flow: the 11px line (1.5) and its 6px bottom margin.
     pub fn height() -> f32 {
-        line_height(text::XS, 1.5) + 6.0
+        crate::text::root_line_height(text::XS) + 6.0
     }
 }
 
 impl RenderOnce for CommandBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (fg, icon) = match self.tone {
             BarTone::Info => (color::FG_2, color::ACCENT),
             BarTone::Danger => (color::DANGER, color::DANGER),
         };
-        let lh = line_height(text::XS, 1.5);
-        div()
+        let lh = crate::text::root_line_height(text::XS);
+        let enter = (self.id.clone(), "enter");
+        let bar = div()
             .id(self.id)
             .flex()
             .items_center()
@@ -272,7 +280,16 @@ impl RenderOnce for CommandBar {
                     .min_w_0()
                     .child(line(self.text, text::XS, lh, fg).ellipsis()),
             )
-            .children(self.hint.map(|h| line(h, text::XS, lh, color::FG_3)))
+            .children(self.hint.map(|h| line(h, text::XS, lh, color::FG_3)));
+        // CommandPicker.css:63: the bar rises in (`d-up` over `--duration-turn`, `ease`) when it appears.
+        crate::motion::up_in(
+            bar,
+            enter,
+            std::time::Duration::ZERO,
+            motion::TURN,
+            crate::motion::EASE,
+            cx,
+        )
     }
 }
 
@@ -283,12 +300,12 @@ mod tests {
     #[test]
     fn an_input_is_as_wide_as_its_longest_text_and_at_least_four_characters() {
         let ch = f32::from(text::INPUT) * MONO_ADVANCE;
-        assert_eq!(CommandField::input_width("", ""), 4.0 * ch + 16.0);
-        assert_eq!(CommandField::input_width("in 1 hour", ""), 9.0 * ch + 16.0);
+        assert_eq!(CommandField::input_width("", ""), 4.0 * ch + 30.0);
+        assert_eq!(CommandField::input_width("in 1 hour", ""), 9.0 * ch + 30.0);
         assert_eq!(
             CommandField::input_width("", "bring two ropes"),
-            15.0 * ch + 16.0
+            15.0 * ch + 30.0
         );
-        assert_eq!(CommandField::input_width("ab\nabcdef", ""), 6.0 * ch + 16.0);
+        assert_eq!(CommandField::input_width("ab\nabcdef", ""), 6.0 * ch + 30.0);
     }
 }

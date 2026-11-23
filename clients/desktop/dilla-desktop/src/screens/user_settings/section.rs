@@ -20,12 +20,12 @@ use dilla_desktop_ui::components::banner::{Banner, BannerTone};
 use dilla_desktop_ui::components::button::{Button, ButtonSize, ButtonVariant};
 use dilla_desktop_ui::components::confirm_dialog::{ConfirmDialog, Tone};
 use dilla_desktop_ui::components::dialog::{Dialog, InitialFocus};
+use dilla_desktop_ui::components::settings::frame::SECTION_GAP;
 use dilla_desktop_ui::components::settings::frame::section_header;
 use dilla_desktop_ui::components::settings::row::GroupPosition;
 use dilla_desktop_ui::components::text_field::{Frame, TextField};
 use dilla_desktop_ui::components::toast::show_toast_in;
-use dilla_desktop_ui::metrics::Density;
-use dilla_desktop_ui::text::{flow_paragraph, line, line_height};
+use dilla_desktop_ui::text::{flow_paragraph, line};
 use dilla_desktop_ui::tokens::{color, text};
 
 use super::device_row::DeviceRow;
@@ -82,6 +82,10 @@ pub struct UserSettings {
     load_error: Option<String>,
     // Appearance
     pub(super) appearance_pending: bool,
+    /// The density chosen in a window without a client (a fixture's), shown instead of the store's; `None` with a client.
+    pub(super) local_density: Option<dilla_client::state::profile::DensitySetting>,
+    /// The motion choice kept the same way as [`Self::local_density`].
+    pub(super) local_motion: Option<dilla_client::state::profile::MotionSetting>,
     pub(super) appearance_failed: bool,
     /// The settings host's guard asks for a save (its Save, or leaving with a change still to send): the request comes
     /// back here, where the client is (integration 3: Profile registers with the Task 1b host's `SlotCx::workspace`).
@@ -178,6 +182,8 @@ impl UserSettings {
             plain_error: None,
             load_error: None,
             appearance_pending: false,
+            local_density: None,
+            local_motion: None,
             appearance_failed: false,
             _subscriptions: subs,
         }
@@ -277,13 +283,6 @@ impl UserSettings {
                 .detach();
             }
             _ => {}
-        }
-    }
-
-    pub(super) fn density(&self) -> Density {
-        match self.ctx.state.profile.density {
-            dilla_client::state::profile::DensitySetting::Compact => Density::Compact,
-            dilla_client::state::profile::DensitySetting::Regular => Density::Regular,
         }
     }
 
@@ -596,7 +595,6 @@ impl UserSettings {
 
     fn devices_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let now = self.ctx.clock.now();
-        let density = self.density();
         let rows = self.rows();
         let n = rows.len();
         let this = cx.entity();
@@ -673,7 +671,8 @@ impl UserSettings {
             .w_full()
             .child(section_header(t("devices.title"), Some(t("devices.body"))));
         if let Some(code) = &self.load_error {
-            col = col.child(div().pb(density.group_gap()).child(Banner::new(
+            // The frame steps a section's blocks a fixed 14px apart (`> * + *`), at every density.
+            col = col.child(div().pb(gpui::px(SECTION_GAP)).child(Banner::new(
                 "devices-load-error",
                 BannerTone::Danger,
                 tf("settings.error.other", &[("code", code)]),
@@ -701,13 +700,13 @@ impl UserSettings {
             .child(line(
                 format!("{name} "),
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BASE),
                 color::FG,
             ))
             .child(line(
                 id8,
                 text::BASE,
-                line_height(text::BASE, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::BASE),
                 color::FG_3,
             ))
             .into_any_element()
@@ -799,8 +798,14 @@ impl UserSettings {
         if let Some(e) = self.key_entry.field_error {
             key_field = key_field.error(t(e));
         }
-        let body_line =
-            |s: String| flow_paragraph(s, text::UI, line_height(text::UI, 1.5), color::FG_2);
+        let body_line = |s: String| {
+            flow_paragraph(
+                s,
+                text::UI,
+                dilla_desktop_ui::text::root_line_height(text::UI),
+                color::FG_2,
+            )
+        };
         let mut fields = div()
             .flex()
             .flex_col()

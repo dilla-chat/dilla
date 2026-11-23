@@ -65,6 +65,10 @@ fn main() {
             } else {
                 SourceKind::Screen
             };
+            // macOS: the first run in a process asks for Screen Recording (as the app's picker does on its open).
+            if !desktop::request_access() {
+                println!("no Screen Recording permission: allow it, then run this again");
+            }
             let list = desktop::list(kind);
             for s in &list {
                 let thumb = desktop::thumbnail(s, 320, 180).map(|t| (t.width, t.height));

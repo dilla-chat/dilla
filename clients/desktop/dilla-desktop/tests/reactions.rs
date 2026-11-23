@@ -56,21 +56,30 @@ fn parity_reactions_bar_b() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2392 % (the colour emoji glyphs: the bitmap face scaled to 15px samples otherwise than Skia's, and a chip's width follows the emoji's advance, so some chips' edges sit a device px apart; re-measured in the wave 2 fix round; which advance each side gives the emoji is not measured yet, so the root is still open)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_many_wrapping() {
     parity("many-wrapping");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2331 % (as many-wrapping: the emoji glyphs and the chip edges they move)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_many_wrapping_b() {
     parity("many-wrapping-b");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "parity after T6c: chrome 0.2812 % (the picker grid's colour emoji glyphs, as many-wrapping)"]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "no macOS limit measured yet for the emoji screens (Linux: [linux_screens] in tolerance.toml)"
+)]
 fn parity_reactions_emoji_grid() {
     parity("emoji-grid");
 }
@@ -511,6 +520,22 @@ fn app_chip_click_toggles_the_reaction() {
         ));
     };
     expect(vec![("👍", 2, true)]);
+    // The chip's toggle direction is what Alice's own window knows (`mine`): clicking before it learned the reaction is hers
+    // would add again. The pressed state is on the accessibility tree, so wait for it, never a sleep.
+    let started = std::time::Instant::now();
+    loop {
+        let tree = app.a11y_tree();
+        if tree.by_role("Button").any(|n| {
+            n.toggled.as_deref() == Some("True") && n.name().is_some_and(|l| l.ends_with(", 2"))
+        }) {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "alice's window never showed the chip pressed"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     app.click(&chip);
     expect(vec![("👍", 1, true)]);
     assert_eq!(count(&bob_client), [("👍".to_owned(), 1, true)]);
@@ -573,5 +598,37 @@ fn keyboard_reactions_message_grid_escape_restores_focus() {
         app.focused().as_deref(),
         Some("reaction-m2-add"),
         "the focus returns to the add button that opened it"
+    );
+}
+
+/// A chip is the real button while it pops (Task 36c fix round 3): the web's scaled element is the button, so Tab reaches
+/// it, Enter and Space toggle it and the arrows roam, with motion on and the pop under way, one tab stop per chip. The
+/// hidden full-size copy that holds its place is inert (a hidden element is neither focused nor pressed).
+#[gpui::test]
+fn a_chip_is_keyboard_and_pointer_live_in_the_middle_of_its_pop(cx: &mut TestAppContext) {
+    let (host, cx) = bar_host(cx, true);
+    cx.update(|_, cx| assert!(!cx.reduce_motion(), "motion is on: the chips are popping"));
+    // Mid-pop: a little of the 300ms has passed.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(60));
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    cx.simulate_keystrokes("tab");
+    press(cx, "enter");
+    assert_eq!(host.read_with(cx, |h, _| h.toggled.clone()), ["👍"]);
+    // One tab stop per chip: the next Tab leaves the bar's roving stop, it does not land on a second element of the chip.
+    press(cx, "right");
+    press(cx, "space");
+    assert_eq!(host.read_with(cx, |h, _| h.toggled.clone()), ["👍", "🎉"]);
+    // The pointer presses the first chip, at its centre, while it is still scaling.
+    cx.simulate_click(
+        gpui::point(gpui::px(22.0), gpui::px(15.0)),
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        host.read_with(cx, |h, _| h.toggled.clone()),
+        ["👍", "🎉", "👍"],
+        "a press on a popping chip toggles it"
     );
 }

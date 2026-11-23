@@ -367,8 +367,7 @@ mod tests {
     /// `bundled-sqlcipher-vendored-openssl` put it there).
     #[test]
     fn no_websocket_tls_stack_is_in_the_testkit_dependency_tree() {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-        let out = std::process::Command::new(cargo)
+        let out = crate::nested_cargo::command()
             .args(["tree", "-p", "dilla-testkit", "-e", "normal,build,dev"])
             .args(["--prefix", "none", "--locked", "--offline"])
             .current_dir(env!("CARGO_MANIFEST_DIR"))

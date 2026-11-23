@@ -67,6 +67,10 @@ pub const AVATAR: f32 = 30.0;
 pub const GAP: f32 = 10.0;
 const ROW_TOP: f32 = 7.0;
 const ROW_BOTTOM: f32 = 3.0;
+/// `.d-bot-result__meta`: `margin-top: 3px`, and its line 19px high (the 18px status chip and the baseline-aligned privacy
+/// text and Dismiss button in a flex row).
+const META_GAP: f32 = 3.0;
+const META_H: f32 = 19.0;
 const ROW_RIGHT: f32 = 16.0;
 
 type OnDismiss = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -141,19 +145,26 @@ impl BotResult {
         .len()
         .max(1);
         ROW_TOP
-            + line_height(text::SM, 1.5)
+            + crate::text::root_line_height(text::SM)
             + 1.0
             + lines as f32 * line_height(text::INPUT, 1.55)
-            + 3.0
-            + 18.0
+            + META_GAP
+            + META_H
             + ROW_BOTTOM
     }
 }
 
 impl RenderOnce for BotResult {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (chip_bg, chip_fg) = self.status.chip();
-        let meta_lh = line_height(text::META, 1.5);
+        // BotResult.css: the pending status's icon spins (`d-spin`); a settled result's icon is still and schedules nothing.
+        let status_icon = Icon::new(self.status.icon()).size(px(11.0)).color(chip_fg);
+        let status_icon = if self.status == Status::Pending {
+            crate::motion::spinning(status_icon, (self.id.clone(), "spin"), cx)
+        } else {
+            status_icon.into_any_element()
+        };
+        let meta_lh = crate::text::root_line_height(text::META);
         let avatar = match &self.author {
             Author::Bot { name } => Avatar::new("bot-result-avatar", name.clone())
                 .size(AvatarSize::Msg)
@@ -167,8 +178,13 @@ impl RenderOnce for BotResult {
                 .items_center()
                 .justify_center()
                 .child(
-                    line("D", text::SM, line_height(text::SM, 1.5), color::BRAND_INK)
-                        .weight(font::WEIGHT_DISPLAY),
+                    line(
+                        "D",
+                        text::SM,
+                        crate::text::root_line_height(text::SM),
+                        color::BRAND_INK,
+                    )
+                    .weight(font::WEIGHT_DISPLAY),
                 )
                 .into_any_element(),
         };
@@ -219,8 +235,13 @@ impl RenderOnce for BotResult {
                             .items_center()
                             .gap(px(8.0))
                             .child(
-                                line(name, text::SM, line_height(text::SM, 1.5), color::ACCENT_2)
-                                    .weight(font::WEIGHT_DISPLAY),
+                                line(
+                                    name,
+                                    text::SM,
+                                    crate::text::root_line_height(text::SM),
+                                    color::ACCENT_2,
+                                )
+                                .weight(font::WEIGHT_DISPLAY),
                             )
                             .child(Tag::new("bot-result-tag", TagKind::Bot)),
                     )
@@ -240,9 +261,7 @@ impl RenderOnce for BotResult {
                                     .px(px(6.0))
                                     .rounded(radius::SM)
                                     .bg(chip_bg)
-                                    .child(
-                                        Icon::new(self.status.icon()).size(px(11.0)).color(chip_fg),
-                                    )
+                                    .child(status_icon)
                                     .child(line(self.labels.status, text::META, meta_lh, chip_fg)),
                             )
                             .child(
@@ -289,5 +308,24 @@ impl RenderOnce for BotResult {
                             ),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_meta_line_is_19px_under_a_3px_gap() {
+        assert_eq!(META_GAP + META_H, 22.0);
+        // one body line: the row's padding, the head line, 1px, the line, the meta, the bottom padding.
+        let h = BotResult::height("x", 600.0);
+        let expect = ROW_TOP
+            + crate::text::root_line_height(text::SM)
+            + 1.0
+            + line_height(text::INPUT, 1.55)
+            + 22.0
+            + ROW_BOTTOM;
+        assert_eq!(h, expect);
     }
 }

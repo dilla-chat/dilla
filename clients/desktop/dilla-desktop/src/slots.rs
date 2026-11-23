@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use dilla_client::state::{AppState, Channel, ChannelId, CommunityId, TimelineItem};
 use dilla_client::{Area, Client};
-use gpui::{AnyElement, App, IntoElement, ParentElement, SharedString, Styled, Window, div, px};
+use gpui::{
+    AnyElement, App, FocusHandle, IntoElement, ParentElement, SharedString, Styled, Window, div, px,
+};
 
 use dilla_desktop_ui::IconName;
 
@@ -35,6 +37,9 @@ pub struct SlotCx {
     /// The dirty-draft guard of the settings host that draws a settings section; `None` elsewhere. A section's hook
     /// attaches and publishes through it (the host fills it per render).
     pub workspace: Option<SettingsWorkspace>,
+    /// The shell's composer field, so a banner's action can hand the focus back to it (Shell.tsx `dismissRemoved`);
+    /// `None` outside the shell.
+    pub composer: Option<FocusHandle>,
 }
 
 impl Default for SlotCx {
@@ -46,6 +51,7 @@ impl Default for SlotCx {
             channel: None,
             clock: Clock::Local,
             workspace: None,
+            composer: None,
         }
     }
 }
@@ -101,7 +107,9 @@ pub struct Extra {
     pub height: f32,
 }
 
-/// Under a message's body (after its attachments slot): the attachments (12), the poll card (20), the reactions (10),
+/// Under a message's body (after its attachments slot): the Bot's now-playing card (35, which is a card of the row's grid
+/// in front of the attachments, so it needs to know whether the row is the log's `last`: [`bot_admin::player::music_card`]),
+/// the attachments (12), the poll card (20), the reactions (10),
 /// the thread count (11), a failed send's or an unreadable row's state (Package 10a), in this order, each [`EXTRA_GAP`] below what is above it, but the attachments, which are the
 /// slot's content (MessageRow.tsx `.d-message-row__attachments`: the timeline's slot already holds its grid gap and
 /// margin). Answers the stack and its height (the sum of the parts'; 0 when every guest has nothing), which the timeline
@@ -109,12 +117,14 @@ pub struct Extra {
 pub fn message_extras(
     item: &TimelineItem,
     ctx: &SlotCx,
+    last: bool,
     window: &mut Window,
     cx: &mut App,
 ) -> (AnyElement, f32) {
     let slot = attachments::attachment_cards(item, ctx, window, cx);
     let parts = [
-        commands::poll_card(item, ctx, window, cx),
+        bot_admin::player::music_card(item, ctx, last, window, cx),
+        commands::poll_card_below_body(item, ctx, last, window, cx),
         reactions::reaction_bar(item, ctx, window, cx),
         threads::thread_count(item, ctx, window, cx),
         crate::screens::messages::send_state::send_state(item, ctx, window, cx),
@@ -185,15 +195,21 @@ pub fn message_actions(item: &TimelineItem, ctx: &SlotCx) -> Vec<MessageAction> 
     out
 }
 
-/// Over the composer's field: a moderated removal's unsettled status line (9), the reply bar (11), then the attachment
-/// tray (12). The composer places it in normal flow, so a non-empty guest makes the composer taller and the log above it
-/// shorter.
+/// Inside the composer's box, over the field: a moderated removal's unsettled status line (9). The composer places it in
+/// normal flow, so a non-empty guest makes the composer taller and the log above it shorter.
 pub fn composer_leading(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
-    column([
-        messages::moderation_status(ctx, window, cx),
-        threads::reply_bar(ctx, window, cx),
-        attachments::tray(ctx, window, cx),
-    ])
+    column([messages::moderation_status(ctx, window, cx)])
+}
+
+/// The attachment tray (12) over the composer's box, outside it, after the reply bar: ComposerArea.tsx's `top` order.
+pub fn composer_tray(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    attachments::tray(ctx, window, cx)
+}
+
+/// The reply bar (11) over the composer's box (ComposerArea.tsx `top`, first; ReplyChip.css): it sits on the box, outside
+/// it, and the box's top corners square off to join it (Composer.css `[data-replying]`).
+pub fn composer_reply_bar(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    threads::reply_bar(ctx, window, cx)
 }
 
 /// The composer's tool buttons, in Composer.tsx's foot order: attach (12), emoji (10), then GIF (12).
@@ -220,13 +236,26 @@ const COMPOSER_TOOL_GAP: f32 = 2.0;
 
 /// The popup over the composer: the command picker (20), else the emoji grid (10). The mention popup stays the
 /// composer's own (9).
-pub fn composer_popup(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    commands::picker(ctx, window, cx).or_else(|| reactions::emoji_popup(ctx, window, cx))
+///
+/// `focus` is the focus handle of the composer's field: the channel's composer and a thread's both draw it, and the command
+/// list belongs to the one that reported the draft.
+pub fn composer_popup(
+    ctx: &SlotCx,
+    focus: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    commands::picker(ctx, focus, window, cx).or_else(|| reactions::emoji_popup(ctx, window, cx))
 }
 
-/// In place of the composer's field: a picked command's chips (20).
-pub fn composer_chips(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
-    commands::chips::view(ctx, window, cx)
+/// In place of the composer's field (`focus`, as for [`composer_popup`]): a picked command's chips (20).
+pub fn composer_chips(
+    ctx: &SlotCx,
+    focus: &gpui::FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<commands::chips::ChipsView> {
+    commands::chips::view(ctx, focus, window, cx)
 }
 
 /// Under a channel's row in the list: a voice channel's people (17).
@@ -266,6 +295,14 @@ pub fn overlays(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> Vec<AnyEleme
     out.extend(messages::overlays(window, cx));
     // The moderation commands' confirmation (Task 28 wave 2).
     out.extend(commands::confirm::overlay(ctx, window, cx));
+    // The poll form `/poll create` opens (Task 26).
+    out.extend(commands::poll_form::overlay(ctx, window, cx));
+    // The announcement editor and the deletion's question (Task 28).
+    out.extend(commands::announcement_form::overlay(ctx, window, cx));
+    // The role-panel editor `/rolepanel create` opens (Task 29).
+    out.extend(commands::role_panel_form::overlay(ctx, window, cx));
+    // The moderation history `/modlog` opens (Task 24).
+    out.extend(commands::modlog_dialog::overlay(ctx, window, cx));
     // The screen-share picker (parity Package 2), over everything of its window.
     out.extend(crate::screens::share_picker::overlay(window, cx));
     out

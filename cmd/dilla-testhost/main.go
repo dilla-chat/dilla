@@ -81,6 +81,7 @@ func parseFlags(args []string) (options, error) {
 	withSFU := fs.Bool("sfu", false, "start an in-process LiveKit beside the instance (browser media tests)")
 	sfuPort := fs.Int("sfu-port", dilladtest.DefaultSFUPort, "the in-process LiveKit's signalling port")
 	sfuUDPPort := fs.Int("sfu-udp-port", dilladtest.DefaultSFUUDPPort, "the in-process LiveKit's ICE/UDP port")
+	sfuAnyPort := fs.Bool("sfu-any-port", false, "with -sfu: the host picks free signalling and ICE/UDP ports itself, and fresh ones if another process takes one first (printed as `sfu ws://…`); instead of -sfu-port and -sfu-udp-port")
 	sfuNoInternalIP := fs.Bool("sfu-no-internal-ip", false,
 		"SP-27 only: render advertise_internal_ip: false (Firefox then cannot pair with the loopback node_ip)")
 	sfuAV1 := fs.Bool("sfu-av1", false, "browser test only: enable AV1 in the real SFU")
@@ -110,6 +111,13 @@ func parseFlags(args []string) (options, error) {
 	if explicit && *wire < 1 {
 		return options{}, fmt.Errorf("-wire %d: a wire version is 1 or more", *wire)
 	}
+	if *sfuAnyPort {
+		fixed := false
+		fs.Visit(func(f *flag.Flag) { fixed = fixed || f.Name == "sfu-port" || f.Name == "sfu-udp-port" })
+		if fixed {
+			return options{}, errors.New("-sfu-any-port picks the SFU's ports: drop -sfu-port and -sfu-udp-port")
+		}
+	}
 	if (*rtcTLSListen == "") != (*rtcTLSCert == "") || (*rtcTLSListen == "") != (*rtcTLSKey == "") {
 		return options{}, errors.New("-rtc-tls-listen, -rtc-tls-cert and -rtc-tls-key go together")
 	}
@@ -135,14 +143,17 @@ func parseFlags(args []string) (options, error) {
 		parityFixture: *parityFixtureFlag,
 		rtcTLS:        rtcTLSOptions{listen: *rtcTLSListen, cert: *rtcTLSCert, key: *rtcTLSKey},
 		bot:           botOptions{enabled: *withBot, executable: *botExecutable, helper: *botHelper, wasi: *botWasi, stateDir: *botStateDir},
-		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort,
+		sfu: sfuOptions{enabled: *withSFU, port: *sfuPort, udpPort: *sfuUDPPort, anyPort: *sfuAnyPort,
 			noInternalIP: *sfuNoInternalIP, av1: *sfuAV1, departure: uint32(min(*sfuDeparture, 3600))}}, nil
 }
 
 // sfuOptions are the -sfu flags: whether the host starts an in-process LiveKit, and on which ports.
+// anyPort (-sfu-any-port) leaves the ports to the host (dilladtest.HostOptions.SFUAnyPorts): a port
+// a caller probed and released can be taken by a parallel test before LiveKit binds it.
 type sfuOptions struct {
 	enabled       bool
 	port, udpPort int
+	anyPort       bool
 	noInternalIP  bool
 	av1           bool
 	departure     uint32
@@ -151,7 +162,7 @@ type sfuOptions struct {
 func (o options) hostOptions(dataDir, core, scrapeToken string) dilladtest.HostOptions {
 	ho := dilladtest.HostOptions{
 		DataDir: dataDir, CorePath: core, LogLevel: o.logLevel,
-		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort,
+		SFU: o.sfu.enabled, SFUPort: o.sfu.port, SFUUDPPort: o.sfu.udpPort, SFUAnyPorts: o.sfu.anyPort,
 		SFUNoInternalIP: o.sfu.noInternalIP, SFUEnableAV1: o.sfu.av1, SFUDepartureTimeout: o.sfu.departure,
 		ScrapeToken: scrapeToken, WebRoot: o.webRoot, ProductionACL: o.productionACL,
 		WebAuthnOrigin: o.webauthnOrigin, AdminInvite: o.adminInvite,
@@ -192,6 +203,34 @@ func run(o options) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// The listeners are bound before the host is built, so an address given as 127.0.0.1:0 is a real
+	// one by the time hostOptions names it as the LiveKit URL (ws://<listen> with a web root,
+	// wss://<rtc-tls-listen>). A caller that probed a port and passed it on would race every other
+	// test on the box for it; with :0 the kernel picks and `public …` / `rtc-tls …` report the pick.
+	publicLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.public)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = publicLn.Close() }()
+	o.public = publicLn.Addr().String()
+	controlLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.control)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = controlLn.Close() }()
+	var rtcTLSLn net.Listener
+	var rtcTLSPair tls.Certificate
+	if o.rtcTLS.listen != "" {
+		if rtcTLSPair, err = tls.LoadX509KeyPair(o.rtcTLS.cert, o.rtcTLS.key); err != nil {
+			return fmt.Errorf("-rtc-tls-cert/-rtc-tls-key: %w", err)
+		}
+		if rtcTLSLn, err = (&net.ListenConfig{}).Listen(ctx, "tcp", o.rtcTLS.listen); err != nil {
+			return err
+		}
+		defer func() { _ = rtcTLSLn.Close() }()
+		o.rtcTLS.listen = rtcTLSLn.Addr().String()
+	}
+
 	// A fake clock, because advance_clock is the whole reason this binary exists: five of the
 	// fifteen scenarios cross a TTL, retention or heal boundary and none of them can wait for it.
 	// /metrics accepts DILLA_METRICS_TOKEN as its bearer token, exactly as dillad does, so a load
@@ -199,7 +238,6 @@ func run(o options) error {
 	hostOpts := o.hostOptions(dataDir, core, os.Getenv("DILLA_METRICS_TOKEN"))
 	var bot *hostBot
 	var botCfg config.Bot
-	var err error
 	if o.bot.enabled {
 		if botCfg, err = o.bot.botConfig(dataDir); err != nil {
 			return err
@@ -225,15 +263,6 @@ func run(o options) error {
 		if err := createBotRuntimeSecret(ctx, filepath.Join(dataDir, "dilla.db"), o.botRuntimeSecret); err != nil {
 			return fmt.Errorf("create test bot runtime credential: %w", err)
 		}
-	}
-
-	publicLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.public)
-	if err != nil {
-		return err
-	}
-	controlLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.control)
-	if err != nil {
-		return err
 	}
 
 	var requestDiagnostics instanceRequestDiagnostics
@@ -265,19 +294,11 @@ func run(o options) error {
 	go func() { errs <- publicSrv.Serve(publicLn) }()
 	go func() { errs <- controlSrv.Serve(controlLn) }()
 	var rtcTLSSrv *http.Server
-	if o.rtcTLS.listen != "" {
-		pair, err := tls.LoadX509KeyPair(o.rtcTLS.cert, o.rtcTLS.key)
-		if err != nil {
-			return fmt.Errorf("-rtc-tls-cert/-rtc-tls-key: %w", err)
-		}
-		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", o.rtcTLS.listen)
-		if err != nil {
-			return err
-		}
+	if rtcTLSLn != nil {
 		rtcTLSSrv = &http.Server{Handler: public, ReadHeaderTimeout: 10 * time.Second,
-			TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}
-		go func() { errs <- rtcTLSSrv.ServeTLS(ln, "", "") }()
-		fmt.Printf("rtc-tls wss://%s\n", ln.Addr())
+			TLSConfig: &tls.Config{Certificates: []tls.Certificate{rtcTLSPair}, MinVersion: tls.VersionTLS12}}
+		go func() { errs <- rtcTLSSrv.ServeTLS(rtcTLSLn, "", "") }()
+		fmt.Printf("rtc-tls wss://%s\n", rtcTLSLn.Addr())
 	}
 
 	fmt.Printf("public  http://%s\n", publicLn.Addr())

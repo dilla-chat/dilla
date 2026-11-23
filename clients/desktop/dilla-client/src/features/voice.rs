@@ -105,6 +105,13 @@ struct Runtime {
     joining: Option<oneshot::Sender<()>>,
     /// Closes once the join in flight has answered, its teardown done (controller.ts `joining.done`).
     join_done: Option<oneshot::Receiver<()>>,
+    /// Closes once the latest leave has finished: its self-Remove (built again after a catch-up when refused for its
+    /// epoch) and the group's forget. A join waits for it: both work on the call group by id, so a rejoin of the same
+    /// call landing meanwhile would get a self-Remove of its new leaf and lose the group to the forget.
+    leave_done: Option<watch::Receiver<()>>,
+    /// A test's hold on the next leave with a call: it says when it got there, then waits to be let go.
+    #[cfg(feature = "testing")]
+    leave_hold: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     live: Option<Live>,
     link: watch::Sender<Option<Arc<MediaLink>>>,
     /// The last `voice_self` sent: `(call, flags)`.
@@ -125,6 +132,9 @@ impl Default for Runtime {
             generation: 0,
             joining: None,
             join_done: None,
+            leave_done: None,
+            #[cfg(feature = "testing")]
+            leave_hold: None,
             live: None,
             link: watch::channel(None).0,
             last_self: None,
@@ -556,7 +566,7 @@ impl Voice {
             self.leave_inner().await?;
         }
         let rt = self.rt();
-        let (abort_tx, abort_rx) = oneshot::channel::<()>();
+        let (abort_tx, mut abort_rx) = oneshot::channel::<()>();
         // `done_rx` closes once this join has answered (its sender is held by the spawned task until the answer is sent:
         // [`Inner::spawn_holding`]): a leave meanwhile waits for it (controller.ts `joining.done`), so the cancelled
         // join's answer is in before the leave's.
@@ -576,6 +586,15 @@ impl Voice {
                 ..OwnCall::default()
             };
         });
+        // An earlier leave still in flight finishes first (its self-Remove and forget work on the group by id: see
+        // `Runtime::leave_done`). A leave or a newer join meanwhile cancels this join as it would later.
+        let leaving = lock(&rt).leave_done.clone();
+        if let Some(mut leaving) = leaving {
+            tokio::select! {
+                _ = leaving.changed() => {}
+                _ = &mut abort_rx => return Err(ClientError::Sync("E_CANCELLED".into())),
+            }
+        }
         let refusal = |inner: Arc<Inner>| -> OnRefused {
             let rt = rt.clone();
             Box::new(move |code: &str| {
@@ -737,9 +756,11 @@ impl Voice {
                 epoch: Some(epoch),
                 code: Some(code),
                 error: None,
+                changed_user: None,
                 roster,
                 ping_ms: None,
                 rate_kbps: None,
+                loss_pct: None,
             };
         });
         // Product walk M5: a call started muted or deafened says so to the others at once.
@@ -788,6 +809,11 @@ impl Voice {
                         if epochs.borrow().is_some() {
                             epochs.send_replace(None);
                         }
+                        // controller.ts `rekey`: the call is held (phase `paused`, the verdict's code, no changed
+                        // contact) while the leaves are read again, so the stage says `voice.held` and hides its media.
+                        let code = e.code.clone();
+                        this.inner
+                            .publish(move |s| hold_call(s, live.group_id, code, None));
                         let _ = tokio::time::timeout(
                             crate::calls::session::WAIT_LIST,
                             this.inner.engine().refresh_group_trust(live.group_id),
@@ -814,6 +840,7 @@ impl Voice {
                                 s.voice.call.code = Some(code);
                                 s.voice.call.roster = roster;
                                 s.voice.call.error = None;
+                                s.voice.call.changed_user = None;
                             }
                         });
                     }
@@ -857,11 +884,30 @@ impl Voice {
                             let _ = this.leave_inner().await;
                             return Ok(());
                         }
-                        this.inner.publish(move |s| {
-                            if s.voice.call.group_id == Some(live.group_id) {
-                                s.voice.call.error = Some(code);
-                            }
-                        });
+                        // controller.ts `rekey`: a changed identity's pause names the changed contact
+                        // (`changedUser`), read again at every refusal, as the web reads it at every rekey.
+                        let changed = if code == "E_UMK_CHANGED" {
+                            let roster: Vec<UserId> = this
+                                .inner
+                                .snapshot()
+                                .voice
+                                .call
+                                .roster
+                                .iter()
+                                .map(|r| r.0)
+                                .collect();
+                            crate::features::ring::pause_changed_user(
+                                &this.inner,
+                                live.group_id,
+                                live.channel,
+                                roster,
+                            )
+                            .await
+                        } else {
+                            None
+                        };
+                        this.inner
+                            .publish(move |s| hold_call(s, live.group_id, code, changed));
                     }
                 }
             }
@@ -887,6 +933,17 @@ impl Voice {
         })
     }
 
+    /// Holds the next leave of a call after it has left the call here (media cut, Idle published) and before its
+    /// self-Remove: the first receiver fires when it gets there, and it goes on once the sender is used or dropped.
+    /// Never in a shipping build.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_leave(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached_tx, reached) = oneshot::channel();
+        let (release, release_rx) = oneshot::channel();
+        lock(&self.rt()).leave_hold = Some((reached_tx, release_rx));
+        (reached, release)
+    }
+
     /// [`Voice::leave`] for a caller that moves on whatever the instance answered (a join's own leave, a trust block,
     /// a lost room).
     async fn leave_inner(&self) -> Result<(), ClientError> {
@@ -896,48 +953,77 @@ impl Voice {
     /// The leave; answers whether the instance acknowledged it (no call to leave: yes).
     async fn leave_acknowledged(&self) -> Result<bool, ClientError> {
         let rt = self.rt();
-        let (live, joining) = {
+        // Closed once this leave and every earlier one have finished: `_leaving` is held until this returns (however it
+        // returns), and this returns only after the earlier leave's receiver closed. A second leave (a double click, a
+        // window handover beside the voice screen's leave, sign-out) finds no call, yet it answers, and a join waiting
+        // on it goes on, only after the first leave's self-Remove and forget. Only backwards: a leave never waits on a
+        // later one, so the chain has no cycle.
+        let (_leaving, leave_done) = watch::channel(());
+        let (live, joining, earlier) = {
             let mut r = lock(&rt);
+            let earlier = r.leave_done.replace(leave_done);
             r.generation += 1;
             r.link.send_replace(None);
             r.last_self = None;
             r.self_offline = None;
             r.resends = None;
             r.own_in_call.clear();
-            (r.live.take(), (r.joining.take(), r.join_done.take()))
+            (
+                r.live.take(),
+                (r.joining.take(), r.join_done.take()),
+                earlier,
+            )
         };
-        let (joining, join_done) = joining;
-        drop(joining);
-        let own = self.inner.snapshot().account.device_id;
-        let snap = self.inner.snapshot();
-        self.inner.publish(move |s| {
-            if let (Some(ch), Some(d)) = (s.voice.call.channel, own) {
-                s.voice.drop_device(ch, d);
+        let answer: Result<bool, ClientError> = async {
+            let (joining, join_done) = joining;
+            drop(joining);
+            let own = self.inner.snapshot().account.device_id;
+            let snap = self.inner.snapshot();
+            self.inner.publish(move |s| {
+                if let (Some(ch), Some(d)) = (s.voice.call.channel, own) {
+                    s.voice.drop_device(ch, d);
+                }
+                s.voice.call = OwnCall::default();
+                s.voice.speaking.clear();
+                s.voice.sfu_remotes.clear();
+                s.voice.verified_peers.clear();
+                s.voice.screen_streams.clear();
+                s.voice.share = LocalShare::default();
+            });
+            // A join in flight was cancelled just above: this answers once it has torn down (its self-Remove posted, a
+            // call it started left), as controller.ts `leave` awaits `joining.done`.
+            if let Some(done) = join_done {
+                let _ = done.await;
             }
-            s.voice.call = OwnCall::default();
-            s.voice.speaking.clear();
-            s.voice.share = LocalShare::default();
-        });
-        // A join in flight was cancelled just above: this answers once it has torn down (its self-Remove posted, a call
-        // it started left), as controller.ts `leave` awaits `joining.done`.
-        if let Some(done) = join_done {
-            let _ = done.await;
+            let Some(live) = live else {
+                return Ok(true);
+            };
+            #[cfg(feature = "testing")]
+            {
+                let hold = lock(&rt).leave_hold.take();
+                if let Some((reached, release)) = hold {
+                    let _ = reached.send(());
+                    let _ = release.await;
+                }
+            }
+            let alone = own.is_some_and(|d| {
+                snap.voice
+                    .participants(live.channel)
+                    .iter()
+                    .all(|p| p.device_id == d)
+            });
+            let left = self
+                .calls
+                .leave(live.group_id, live.call_id, alone)
+                .await
+                .map_err(|_| ClientError::Stopped)??;
+            Ok(left.proposed || left.ended)
         }
-        let Some(live) = live else {
-            return Ok(true);
-        };
-        let alone = own.is_some_and(|d| {
-            snap.voice
-                .participants(live.channel)
-                .iter()
-                .all(|p| p.device_id == d)
-        });
-        let left = self
-            .calls
-            .leave(live.group_id, live.call_id, alone)
-            .await
-            .map_err(|_| ClientError::Stopped)??;
-        Ok(left.proposed || left.ended)
+        .await;
+        if let Some(mut earlier) = earlier {
+            let _ = earlier.changed().await;
+        }
+        answer
     }
 
     /// session.ts `onRoomEnd` → `leave('lost')`: the call's LiveKit room ended on its own (a newer device of this user
@@ -1084,8 +1170,32 @@ impl Voice {
     /// The devices heard speaking now (the media layer's speaking detector).
     pub fn set_speaking(&self, devices: std::collections::BTreeSet<DeviceId>) {
         self.inner.publish(move |s| {
-            if s.voice.speaking != devices {
+            // session.ts: nobody is heard speaking while the call is paused (its keys are dropped).
+            if s.voice.call.paused() {
+                s.voice.speaking.clear();
+            } else if s.voice.speaking != devices {
                 s.voice.speaking = devices;
+            }
+        });
+    }
+
+    /// The remote devices whose media is connected, and those a screen stream arrives from (the media layer's peers: what
+    /// the web's `call.state.tiles` lists).
+    pub fn set_media_peers(
+        &self,
+        remotes: Vec<crate::state::voice::SfuRemote>,
+        verified: std::collections::BTreeSet<DeviceId>,
+        screens: std::collections::BTreeSet<DeviceId>,
+    ) {
+        self.inner.publish(move |s| {
+            if s.voice.sfu_remotes != remotes {
+                s.voice.sfu_remotes = remotes;
+            }
+            if s.voice.verified_peers != verified {
+                s.voice.verified_peers = verified;
+            }
+            if s.voice.screen_streams != screens {
+                s.voice.screen_streams = screens;
             }
         });
     }
@@ -1108,6 +1218,17 @@ impl Voice {
             let c = &mut s.voice.call;
             if c.call_id == Some(call) && c.phase == CallPhase::In && c.rate_kbps != kbps {
                 c.rate_kbps = kbps;
+            }
+        });
+    }
+
+    /// The link's packet loss in percent (stats.ts `linkSample`'s `lossPct`), for the dock's quality; ignored unless it
+    /// is this device's live call.
+    pub fn set_loss(&self, call: [u8; 16], pct: Option<f32>) {
+        self.inner.publish(move |s| {
+            let c = &mut s.voice.call;
+            if c.call_id == Some(call) && c.phase == CallPhase::In && c.loss_pct != pct {
+                c.loss_pct = pct;
             }
         });
     }
@@ -1263,6 +1384,17 @@ pub fn hands_on(epoch: u64, last: u64, suspended: bool) -> bool {
     epoch > last || (suspended && epoch == last)
 }
 
+/// The call of `group` held (controller.ts `rekey`'s `phase: 'paused'`): the refusal's `code` stands as its error with the
+/// changed contact it names, and nobody is heard speaking (session.ts: the detector is off while paused). A newer call's
+/// state is left alone.
+fn hold_call(s: &mut AppState, group: [u8; 16], code: String, changed: Option<UserId>) {
+    if s.voice.call.group_id == Some(group) {
+        s.voice.call.error = Some(code);
+        s.voice.call.changed_user = changed;
+        s.voice.speaking.clear();
+    }
+}
+
 fn epoch_fields(m: &MediaEpoch) -> (u64, String, Vec<(UserId, DeviceId, u16)>) {
     (
         m.epoch,
@@ -1286,6 +1418,9 @@ fn ended_removed(s: &mut AppState, channel: ChannelId, own: Option<DeviceId>) {
         ..OwnCall::default()
     };
     s.voice.speaking.clear();
+    s.voice.sfu_remotes.clear();
+    s.voice.verified_peers.clear();
+    s.voice.screen_streams.clear();
     s.voice.share = LocalShare::default();
 }
 
@@ -1323,7 +1458,18 @@ mod tests {
             ..OwnCall::default()
         };
         s.voice.share.camera = true;
+        s.voice
+            .sfu_remotes
+            .push(crate::state::voice::SfuRemote::Device(DeviceId([3; 16])));
+        s.voice.verified_peers.insert(DeviceId([3; 16]));
+        s.voice.screen_streams.insert(DeviceId([3; 16]));
         ended_removed(&mut s, ch, Some(own));
+        assert!(
+            s.voice.sfu_remotes.is_empty()
+                && s.voice.verified_peers.is_empty()
+                && s.voice.screen_streams.is_empty(),
+            "the call's media peers go with it"
+        );
         assert_eq!(s.voice.call.phase, CallPhase::Idle);
         assert_eq!(s.voice.call.error.as_deref(), Some("E_REMOVED"));
         assert_eq!(s.voice.call.call_id, None);
@@ -1433,6 +1579,106 @@ mod tests {
         ] {
             assert!(!is_leaf_verdict(code), "{code}");
         }
+    }
+
+    fn leaf(group: u8, user: u8, reason: &str) -> crate::sync::trust::PendingLeaf {
+        crate::sync::trust::PendingLeaf {
+            group_id: [group; 16],
+            leaf_index: u32::from(user),
+            user_id: [user; 16],
+            cached_version: 1,
+            reason: reason.to_owned(),
+        }
+    }
+
+    /// controller.ts `changedUser`: a contact who changed identity and joins a running call is in the refused epoch, not
+    /// in the last keyed roster; the core's changed pending leaf of the call group names them first (never the own user,
+    /// never a leaf of another group or one pending for another reason).
+    #[test]
+    fn a_joiner_not_in_the_last_keyed_roster_is_named() {
+        use crate::features::ring::pause_names;
+        let (call, other) = ([7; 16], [8; 16]);
+        let own = Some(UserId([1; 16]));
+        let roster = [UserId([1; 16]), UserId([2; 16])];
+        let leaves = [
+            leaf(7, 1, "changed"),
+            leaf(8, 3, "changed"),
+            leaf(7, 4, "unknown"),
+            leaf(7, 5, "changed"),
+        ];
+        assert_eq!(
+            pause_names(&leaves, &[call], &[UserId([5; 16])], own, &roster),
+            Some(UserId([5; 16])),
+            "the joiner, through its pending leaf"
+        );
+        assert_eq!(
+            pause_names(&leaves, &[call, other], &[], own, &roster),
+            Some(UserId([3; 16])),
+            "the first by id over the call group and the DM's text group"
+        );
+        assert_eq!(
+            pause_names(&[], &[call], &[UserId([5; 16])], own, &roster),
+            None
+        );
+    }
+
+    /// controller.ts `changedUser`'s candidates for a DM call are the DM's members (`live.members`), so a DM peer the
+    /// trust state holds as changed is named even when no pending leaf and no keyed roster lists them.
+    #[test]
+    fn a_dm_call_names_the_dm_peer() {
+        use crate::features::ring::pause_names;
+        let (me, peer) = (UserId([1; 16]), UserId([2; 16]));
+        assert_eq!(
+            pause_names(&[], &[[7; 16]], &[peer], Some(me), &[me, peer]),
+            Some(peer)
+        );
+        assert_eq!(
+            pause_names(&[], &[[7; 16]], &[me], Some(me), &[me, peer]),
+            None
+        );
+    }
+
+    /// Every refusal publishes the contact read at that refusal (the web reads `changedUser` at every rekey): a pause
+    /// that named nobody names the contact on the next refusal once the core knows them, and a passed epoch's call is
+    /// left alone by an older group's hold.
+    #[test]
+    fn a_none_is_retried_on_the_next_refusal() {
+        let mut s = AppState::default();
+        s.voice.call.phase = CallPhase::In;
+        s.voice.call.group_id = Some([7; 16]);
+        s.voice.speaking.insert(DeviceId([3; 16]));
+        hold_call(&mut s, [7; 16], "E_UMK_CHANGED".into(), None);
+        assert!(s.voice.call.paused() && s.voice.speaking.is_empty());
+        assert_eq!(s.voice.call.changed_user, None);
+        hold_call(
+            &mut s,
+            [7; 16],
+            "E_UMK_CHANGED".into(),
+            Some(UserId([5; 16])),
+        );
+        assert_eq!(s.voice.call.changed_user, Some(UserId([5; 16])));
+        hold_call(&mut s, [9; 16], "E_UMK_CHANGED".into(), None);
+        assert_eq!(
+            s.voice.call.changed_user,
+            Some(UserId([5; 16])),
+            "another group's hold"
+        );
+    }
+
+    /// controller.ts `rekey`: a leaf verdict holds the call (phase `paused`, its code, no changed contact) while the
+    /// leaves are read again, so the stage says `voice.held`.
+    #[test]
+    fn a_leaf_verdict_s_reread_holds_the_call() {
+        let mut s = AppState::default();
+        s.voice.call.phase = CallPhase::In;
+        s.voice.call.group_id = Some([7; 16]);
+        s.voice.call.changed_user = Some(UserId([5; 16]));
+        hold_call(&mut s, [7; 16], "E_DEVICE_UNLISTED".into(), None);
+        assert!(s.voice.call.paused());
+        assert_eq!(
+            (s.voice.call.error.as_deref(), s.voice.call.changed_user),
+            (Some("E_DEVICE_UNLISTED"), None)
+        );
     }
 
     /// Ruling R24: a refusal, then the same epoch passing again, resumes; an older one never does.

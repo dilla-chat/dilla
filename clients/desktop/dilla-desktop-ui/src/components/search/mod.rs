@@ -86,7 +86,14 @@ pub fn step_active(ids: &[SharedString], active: Option<&str>, step: i32) -> Opt
 
 /// The scrim over the window with the palette's column in it (`.d-search-palette-dialog` and its `::backdrop`): `14vh` from
 /// the top, the panel centred. The caller adds the panel and the handlers, and draws it as an overlay.
-pub fn scrim(id: impl Into<ElementId>, viewport_h: f32) -> gpui::Stateful<gpui::Div> {
+pub fn scrim(
+    id: impl Into<ElementId>,
+    viewport_h: f32,
+    cx: &gpui::App,
+) -> gpui::Stateful<gpui::Div> {
+    let id = id.into();
+    // SearchPalette.css:12: the backdrop's `d-fade` over `--duration-scrim`.
+    let backdrop = crate::motion::scrim_layer((id.clone(), "scrim"), color::SCRIM, cx);
     div()
         .id(id)
         .absolute()
@@ -95,8 +102,8 @@ pub fn scrim(id: impl Into<ElementId>, viewport_h: f32) -> gpui::Stateful<gpui::
         .flex_col()
         .items_center()
         .pt(px(top_offset(viewport_h)))
-        .bg(color::SCRIM)
         .occlude()
+        .child(backdrop)
 }
 
 /// The panel (`.d-search-palette`): `--surface` in the `--line-strong` edge, 12px corners, the `--shadow-3`, at most 600px
@@ -167,7 +174,7 @@ pub fn placeholder(label: impl Into<SharedString>) -> impl IntoElement {
         .child(line(
             label,
             text::MD,
-            line_height(text::MD, 1.5),
+            crate::text::root_line_height(text::MD),
             color::FG_3,
         ))
 }
@@ -220,7 +227,7 @@ pub fn heading(label: impl Into<SharedString>) -> impl IntoElement {
             line(
                 label.to_uppercase(),
                 text::MICRO,
-                line_height(text::MICRO, 1.5),
+                crate::text::root_line_height(text::MICRO),
                 color::FG_3,
             )
             .weight(font::WEIGHT_LABEL)
@@ -365,7 +372,7 @@ impl RenderOnce for ResultRow {
                 .child(line(
                     "↵",
                     text::MICRO,
-                    line_height(text::MICRO, 1.5),
+                    crate::text::root_line_height(text::MICRO),
                     color::ACCENT,
                 ));
         }
@@ -398,7 +405,7 @@ pub fn status(text_: impl Into<SharedString>) -> Option<impl IntoElement> {
             .child(line(
                 text_,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG_3,
             )),
     )
@@ -406,7 +413,14 @@ pub fn status(text_: impl Into<SharedString>) -> Option<impl IntoElement> {
 
 /// The footer (`.d-search-palette__foot`): the key words, then the note at the right, over a hairline.
 pub fn foot(move_hint: &str, open_hint: &str, note: impl Into<SharedString>) -> impl IntoElement {
-    let meta = |s: String| line(s, text::META, line_height(text::META, 1.5), color::FG_3);
+    let meta = |s: String| {
+        line(
+            s,
+            text::META,
+            crate::text::root_line_height(text::META),
+            color::FG_3,
+        )
+    };
     div()
         .flex_none()
         .flex()
@@ -427,7 +441,13 @@ pub fn foot(move_hint: &str, open_hint: &str, note: impl Into<SharedString>) -> 
         .child(div().flex_1())
         .child(
             div().min_w_0().flex().child(
-                line(note, text::META, line_height(text::META, 1.5), color::FG_3).ellipsis(),
+                line(
+                    note,
+                    text::META,
+                    crate::text::root_line_height(text::META),
+                    color::FG_3,
+                )
+                .ellipsis(),
             ),
         )
 }

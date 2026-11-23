@@ -2,7 +2,11 @@ package livekit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,18 +72,96 @@ func TestSenderForEpochAcceptsInitialEpochZero(t *testing.T) {
 	}
 }
 
-type counterStateStub struct{ value native.StateValue }
+// counterStateStub is the helper's durable state as the counter cursor uses it (dilla-bot-core state.rs get and
+// transaction): one row per key, compare-and-swap on each change's expected revision, and an idempotent receipt per
+// transaction id: a transaction id seen before with the same changes replays its stored result without checking any
+// revision (a different digest is a conflict). transactions counts commits, each a disk sync on the helper. The pool
+// reserves from its own goroutines, so it is locked; afterGet and beforeCommit (optional) run outside the lock, for
+// tests that interleave reservations.
+type counterStateStub struct {
+	mu           sync.Mutex
+	rows         map[string]native.StateValue
+	receipts     map[id.ID]stubReceipt
+	transactions int
+	afterGet     func()
+	beforeCommit func()
+}
 
-func (s *counterStateStub) StateGet(_ context.Context, _ uint64, _ []byte) (native.StateValue, error) {
-	return s.value, nil
+type stubReceipt struct {
+	digest [32]byte
+	result []uint64
+}
+
+func changesDigest(changes []native.StateChange) [32]byte {
+	h := sha256.New()
+	for _, c := range changes {
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], c.Area)
+		h.Write(n[:])
+		binary.BigEndian.PutUint64(n[:], uint64(len(c.Key)))
+		h.Write(n[:])
+		h.Write(c.Key)
+		binary.BigEndian.PutUint64(n[:], c.ExpectedRevision)
+		h.Write(n[:])
+		binary.BigEndian.PutUint64(n[:], uint64(len(c.Value)))
+		h.Write(n[:])
+		h.Write(c.Value)
+	}
+	var d [32]byte
+	copy(d[:], h.Sum(nil))
+	return d
+}
+
+func (s *counterStateStub) StateGet(_ context.Context, area uint64, key []byte) (native.StateValue, error) {
+	s.mu.Lock()
+	value := s.rows[fmt.Sprintf("%d/%x", area, key)]
+	s.mu.Unlock()
+	if s.afterGet != nil {
+		s.afterGet()
+	}
+	return value, nil
 }
 
 func (s *counterStateStub) StateTransaction(_ context.Context, tx id.ID, changes []native.StateChange) ([]uint64, error) {
-	if tx.IsZero() || len(changes) != 1 || changes[0].ExpectedRevision != s.value.Revision {
-		return nil, errors.New("counter state revision conflict")
+	if s.beforeCommit != nil {
+		s.beforeCommit()
 	}
-	s.value = native.StateValue{Revision: s.value.Revision + 1, Value: append([]byte(nil), changes[0].Value...)}
-	return []uint64{s.value.Revision}, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tx.IsZero() || len(changes) < 1 {
+		return nil, errors.New("invalid state transaction")
+	}
+	digest := changesDigest(changes)
+	if receipt, ok := s.receipts[tx]; ok {
+		if receipt.digest != digest {
+			return nil, errors.New("counter state transaction conflict")
+		}
+		return append([]uint64(nil), receipt.result...), nil
+	}
+	if s.rows == nil {
+		s.rows, s.receipts = map[string]native.StateValue{}, map[id.ID]stubReceipt{}
+	}
+	for _, c := range changes {
+		if s.rows[fmt.Sprintf("%d/%x", c.Area, c.Key)].Revision != c.ExpectedRevision {
+			return nil, errors.New("counter state revision conflict")
+		}
+	}
+	result := make([]uint64, 0, len(changes))
+	for _, c := range changes {
+		k := fmt.Sprintf("%d/%x", c.Area, c.Key)
+		next := native.StateValue{Revision: s.rows[k].Revision + 1, Value: append([]byte(nil), c.Value...)}
+		s.rows[k] = next
+		result = append(result, next.Revision)
+	}
+	s.receipts[tx] = stubReceipt{digest: digest, result: result}
+	s.transactions++
+	return append([]uint64(nil), result...), nil
+}
+
+func (s *counterStateStub) commits() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transactions
 }
 
 func TestReservedSenderUsesDisjointCountersAcrossPublisherRestart(t *testing.T) {

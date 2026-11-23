@@ -17,10 +17,10 @@ use crate::a11y::{Accessible, Role};
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize, Presence, colour_of};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::metrics::{LABEL_TRACKING, LABEL_TRACKING_WIDE, OPACITY_MUTED};
+use crate::metrics::{Density, LABEL_TRACKING, LABEL_TRACKING_WIDE, OPACITY_MUTED};
 use crate::roving::{Roving, opens_context_menu};
 use crate::text::{line, line_height};
-use crate::tokens::{color, font, layout, radius, text};
+use crate::tokens::{color, font, layout, motion, radius, text};
 
 /// What a group of the list is (MemberList.tsx `kind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,9 +434,14 @@ impl RenderOnce for MemberList {
                 .border_color(color::HAIRLINE)
                 .child(
                     div().flex_1().min_w_0().flex().child(
-                        line(label, text::UI, line_height(text::UI, 1.5), color::FG)
-                            .weight(font::WEIGHT_DISPLAY)
-                            .ellipsis(),
+                        line(
+                            label,
+                            text::UI,
+                            crate::text::root_line_height(text::UI),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY)
+                        .ellipsis(),
                     ),
                 );
             if let (Some(close_label), Some(on_close)) = (self.close_label, self.on_close.clone()) {
@@ -466,7 +471,7 @@ impl RenderOnce for MemberList {
             div().px(px(8.)).py(px(10.)).child(line(
                 s,
                 text::UI,
-                line_height(text::UI, 1.5),
+                crate::text::root_line_height(text::UI),
                 color::FG_3,
             ))
         };
@@ -502,7 +507,8 @@ impl RenderOnce for MemberList {
                     line(
                         format!("{} — {}", g.title, g.members.len()).to_uppercase(),
                         text::MICRO,
-                        line_height(text::MICRO, 1.5),
+                        // MemberList.css sets the heading no line height: the root's `--line-height`.
+                        line_height(text::MICRO, Density::of(window, cx).line_height()),
                         tint.unwrap_or(color::FG_3),
                     )
                     .weight(font::WEIGHT_LABEL)
@@ -563,7 +569,7 @@ pub fn role_chip(name: impl Into<SharedString>, colour: u32) -> AnyElement {
         .child(line(
             name,
             text::META,
-            line_height(text::META, 1.5),
+            crate::text::root_line_height(text::META),
             color::FG_CHIP,
         ))
         .into_any_element()
@@ -672,7 +678,7 @@ impl ProfileCard {
 }
 
 impl RenderOnce for ProfileCard {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let hue = f32::from(self.hue) / 360.;
         // `hsl(var(--avatar-hue) var(--avatar-s, 45%) ...)`: the saturation of the person's avatar palette entry (the
         // name's), 45% for a hue that is not the name's.
@@ -748,7 +754,7 @@ impl RenderOnce for ProfileCard {
             .child(line(
                 self.sub,
                 text::XS,
-                line_height(text::XS, 1.5),
+                crate::text::root_line_height(text::XS),
                 color::FG_2,
             ));
         if !self.bio.is_empty() {
@@ -756,7 +762,7 @@ impl RenderOnce for ProfileCard {
                 line(
                     l.to_owned(),
                     text::UI,
-                    line_height(text::UI, 1.5),
+                    crate::text::root_line_height(text::UI),
                     color::FG_STRONG,
                 )
             })));
@@ -796,7 +802,7 @@ impl RenderOnce for ProfileCard {
                         line(
                             label,
                             text::UI,
-                            line_height(text::UI, 1.5),
+                            crate::text::root_line_height(text::UI),
                             color::ACCENT_INK,
                         )
                         .weight(font::WEIGHT_DISPLAY),
@@ -836,7 +842,8 @@ impl RenderOnce for ProfileCard {
                     }),
             );
         }
-        div()
+        let enter_id = (self.id.clone(), "enter");
+        let card = div()
             .id(self.id)
             .w(space::CARD_OUTER_W)
             .overflow_hidden()
@@ -847,7 +854,9 @@ impl RenderOnce for ProfileCard {
             .shadow(shadow_profile())
             .occlude()
             .child(band)
-            .child(body.child(row))
+            .child(body.child(row));
+        // ProfileCard.css:6: `d-modal` over `--duration-profile`.
+        crate::motion::modal_in(card, enter_id, motion::PROFILE, cx)
     }
 }
 

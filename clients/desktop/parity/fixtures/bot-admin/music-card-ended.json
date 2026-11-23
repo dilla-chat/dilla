@@ -1,0 +1,121 @@
+{
+  "name": "bot-admin/music-card-ended",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn",
+        "bot": true
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "glenn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "harbour",
+            "kind": "voice",
+            "name": "harbour"
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "music"
+          ],
+          "botChannels": [],
+          "music": {
+            "channel": "harbour",
+            "track": {
+              "id": "3f0a9d4c6b8e2175a4c3d2e1f0b9a8c7",
+              "title": "Harbour Lights",
+              "artist": "Northern Tide",
+              "durationMs": 214000,
+              "requester": "ada"
+            },
+            "queue": [
+              {
+                "id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+                "title": "Slow Ferry",
+                "artist": "Northern Tide",
+                "durationMs": 187000,
+                "requester": "mira"
+              },
+              {
+                "id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+                "title": "Low Tide Radio",
+                "artist": "Gull Choir",
+                "durationMs": 243000,
+                "requester": null
+              }
+            ],
+            "positionMs": 37000,
+            "volume": 75,
+            "paused": false,
+            "canControl": true
+          }
+        }
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481138,
+        "body": "Anyone up for some music?"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "glenn",
+        "ts": 1794481438,
+        "body": "Now playing: Harbour Lights\n[dilla-music:v1:499e5c84ee3b8a845e66f899a5316632:4e2e9b704386864f3393c8ac5c14b264:7c1e5a0b9d2f4e68a3b1c0d9e8f7a6b5]"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481618,
+        "body": "Turn it up."
+      }
+    ],
+    "calls": [
+      {
+        "channel": "midgard/harbour",
+        "participants": [
+          {
+            "person": "glenn"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": []
+}

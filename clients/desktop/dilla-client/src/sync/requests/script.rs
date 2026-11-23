@@ -56,6 +56,13 @@ impl Script {
         f.payload[2].as_text().expect("a route").to_owned()
     }
 
+    /// The method of the `n`th request frame written.
+    pub(crate) fn method(&self, n: usize) -> String {
+        let frames = self.frames.lock().unwrap();
+        let f = frames::decode(&frames[n]).expect("a request frame");
+        f.payload[1].as_text().expect("a method").to_owned()
+    }
+
     pub(crate) fn written(&self) -> usize {
         self.frames.lock().unwrap().len()
     }

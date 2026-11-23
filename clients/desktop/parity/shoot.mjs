@@ -130,6 +130,27 @@ function parseArgs(argv) {
   return args;
 }
 
+/** `[ticket text, expires uint32]` with the expiry moved back by the instance's lead over the wall clock: the page reads its
+ *  instance clock as `expires - TTL` at the mint. Any other shape throws: the Bot would refuse the page's commands for a clock
+ *  nobody can see. */
+export function wallExpiry(body, lead) {
+  const bad = () => new Error(`the gateway ticket answer is not [text, uint32]: ${body.toString('hex').slice(0, 40)}`);
+  if (body[0] !== 0x82 || body[1] >> 5 !== 3) throw bad();
+  const info = body[1] & 31;
+  const [length, at] = info < 24 ? [info, 2] : info === 24 ? [body[2], 3] : info === 25 ? [body.readUInt16BE(2), 4] : [-1, 0];
+  const end = at + length;
+  if (length < 0 || body[end] !== 0x1a || body.length !== end + 5) throw bad();
+  const out = Buffer.from(body);
+  out.writeUInt32BE(body.readUInt32BE(end + 1) - lead, end + 1);
+  return out;
+}
+
+async function wallTicket(route, control) {
+  const response = await route.fetch();
+  const lead = (await (await fetch(`${control}/debug/clock`)).json()).now - Math.floor(Date.now() / 1000);
+  await route.fulfill({ response, body: wallExpiry(await response.body(), lead) });
+}
+
 /** Where the PNG and its sidecar go: the committed references, or `<out>/shots/<area>` when `--out` is given (so a trial run never overwrites them). */
 export function shotDir(parity, os, name, out) {
   const area = name.split('/').slice(0, -1);
@@ -187,8 +208,35 @@ export async function typedText(text, { state, page, codeFor }) {
   return text;
 }
 
-/** One step of the fixture, on the web side. */
-async function replayStep(page, step, state) {
+/** The typing frames a fixture's `world.typing` asks for, as the bodies of dilla-testhost's `POST /debug/parity/typing`
+ * (cmd/dilla-testhost/parity_calls.go): one per person, to the viewer, each ending `holdS` seconds after `nowS` (dillad's
+ * relay window is 10 s). The device is the person's account id with its last byte flipped, as the voice frames' are
+ * (`parity_world/seed/calls.rs`). `ids` are the real ids by `kind:local`. */
+export function typingBodies(fixture, ids, nowS, holdS = 10) {
+  return (fixture.world?.typing ?? []).map((t) => {
+    const user = ids[`person:${t.person}`];
+    const flipped = Buffer.from(user, 'hex');
+    flipped[15] ^= 0xd7;
+    const channel = t.channel.startsWith('dm/') ? ids[`dm:${t.channel.slice(3)}`] : ids[`channel:${t.channel}`];
+    return { to: ids[`person:${fixture.viewer}`], channel, user, device: flipped.toString('hex'), expires: nowS + holdS };
+  });
+}
+
+/** Sends the fixture's typing frames to the browser just before the frame (a typing row lives 10 s, so the host's clock
+ * is read now) and waits until the indicator is drawn. */
+async function sendTyping(page, fixture, state) {
+  const typing = fixture.world?.typing ?? [];
+  if (typing.length === 0) return;
+  const now = (await (await fetch(`${state.control}/debug/clock`)).json()).now;
+  for (const body of typingBodies(fixture, state.ids, now)) {
+    const res = await fetch(`${state.control}/debug/parity/typing`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`/debug/parity/typing: ${res.status}`);
+  }
+  await page.locator('.d-typing-indicator').first().waitFor();
+}
+
+/** One step of the fixture, on the web side. `context` is the browser context (the `offline` step cuts its network). */
+export async function replayStep(page, step, state, context) {
   const pick = (sel) => {
     if (sel === '-') return null;
     const optional = sel.startsWith('if:');
@@ -215,6 +263,19 @@ async function replayStep(page, step, state) {
       return;
     }
     case 'settle':
+      await page.evaluate(() => document.fonts.ready);
+      await page.waitForTimeout(500);
+      return;
+    case 'attach': {
+      // The composer's hidden file input takes the file as a pick does (Attachments.tsx `attachFiles`: a file over the cap
+      // raises the toast and its tray card is refused).
+      await page.locator(step.web).first().setInputFiles({ name: step.name, mimeType: 'application/octet-stream', buffer: Buffer.alloc(step.bytes) });
+      return;
+    }
+    case 'offline':
+      // The browser loses its network: the page's `offline` event makes the shell's link offline at once (Shell.tsx "Walk
+      // 7"), and its banner reads "Offline. Reconnecting…". Then settle, as a `settle` step does.
+      await context.setOffline(true);
       await page.evaluate(() => document.fonts.ready);
       await page.waitForTimeout(500);
       return;
@@ -255,6 +316,10 @@ async function shoot(args, fixture, text) {
     let page = await context.newPage();
     page.setDefaultTimeout(WAIT);
     await page.clock.setFixedTime(state.now * 1000);
+    // A world with the Bot: the Bot refuses a command whose `sent_at` is more than 120 s from the wall clock it runs on, and
+    // the page signs its commands with the instance's clock as its last gateway ticket gave it, which the world has moved
+    // far past the wall to reach the frame. The ticket the page is given tells the wall's time instead.
+    if (state.bot && !state.pollGivesUp) await context.route('**/v1/gateway/ticket', (route) => wallTicket(route, state.control));
     await page.goto(`${state.publicUrl}/welcome`);
     // A `signed_out` fixture is a browser with no account on it: no sign-in, the route opened as a fresh load.
     const signedOut = fixture.phase === 'signed_out';
@@ -313,9 +378,24 @@ async function shoot(args, fixture, text) {
     }
     // The last message of the route's own channel is on screen before the frame.
     const target = [...fixture.route.matchAll(/\{([^}/]+\/[^}]+)\}/g)].map((m) => m[1]).at(-1);
-    const last = (fixture.world.messages ?? []).filter((m) => m.channel === target).at(-1);
-    if (last && !boot) await page.getByText(last.body, { exact: true }).first().waitFor();
-    for (const step of fixture.steps ?? []) await replayStep(page, step, state);
+    // A thread's reply is not a row of the log: it is on screen only once the thread is open (a step), so it is never the one waited for.
+    const last = (fixture.world.messages ?? []).filter((m) => m.channel === target && m.thread_of === undefined).at(-1);
+    // A poll post the browser gives up on (its read is refused and tried again 2, 5 and 10 s later) is drawn as its own text,
+    // the marker line gone and the time tag a local time, so the last message is found by its fixed line instead.
+    // A Bot world: the Bot's member row is in the page's members list before the frame (the members pane draws it and a command
+    // dialog names the Bot from that list).
+    const botName = (fixture.world.people ?? []).find((person) => person.bot)?.display;
+    if (state.bot && botName !== undefined && !boot) {
+      await page.locator(`.d-member-list__open[aria-label^="${botName}"]`).first().waitFor({ state: 'attached' });
+    }
+    if (last && !boot) await page.getByText(state.pollGivesUp ? 'Vote with /poll vote.' : last.body, { exact: !state.pollGivesUp }).first().waitFor();
+    // Task 19b: a fixture's `density` is put on the document root as App.tsx:105 puts the saved choice (`data-density`);
+    // the stylesheet's `[data-density]` rules then step every rule that reads the six density variables.
+    if (fixture.density !== undefined) {
+      await page.evaluate((d) => { document.documentElement.dataset.density = d; }, fixture.density);
+    }
+    for (const step of fixture.steps ?? []) await replayStep(page, step, state, context);
+    await sendTyping(page, fixture, state);
     if (!(fixture.steps ?? []).some((s) => s.do === 'hover')) {
       await page.mouse.move(viewport.width - 2, viewport.height - 2);
       await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());

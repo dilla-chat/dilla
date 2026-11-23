@@ -3,6 +3,7 @@
 //! The views run in a real (test) window over a trust slice as the client publishes it, and are driven with keystrokes.
 //! The trust behaviours against a real dillad (trust-polish.spec.ts) are the client's `tests/dms.rs`; here: what the
 //! Privacy section and the compare dialog do with the slice, the focus rules, and the DM picker's keys.
+//! `parity_dms_*` compare each fixture of `parity/fixtures/dms/` with its web reference (`assert_screen`, Linux and macOS).
 
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use dilla_desktop::screens::dms::{compare, conversation, picker, privacy};
 use dilla_desktop::screens::shell::Clock;
 use dilla_desktop::screens::{FocusNext, FocusPrevious};
 use dilla_desktop::slots::SlotCx;
+use dilla_parity::screen::assert_screen;
 use gpui::{
     Context, FocusHandle, InteractiveElement, IntoElement, ParentElement, Render, Styled,
     TestAppContext, VisualTestContext, Window, div, px,
@@ -58,6 +60,7 @@ impl Render for Host {
             channel: None,
             clock: Clock::Local,
             workspace: None,
+            composer: None,
         };
         div()
             .id("host")
@@ -288,10 +291,11 @@ fn dm_picker_type_ahead_arrows_and_enter(cx: &mut TestAppContext) {
     assert_eq!(selected(cx), Some(1));
     cx.simulate_keystrokes("up up");
     assert_eq!(selected(cx), Some(3), "Up wraps to the last member");
+    // The list is by shown name, as dmCandidates sorts it: Ada, Bea, Bo, Cy.
     cx.simulate_keystrokes("b");
-    assert_eq!(selected(cx), Some(1), "`b` goes to the next B: Bo");
-    cx.simulate_keystrokes("e");
-    assert_eq!(selected(cx), Some(2), "`be` is Bea");
+    assert_eq!(selected(cx), Some(1), "`b` goes to the next B: Bea");
+    cx.simulate_keystrokes("o");
+    assert_eq!(selected(cx), Some(2), "`bo` is Bo");
     // Enter without a client opens nothing and keeps the dialog open.
     cx.simulate_keystrokes("enter");
     assert!(cx.update(|_, cx| picker::model_in(w, cx).open));
@@ -349,4 +353,87 @@ fn conversation_block_and_removed_note(cx: &mut TestAppContext) {
     state.trust.contacts[0].removed_in.push(channel);
     assert_eq!(conversation::composer_block(&state, channel), None);
     assert!(state.trust.removed_here(channel));
+}
+
+fn parity(name: &str) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/dms")
+        .join(format!("{name}.json"));
+    let report = assert_screen(&fixture)
+        .unwrap_or_else(|e| panic!("dms/{name} differs from its web reference: {e}"));
+    println!(
+        "SCREEN dms/{name}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+/// A GPUI-only reference (`native/dms-<name>`): the web's live unread dots on the DM list are nondeterministic (a random one
+/// per shoot, as for `notify/unread-badge-b`), while the app marks every DM that got another person's message while the
+/// route showed another screen, with the dot and the bold name (Jonas 2026-11-21).
+fn native(name: &str) {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/dms")
+        .join(format!("{name}.json"));
+    let report =
+        dilla_parity::screen::assert_native_screen(&fixture, &format!("dms-{name}"), |_| {})
+            .unwrap_or_else(|e| panic!("dms/{name} differs from its golden shot: {e}"));
+    println!(
+        "SCREEN native/dms-{name}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_home() {
+    native("home");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_home_b() {
+    native("home-b");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_conversation() {
+    parity("conversation");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_conversation_b() {
+    parity("conversation-b");
+}
+
+/// Task 42: the new-DM button opens "Message someone" over the DM list.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_picker() {
+    parity("picker");
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn parity_dms_picker_b() {
+    parity("picker-b");
 }

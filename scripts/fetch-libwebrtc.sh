@@ -5,7 +5,7 @@
 # release build instead fetches it here, checks the checked-in digest, unpacks it and points LK_CUSTOM_WEBRTC at it, so
 # webrtc-sys links exactly the reviewed bytes and downloads nothing. CI's ordinary builds keep downloading.
 #
-# The archives are the ones webrtc-sys-build 0.3.21 (webrtc-sys 0.3.53, Cargo.lock) names: tag WEBRTC_TAG =
+# The archives are the ones webrtc-sys-build 0.3.21 (webrtc-sys 0.3.54, Cargo.lock) names: tag WEBRTC_TAG =
 # webrtc-a545de4 of livekit/rust-sdks, asset webrtc-<os>-<arch>-release.zip, root directory <os>-<arch>-release/.
 # The digests were taken from the downloaded archives on 2026-11-15 and match GitHub's own asset digests. When
 # Cargo.lock moves webrtc-sys-build, scripts/fetch-libwebrtc.test.mjs fails until the tag and digests here move too.

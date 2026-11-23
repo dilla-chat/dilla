@@ -10,7 +10,7 @@ use gpui::{
 
 use crate::icon::Icon;
 use crate::icon_names::IconName;
-use crate::text::{line, line_height};
+use crate::text::line;
 use crate::tokens::{color, font, radius, text};
 
 /// `padding: 0.375rem 0.625rem`, `gap: 0.5rem`, the glyphs 12px and 13px.
@@ -22,7 +22,7 @@ const CANCEL: f32 = 13.0;
 
 /// The bar's height in the composer's flow: the text's line and the two paddings (the 1px edges overlap the box).
 pub fn height() -> f32 {
-    line_height(text::BTN, 1.5) + 2.0 * PAD_Y
+    crate::text::root_line_height(text::BTN) + 2.0 * PAD_Y
 }
 
 type Cancel = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -81,9 +81,9 @@ impl ReplyBar {
 }
 
 impl RenderOnce for ReplyBar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let size = text::BTN;
-        let lh = line_height(size, 1.5);
+        let lh = crate::text::root_line_height(size);
         let mut cancel = div()
             .id(self.cancel_id)
             .flex()
@@ -109,7 +109,8 @@ impl RenderOnce for ReplyBar {
             label =
                 label.child(line(format!(" · {}", self.excerpt), size, lh, color::FG_3).ellipsis());
         }
-        div()
+        let enter = (self.id.clone(), "enter");
+        let chip = div()
             .id(self.id)
             .flex()
             .items_center()
@@ -132,7 +133,16 @@ impl RenderOnce for ReplyBar {
             .child(match self.wrap_cancel {
                 Some(wrap) => wrap(cancel.into_any_element()),
                 None => cancel.into_any_element(),
-            })
+            });
+        // ReplyChip.css:3: the chip rises in (`d-up` over `--duration-normal`, `ease`) when a reply starts.
+        crate::motion::up_in(
+            chip,
+            enter,
+            std::time::Duration::ZERO,
+            crate::tokens::motion::NORMAL,
+            crate::motion::EASE,
+            cx,
+        )
     }
 }
 

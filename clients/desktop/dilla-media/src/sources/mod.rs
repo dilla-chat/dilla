@@ -2,7 +2,9 @@
 //!
 //! - [`desktop`]: screens and windows through libwebrtc's own desktop capturer, the engine Electron's `desktopCapturer`
 //!   ran on (beta.5): X11 (screens through RandR, windows through XComposite), the XDG ScreenCast portal and PipeWire on
-//!   Wayland (the portal draws its own chooser), ScreenCaptureKit on macOS and Windows Graphics Capture on Windows;
+//!   Wayland (the portal draws its own chooser) and Windows Graphics Capture on Windows. macOS uses ScreenCaptureKit
+//!   directly for Dilla's own picker (GPUI gaps Task 45, D22): `desktop_mac`, through the vendored webrtc-sys's
+//!   `dilla_screen` bridge, with [`mac_list`] choosing and naming what it offers;
 //! - [`camera`]: the camera through the vendored webrtc-sys's `dilla_camera` bridge: libwebrtc's video capture module
 //!   (V4L2 on Linux, DirectShow on Windows) and AVFoundation on macOS.
 //!
@@ -18,8 +20,11 @@ use crate::capture_source::{Frame, Pull};
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub mod camera;
 pub mod desktop;
+#[cfg(target_os = "macos")]
+mod desktop_mac;
 #[cfg(target_os = "linux")]
 mod glib;
+pub mod mac_list;
 
 /// Why a source did not open.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

@@ -64,6 +64,14 @@ impl Log {
         }
     }
 
+    /// The history is closed (the `/modlog` dialog's end): what it loaded goes, and a load still out lands on nothing.
+    pub fn clear(&mut self) {
+        *self = Log {
+            generation: self.generation + 1,
+            ..Log::default()
+        };
+    }
+
     /// A load of `source` (after `after`, manual only) starts: its generation, or `None` while one is out.
     pub fn begin(
         &mut self,

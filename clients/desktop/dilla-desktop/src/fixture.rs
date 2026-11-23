@@ -26,6 +26,8 @@ use dilla_client::testing::spec::{self, ChannelKind, Phase, ScreenFixture, Shot,
 
 use crate::router::Route;
 
+mod announcements;
+pub mod appearance;
 mod attachments;
 mod calls;
 mod devices;
@@ -35,6 +37,7 @@ mod gifs;
 mod invites;
 mod members;
 mod messages;
+mod music;
 mod notify;
 mod polls;
 pub mod pre_account;
@@ -53,6 +56,8 @@ pub enum FixtureScreen {
     ShellHome { community: CommunityId },
     /// The shell on a DM's conversation (`/dm/{dm/<id>}`, lane G: the DM call box).
     ShellDm { dm: ChannelId },
+    /// The shell on Home with the DM tile selected and no DM open (`/dm`: the DM list, no conversation).
+    ShellDms,
     /// A device with no account (`/welcome`): the sign-up's first step, as the web draws it, or the pre-account screen
     /// the fixture names ([`pre_account::start`]).
     Welcome(pre_account::PreAccount),
@@ -111,6 +116,10 @@ impl Ids<'_> {
 
     fn channel(&self, path: &str) -> ChannelId {
         ChannelId(self.of("channel", path))
+    }
+
+    fn dm(&self, id: &str) -> ChannelId {
+        ChannelId(self.of("dm", id))
     }
 
     fn community(&self, id: &str) -> CommunityId {
@@ -196,6 +205,7 @@ pub fn screen_of(route: &Route, phase: Phase) -> Result<FixtureScreen, String> {
             community: *community,
         }),
         (Route::Dm(dm), Phase::Ready) => Ok(FixtureScreen::ShellDm { dm: *dm }),
+        (Route::Dms, Phase::Ready) => Ok(FixtureScreen::ShellDms),
         (Route::Welcome { .. }, Phase::SignedOut) => {
             Ok(FixtureScreen::Welcome(pre_account::PreAccount::SignUp))
         }
@@ -284,13 +294,29 @@ pub fn build_state(
             .filter(|c| c.kind == ChannelKind::Text)
         {
             let path = format!("{}/{}", server.id, c.id);
+            // The client's first page (messages.ts `buildTimeline`): the newest `TIMELINE_PAGE` rows, with more before
+            // them once the read filled the page.
+            let items = items_of(world, &path, viewer, shift, ids);
+            // A thread reply is not a row of the channel (`threads::apply` moves it into its thread), so the page counts
+            // the other rows only.
+            let page = dilla_client::state::TIMELINE_PAGE as usize;
+            let (replies, mut items): (Vec<_>, Vec<_>) = items.into_iter().partition(|i| {
+                world
+                    .messages
+                    .iter()
+                    .any(|m| m.key == i.key && m.thread_of.is_some())
+            });
+            let has_earlier = items.len() >= page;
+            items.drain(..items.len().saturating_sub(page));
+            items.extend(replies);
+            items.sort_by_key(|i| i.ts);
             timelines.insert(
                 ids.channel(&path),
                 Timeline {
                     channel_id: ids.channel(&path),
                     group: ChannelGroupState::Active,
-                    items: items_of(world, &path, viewer, shift, ids),
-                    has_earlier: false,
+                    items,
+                    has_earlier,
                 },
             );
         }
@@ -319,16 +345,21 @@ pub fn build_state(
     attachments::apply(world, viewer, &mut state);
     devices::apply(world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
-    dms::apply(world, viewer, ids, &mut state);
+    dms::apply(world, viewer, shift, ids, &mut state);
     // After the DMs: a DM's call is placed in the DM the dms facet made.
     calls::apply(world, viewer, ids, &mut state);
-    members::apply(world, viewer, &mut state);
-    messages::apply(world, viewer, &mut state);
+    members::apply(world, viewer, ids, fixture.clock + shift, &mut state);
+    messages::apply(world, viewer, ids, fixture.clock + shift, &mut state);
+    music::apply(world, ids, &mut state);
     notify::apply(fixture, ids, &mut state);
-    polls::apply(world, viewer, &mut state);
+    polls::apply(world, viewer, ids, &mut state);
     reactions::apply(world, viewer, &mut state);
     roles::apply(world, viewer, &mut state);
     server_admin::apply(world, viewer, &mut state);
+    server_admin::apply_bot(world, ids, &mut state);
+    // After the roles: the viewer's bits in the Bot's channels are resolved from them.
+    announcements::apply(world, ids, &mut state);
+    polls::apply_bot(world, ids, &mut state);
     gifs::apply(&fixture.name, &mut state);
     invites::apply(&fixture.name, fixture.clock + shift, &mut state);
     threads::apply(world, viewer, &mut state);

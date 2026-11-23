@@ -20,8 +20,8 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::a11y::{Accessible, Role};
 use crate::metrics::focus_ring;
-use crate::text::{line, line_height};
-use crate::tokens::{color, font, radius, text};
+use crate::text::line;
+use crate::tokens::{color, font, motion, radius, text};
 
 /// The grid's columns (`COLUMNS`).
 pub const COLUMNS: usize = 8;
@@ -430,7 +430,7 @@ impl Render for EmojiGrid {
                         .child(line(
                             footer_name(&item.name),
                             text::XS,
-                            line_height(text::XS, 1.5),
+                            crate::text::root_line_height(text::XS),
                             color::FG_2,
                         ))
                         .into_any_element()
@@ -446,7 +446,13 @@ impl Render for EmojiGrid {
                     .children(named),
             );
         }
-        root
+        // EmojiGrid.css:4: `d-modal` over `--duration-spin`.
+        crate::motion::modal_in(
+            root,
+            SharedString::from(format!("{}-enter", self.id)),
+            motion::SPIN,
+            cx,
+        )
     }
 }
 

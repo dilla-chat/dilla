@@ -94,7 +94,12 @@ export async function generate() {
   out.push('}', '');
   out.push('/// Durations (`--duration-<name>`).', 'pub mod motion {', '    use std::time::Duration;', '');
   for (const [key, value] of Object.entries(structural.motion)) {
-    if (key === 'easeOut') continue;
+    if (key === 'easeOut') {
+      // `--ease-out`: the curve's four control values, for the animation helper's cubic-bezier.
+      const c = /^cubic-bezier\(([^)]+)\)$/.exec(value)[1].split(',').map(Number);
+      out.push(`    /// \`--ease-out\`: ${value}`, `    pub const EASE_OUT: [f32; 4] = [${c.map(f).join(', ')}];`);
+      continue;
+    }
     const m = /^([0-9.]+)(ms|s)$/.exec(value);
     const ms = Math.round(Number(m[1]) * (m[2] === "s" ? 1000 : 1));
     out.push(`    /// \`--duration-${kebab(key)}\`: ${value}`, `    pub const ${constName(key)}: Duration = Duration::from_millis(${ms});`);

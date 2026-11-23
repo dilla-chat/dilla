@@ -1667,11 +1667,12 @@ const GPUI_OFF_LINUX_IGNORE = /#\[\s*cfg_attr\(\s*not\(\s*(?:target_os\s*=\s*"li
 function liveIgnoreSource(source) {
   let s = source.replace(GPUI_PARKED_PARITY, '').replace(GPUI_OFF_LINUX_IGNORE, '');
   // A macro that forwards its reason (`#[ignore = $why]`, or `#[cfg_attr(target_os = "linux", ignore = $why)]` or its
-  // Linux-and-macOS spelling beside an off-Linux ignore) is parked only when every reason literal passed to it is the R22 one.
+  // Linux-and-macOS spelling beside an off-Linux ignore) is parked only when every reason literal passed to it is the R22 one;
+  // passed none (every parked test un-parked, as ring.rs after Task 32), it ignores nothing.
   const forwarded = /#\[\s*(?:cfg_attr\(\s*(?:target_os\s*=\s*"linux"|any\(\s*target_os\s*=\s*"linux"\s*,\s*target_os\s*=\s*"macos"\s*\))\s*,\s*ignore\s*=\s*\$\w+\s*\)|ignore\s*=\s*\$\w+)\s*\]/g;
   if (forwarded.test(s)) {
     const reasons = [...s.matchAll(/;\s*"([^"]*)"/g)].map((m) => m[1]);
-    if (reasons.length > 0 && reasons.every((r) => r.startsWith('parity after T6c'))) s = s.replace(forwarded, '');
+    if (reasons.every((r) => r.startsWith('parity after T6c'))) s = s.replace(forwarded, '');
   }
   return s;
 }

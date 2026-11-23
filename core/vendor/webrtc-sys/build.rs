@@ -71,6 +71,11 @@ fn main() {
     if dilla_camera {
         rust_files.push("src/dilla_camera.rs");
     }
+    // DILLA PATCH: Dilla's own macOS share picker (GPUI gaps Task 45, D22): ScreenCaptureKit
+    // directly, src/dilla_screen_mac.mm.
+    if target_os == "macos" {
+        rust_files.push("src/dilla_screen.rs");
+    }
     // DILLA PATCH: the hook's synthetic-frame test support, only with the `dilla-test-frames` feature.
     let dilla_test_frames = env::var("CARGO_FEATURE_DILLA_TEST_FRAMES").is_ok();
     if dilla_test_frames {
@@ -388,8 +393,12 @@ fn main() {
             // the upstream .mm files are manual retain/release, so it is its own library: the same
             // includes, defines and flags as the bridge, plus -fobjc-arc. It needs AVFoundation,
             // CoreMedia and CoreVideo, which the list above links already.
+            // DILLA PATCH: Dilla's own share picker (GPUI gaps Task 45, D22) is a second ARC file of
+            // this library, src/dilla_screen_mac.mm: ScreenCaptureKit and CoreGraphics, which the
+            // list above links already. Its 12.3 and 14.0 symbols are all behind @available (the
+            // file makes an unguarded one an error), so they are weak-imported.
             // An empty bridge list: only cxx's include dirs (rust/cxx.h, the generated
-            // dilla_camera.rs.h), no generated sources.
+            // dilla_camera.rs.h and dilla_screen.rs.h), no generated sources.
             let mut camera = cxx_build::bridges(Vec::<&str>::new());
             camera.includes(&includes).define("WEBRTC_APM_DEBUG_DUMP", "0");
             for (key, value) in webrtc_sys_build::webrtc_defines() {
@@ -401,6 +410,7 @@ fn main() {
             configure_darwin_sysroot(&mut camera);
             camera
                 .file("src/dilla_camera_mac.mm")
+                .file("src/dilla_screen_mac.mm")
                 .flag("-stdlib=libc++")
                 .flag("-std=c++20")
                 .flag("-Wno-nullability-completeness")
@@ -464,7 +474,15 @@ fn main() {
     builder.warnings(false).compile("webrtcsys-cxx");
     if let Some(mut camera) = dilla_camera_mac {
         camera.define("LIVEKIT_TEST", None);
-        camera.warnings(false).compile("webrtcsys-camera");
+        // DILLA PATCH: silent like the bridge's `-w`, but through `-Wno-everything` (after cc's
+        // `-Wall`), which a file's own `#pragma clang diagnostic error` still overrides:
+        // dilla_screen_mac.mm makes an unguarded macOS 12.3+/14.0+ symbol an error that way
+        // (`-Wunguarded-availability-new`), and `-w` would silence that too.
+        camera
+            .warnings(true)
+            .extra_warnings(false)
+            .flag("-Wno-everything")
+            .compile("webrtcsys-camera");
     }
 
     for entry in glob::glob("./src/**/*.cpp").unwrap() {

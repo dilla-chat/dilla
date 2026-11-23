@@ -17,7 +17,7 @@ use gpui::{
 
 use crate::metrics::shadow_1;
 use crate::text::{line, line_height};
-use crate::tokens::{color, radius, text};
+use crate::tokens::{color, motion, radius, text};
 
 /// Tooltip.tsx `SHOW_MS`.
 pub const SHOW_DELAY: Duration = Duration::from_millis(400);
@@ -51,8 +51,12 @@ impl TooltipView {
 }
 
 impl Render for TooltipView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        tip_box(self.label.clone(), &self.chord())
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        fade(
+            tip_box(self.label.clone(), &self.chord()),
+            "tooltip-fade",
+            cx,
+        )
     }
 }
 
@@ -81,6 +85,12 @@ fn tip_box(label: SharedString, chord: &str) -> Div {
         ));
     }
     root
+}
+
+/// The tooltip fading in as `.d-tooltip` does (Tooltip.css:9: `d-fade` over `--duration-press`, the CSS's default curve),
+/// each time it is shown (a hidden tooltip is no element, so its state ends with it).
+fn fade(tip: Div, id: impl Into<ElementId>, cx: &App) -> AnyElement {
+    crate::motion::fade_in(tip, id, motion::PRESS, crate::motion::EASE, cx)
 }
 
 /// Tooltip.tsx `placement`.
@@ -179,6 +189,7 @@ impl WithTooltip {
 
 impl RenderOnce for WithTooltip {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let fade_id = (self.id.clone(), "tip-fade");
         let state = window.use_keyed_state(self.id.clone(), cx, |_, _| TipState::default());
         let shown = state.read(cx).shown;
         let (on_hover, on_press) = (state.clone(), state);
@@ -222,7 +233,7 @@ impl RenderOnce for WithTooltip {
             .child(self.child);
         if shown {
             root = root.child(TipLayer {
-                tip: Some(tip_box(self.label, &self.chord).into_any_element()),
+                tip: Some(fade(tip_box(self.label, &self.chord), fade_id, cx)),
                 placement: self.placement,
             });
         }

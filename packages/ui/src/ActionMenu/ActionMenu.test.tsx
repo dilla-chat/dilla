@@ -142,6 +142,8 @@ describe('ActionMenu', () => {
     vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100);
     const { unmount } = render(<Harness startOpen at={{ x: 40, y: 50 }} />);
     expect(screen.getByRole('menu')).toHaveStyle({ position: 'fixed', left: '40px', top: '50px' });
+    // The popup's `right: 0` (the trigger case) must not apply: a fixed left and right would stretch it to the 300px cap.
+    expect(screen.getByRole('menu').closest<HTMLElement>('.d-action-menu__popup')!.style.right).toBe('auto');
     unmount();
     render(<Harness startOpen at={{ x: window.innerWidth - 10, y: window.innerHeight - 10 }} />);
     expect(screen.getByRole('menu')).toHaveStyle({ left: `${window.innerWidth - 160}px`, top: `${window.innerHeight - 100}px` });

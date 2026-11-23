@@ -28,7 +28,7 @@ use dilla_desktop_ui::components::members::role_editor::{
     EditorLabels, EditorRole, PermGroup, PermToggle, RoleEditor,
 };
 use dilla_desktop_ui::components::settings::frame::section_header_full;
-use dilla_desktop_ui::text::{line, line_height};
+use dilla_desktop_ui::text::line;
 use dilla_desktop_ui::tokens::{color, text};
 
 use crate::slots::SlotCx;
@@ -611,7 +611,7 @@ pub fn section(
             .child(line(
                 t("roles.loading"),
                 text::UI,
-                line_height(text::UI, 1.5),
+                dilla_desktop_ui::text::root_line_height(text::UI),
                 color::FG_2,
             ))
             .into_any_element();
@@ -787,6 +787,12 @@ pub fn section(
     }
     #[cfg(feature = "automation")]
     {
+        // The typed name's line box for the R13 text mask.
+        editor = editor.name_overlay(crate::screens::composer::typed_line(
+            div().size_full(),
+            &input.read(cx).value(),
+            dilla_desktop_ui::text::root_line_height(text::INPUT),
+        ));
         editor = editor.probe(Rc::new(|id: &str| {
             crate::automation::bounds_probe(super::probe_id(id)).into_any_element()
         }));
