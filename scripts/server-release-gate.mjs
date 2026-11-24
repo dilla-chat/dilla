@@ -30,7 +30,7 @@ const API_ORIGIN = 'https://api.github.com';
 const RETRY_DELAYS = [1000, 3000];
 const COMMIT = /^[a-f0-9]{40}$/;
 const TAG_NAME = /^[\w][\w.+-]*$/;
-/** The workflows a release may gate on: the run's `name` and its file. */
+/** The workflows a release may gate on: a label for messages and the workflow file that identifies its runs. */
 export const GATED_WORKFLOWS = {
   server: { name: 'server', file: 'server.yml' },
   'desktop-gpui': { name: 'desktop-gpui', file: 'desktop-gpui.yml' },
@@ -76,8 +76,11 @@ export async function request({ token, fetchImpl, sleep, log, path, method = 'GE
   }
 }
 
-/** A run of the gated workflow in this repository (not a fork's), whatever its event, branch, commit or status. */
-export const isOwnRun = (r, repository, { name, file }) => r && r.name === name && r.path === `.github/workflows/${file}`
+/**
+ * A run of the gated workflow in this repository (not a fork's), whatever its event, branch, commit or status. GitHub
+ * reports a workflow's `run-name` in the run's `name`, so the workflow file's path identifies it, never `name`.
+ */
+export const isOwnRun = (r, repository, { file }) => r && r.path === `.github/workflows/${file}`
   && r.repository?.full_name === repository && r.head_repository?.full_name === repository
   && typeof r.head_sha === 'string' && COMMIT.test(r.head_sha)
   && Number.isSafeInteger(r.id) && r.id > 0 && Number.isSafeInteger(r.run_number);

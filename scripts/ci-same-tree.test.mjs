@@ -14,7 +14,7 @@ const pr = (over = {}) => ({
   base: { ref: 'main', sha: PARENT, repo: { id: 1, url: 'https://api.github.com/repos/o/r', name: 'r' } }, ...over,
 });
 const prRun = (over = {}) => ({
-  id: 10, run_number: 3, run_attempt: 1, name: 'desktop-gpui', path: '.github/workflows/desktop-gpui.yml', event: 'pull_request',
+  id: 10, run_number: 3, run_attempt: 1, name: 'desktop-gpui [pr]', display_title: 'desktop-gpui [pr]', path: '.github/workflows/desktop-gpui.yml', event: 'pull_request',
   head_branch: 'feature', head_sha: HEAD, status: 'completed', conclusion: 'success', repository: OWN, head_repository: OWN,
   pull_requests: [pr()], ...over,
 });
@@ -112,7 +112,8 @@ test('aForkPrRunNeverCovers', async () => {
 
 test('aRunOfAnotherWorkflowNeverCovers', async () => {
   assert.equal(await decide(fakeGithub({ runs: [prRun({ path: '.github/workflows/other.yml', name: 'desktop-gpui' })] })), false);
-  assert.equal(await decide(fakeGithub({ runs: [prRun({ name: 'server' })] })), false);
+  // A run is the workflow's by its path alone; GitHub reports desktop-gpui.yml's run-name in `name`.
+  assert.equal(await decide(fakeGithub({ runs: [prRun({ name: 'server' })] })), true);
   // A workflow the release gates do not know is never decided from the API.
   const gh = fakeGithub();
   assert.equal(await decide(gh, { workflowFile: 'mobile.yml' }), false);
