@@ -79,7 +79,8 @@ counts for a tag when its head commit's tree equals the tagged commit's tree.
    is a run whose attempt 1 failed only because a job never got a runner (no runner, no steps, cancelled; the rule is
    `scripts/ci-rerun-starved.mjs`): the gate re-runs the failed jobs once, keeps following the same run and waits up
    to 120 minutes more. A second red or starved attempt, or any real failure, refuses.
-4. It waits at most 150 minutes in total (the bound grows by 120 minutes, once, when the gate re-runs a starved run), and checks the issue again before it passes.
+4. It waits at most 150 minutes in total (the bound grows by 120 minutes, once, when the gate re-runs a starved
+   run), and checks the issue again before it passes.
 
 `desktop-gpui-sign.yml` re-checks the same rule through `scripts/desktop-gpui-gate.mjs` but has no `RELEASE_TAG`, so it
 never dispatches. It waits for a qualifying run that is queued or in progress only until its own job's 75-minute
