@@ -1,6 +1,7 @@
 //! The engine's event loop against a scripted gateway server: a slow decrypt on a group's lane must never leave a
 //! gateway event untaken (the gateway tears the connection down after `ack_timeout` of that, and reconnects).
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -762,5 +763,95 @@ async fn a_background_join_retries_a_stale_epoch_only_once_the_group_moved() {
         still.info_reads.load(Ordering::Acquire),
         1,
         "only the epoch refusal reads the group, never a 409"
+    );
+}
+
+/// A queued outbox row with the id `[n; 16]` (no body: the order is what is under test).
+fn outbox_row(n: u8) -> crate::state::messages::OutboxRow {
+    crate::state::messages::OutboxRow {
+        msg_id: [n; 16],
+        state: 0,
+        error: String::new(),
+        created: 1_700_000_000,
+        body: String::new(),
+        kind: 0,
+        reply_to: None,
+        attachments: Vec::new(),
+        blobs: Vec::new(),
+    }
+}
+
+type FakeOutbox = Arc<Mutex<Vec<crate::state::messages::OutboxRow>>>;
+
+/// The fake core's outbox read (the core's `outbox`).
+fn read_outbox(
+    outbox: &FakeOutbox,
+) -> impl Future<Output = Vec<crate::state::messages::OutboxRow>> {
+    let outbox = outbox.clone();
+    async move { outbox.lock().unwrap().clone() }
+}
+
+/// send.ts `sendRequest` / `drainOne`: a drain that reads the outbox while a send's `send_prepare` has written its row
+/// but its id is not queued yet must not post that row ahead of the older queued ones. Each send after the first starts
+/// a drain inside that gap (the core's answer is held back while the drain runs); the rows are then posted one at a
+/// time, each the first queued row of a fresh read, as `drain_one` picks them. A row left from before this engine
+/// started (never queued here) keeps its place ahead of them.
+#[tokio::test(start_paused = true)]
+async fn a_drain_between_prepare_and_queue_never_posts_the_new_row_first() {
+    let engine = engine(Arc::new(NoHooks {
+        ready: AtomicUsize::new(0),
+        down: AtomicUsize::new(0),
+    }));
+    // The core's outbox: row 0 is a leftover from an earlier session.
+    let outbox: FakeOutbox = Arc::new(Mutex::new(vec![outbox_row(0)]));
+    let posted: Arc<Mutex<Vec<u8>>> = Arc::default();
+    // One drain: reads the outbox in queue order and posts its first queued row (the instance stores it next).
+    let post_one = |engine: Arc<Engine>, outbox: FakeOutbox, posted: Arc<Mutex<Vec<u8>>>| async move {
+        let rows = engine.outbox_in_queue_order(read_outbox(&outbox)).await;
+        let next = rows.iter().find(|r| r.state == 0).map(|r| r.msg_id)?;
+        posted.lock().unwrap().push(next[0]);
+        outbox.lock().unwrap().retain(|r| r.msg_id != next);
+        engine.st().queued.retain(|q| *q != next);
+        Some(next[0])
+    };
+    for n in 1..=5u8 {
+        let in_gap = Arc::new(Mutex::new(None));
+        let prepare = {
+            let (engine, outbox, posted, in_gap) = (
+                engine.clone(),
+                outbox.clone(),
+                posted.clone(),
+                in_gap.clone(),
+            );
+            async move {
+                // send_prepare has written the row ...
+                outbox.lock().unwrap().push(outbox_row(n));
+                if n > 1 {
+                    // ... a drain starts (the previous send's) ...
+                    let drain = tokio::spawn(post_one(engine, outbox, posted));
+                    // ... and the core's answer arrives late: the drain has all the time it needs.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    *in_gap.lock().unwrap() = Some(drain);
+                }
+                Ok(Value::Array(vec![Value::Bytes(vec![n; 16])]).encode())
+            }
+        };
+        let msg = engine.queue_prepared(prepare).await.expect("queued");
+        assert_eq!(msg, [n; 16]);
+        let drain = in_gap.lock().unwrap().take();
+        if let Some(drain) = drain {
+            let pick = drain.await.unwrap().expect("a queued row");
+            assert_ne!(pick, n, "the drain in send {n}'s gap posted its row first");
+        }
+    }
+    // The rest is posted one row at a time, as `drain_one` does, until the outbox is empty.
+    while post_one(engine.clone(), outbox.clone(), posted.clone())
+        .await
+        .is_some()
+    {}
+    assert_eq!(
+        *posted.lock().unwrap(),
+        [0, 1, 2, 3, 4, 5],
+        "the post order is the send order"
     );
 }

@@ -421,6 +421,23 @@ fn holds(s: &AppState, channel: ChannelId, len: usize, earlier: bool, first: &st
     })
 }
 
+/// The timeline of `channel` shows exactly `{prefix}{n}` for each `n` of `range`, in that order (the send order: a burst
+/// of sends is stored as it was sent).
+fn in_send_order(
+    s: &AppState,
+    channel: ChannelId,
+    prefix: &str,
+    range: std::ops::RangeInclusive<usize>,
+) -> bool {
+    s.timelines.get(&channel).is_some_and(|t| {
+        t.items.len() == range.clone().count()
+            && t.items
+                .iter()
+                .zip(range)
+                .all(|(i, n)| i.body == format!("{prefix}{n}"))
+    })
+}
+
 /// Task 12, client-core worker/controller.ts `loadEarlier` (4450-4457), `openOnce` (4395) and `closeChannel` (4445):
 /// "load earlier" grows the open channel's page by `TIMELINE_PAGE`, a later refresh keeps the grown page, two presses
 /// before the first read lands lose or double no row, a press that lands after the conversation closed grows nothing,
@@ -463,9 +480,12 @@ async fn load_earlier_grows_the_channel_page_by_one_hundred() {
     }
     let page =
         |s: &AppState, len: usize, earlier: bool, first: &str| holds(s, ch, len, earlier, first);
-    wait_for(&alice, SHORT, "the first page of 100", |s| {
-        page(s, 100, true, "m1")
-    })
+    wait_for(
+        &alice,
+        SHORT,
+        "the first page of 100, m1..m100 in order",
+        |s| page(s, 100, true, "m1") && in_send_order(s, ch, "m", 1..=100),
+    )
     .await;
 
     assert!(matches!(alice.load_earlier(ch).await, Ok(Ok(()))));
@@ -543,9 +563,12 @@ async fn load_earlier_grows_the_channel_page_by_one_hundred() {
     }
     let dm_page =
         |s: &AppState, len: usize, earlier: bool, first: &str| holds(s, dm, len, earlier, first);
-    wait_for(&alice, SHORT, "the DM's first page of 100", |s| {
-        dm_page(s, 100, true, "d1")
-    })
+    wait_for(
+        &alice,
+        SHORT,
+        "the DM's first page of 100, d1..d100 in order",
+        |s| dm_page(s, 100, true, "d1") && in_send_order(s, dm, "d", 1..=100),
+    )
     .await;
     assert!(matches!(alice.load_earlier(dm).await, Ok(Ok(()))));
     wait_for(&alice, SHORT, "the DM's whole history of 101", |s| {
