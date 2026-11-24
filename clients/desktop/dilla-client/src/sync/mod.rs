@@ -328,6 +328,9 @@ pub struct Engine {
     gateway: Mutex<Option<Arc<WsGateway>>>,
     /// How many sends a leaf verdict refused and [`Engine::send_with_trust_retry`] queued again (tests read it).
     trust_retries: std::sync::atomic::AtomicU64,
+    /// Held over a send's `send_prepare` and the push of its id onto `queued`, and over a drain's outbox read and the
+    /// `queued` it ranks by ([`Engine::queue_prepared`], [`Engine::outbox_in_queue_order`]): local core calls only.
+    prepare_gate: tokio::sync::Mutex<()>,
 }
 
 fn key(g: &Gid) -> String {
@@ -367,6 +370,7 @@ impl Engine {
             trust: tokio::sync::Mutex::default(),
             trust_pass: trust::TrustPass::default(),
             trust_retries: std::sync::atomic::AtomicU64::new(0),
+            prepare_gate: tokio::sync::Mutex::const_new(()),
             gateway: Mutex::new(None),
         })
     }
@@ -2143,13 +2147,50 @@ impl Engine {
             return Err(SyncError::Stopped);
         }
         let now = now_s();
-        let raw = with_core(&self.core, move |c| c.send_prepare(&g, &request, now)).await?;
-        let v = value::decode(&raw)?;
-        let msg = bin16(&arr(&v, 1)?[0])?;
-        self.st().queued.push(msg);
+        let msg = self
+            .queue_prepared(with_core(&self.core, move |c| {
+                c.send_prepare(&g, &request, now)
+            }))
+            .await?;
         self.hooks.group_changed(g);
         self.request_drain(g);
         Ok(msg)
+    }
+
+    /// Runs `prepare` (the core's `send_prepare`, which writes the row into the outbox) and queues the answered message
+    /// id in `queued`, as one step under the prepare gate: a drain reads the outbox and `queued` under the same
+    /// gate ([`Engine::outbox_in_queue_order`]), so it never sees the new row before its id is queued (it would rank
+    /// it ahead of every older queued row). The gate spans local core calls only, never the network.
+    async fn queue_prepared(
+        &self,
+        prepare: impl Future<Output = Result<Vec<u8>, CoreError>>,
+    ) -> Result<Gid, SyncError> {
+        let _gate = self.prepare_gate.lock().await;
+        let raw = prepare.await?;
+        let v = value::decode(&raw)?;
+        let msg = bin16(&arr(&v, 1)?[0])?;
+        self.st().queued.push(msg);
+        Ok(msg)
+    }
+
+    /// send.ts `drainOne`'s `inQueueOrder` over `read` (the group's outbox), read under the prepare gate (see
+    /// [`Engine::queue_prepared`]): rows this engine queued keep their order; older rows keep the core's place ahead of
+    /// them.
+    async fn outbox_in_queue_order(
+        &self,
+        read: impl Future<Output = Vec<crate::state::messages::OutboxRow>>,
+    ) -> Vec<crate::state::messages::OutboxRow> {
+        let _gate = self.prepare_gate.lock().await;
+        let mut rows = read.await;
+        let st = self.st();
+        let rank = |m: &Gid| {
+            st.queued
+                .iter()
+                .position(|q| q == m)
+                .map_or(-1, |p| p as i64)
+        };
+        rows.sort_by_key(|r| rank(&r.msg_id));
+        rows
     }
 
     /// The group whose outbox holds `msg`, and the row (send.ts `owner`).
@@ -2294,18 +2335,7 @@ impl Engine {
         if self.state_of(g).await != Some(2) {
             return;
         }
-        let mut rows = self.outbox(g).await;
-        {
-            // inQueueOrder: rows this engine queued keep their order; older rows keep the core's place ahead of them.
-            let st = self.st();
-            let rank = |m: &Gid| {
-                st.queued
-                    .iter()
-                    .position(|q| q == m)
-                    .map_or(-1, |p| p as i64)
-            };
-            rows.sort_by_key(|r| rank(&r.msg_id));
-        }
+        let rows = self.outbox_in_queue_order(self.outbox(g)).await;
         if let Some(in_flight) = rows.iter().find(|x| x.state == 1) {
             let msg = in_flight.msg_id;
             self.after_lost_response(g, msg).await;
