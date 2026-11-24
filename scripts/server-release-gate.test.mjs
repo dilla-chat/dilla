@@ -13,7 +13,11 @@ const serverRun = (over = {}) => ({
   display_title: 'server', created_at: '2026-11-18T00:00:00Z',
   status: 'completed', conclusion: 'success', repository: { full_name: 'o/r' }, head_repository: { full_name: 'o/r' }, ...over,
 });
-const gpuiRun = (over = {}) => serverRun({ name: 'desktop-gpui', path: '.github/workflows/desktop-gpui.yml', display_title: 'desktop-gpui [nightly]', event: 'schedule', ...over });
+// GitHub reports desktop-gpui.yml's run-name in `name`, so `name` equals the tiered `display_title` (the real shape).
+const gpuiRun = (over = {}) => {
+  const title = 'display_title' in over ? over.display_title : 'desktop-gpui [nightly]';
+  return serverRun({ name: title, path: '.github/workflows/desktop-gpui.yml', display_title: title, event: 'schedule', ...over });
+};
 const inProgress = (r) => ({ ...r, status: 'in_progress', conclusion: null });
 const queued = serverRun({ status: 'queued', conclusion: null });
 
@@ -173,8 +177,8 @@ test('the server gate refuses a tree without a green server run', async () => {
 });
 
 test('a green desktop run does not satisfy the server gate', async () => {
-  const desktopRun = serverRun({ id: 88, run_number: 9, name: 'desktop', path: '.github/workflows/server.yml' });
-  // Listed under the server workflow's own path (whatever the API returned) it is still not a server run.
+  const desktopRun = serverRun({ id: 88, run_number: 9, name: 'desktop', path: '.github/workflows/desktop-gpui.yml' });
+  // Listed under the server workflow's listing (whatever the API returned) a run of another path is still not a server run.
   await assert.rejects(run(envFor({}), SHA, clocked(fakeGithub({ runs: [desktopRun] })).options), /no green server run/);
   const gh = fakeGithub({ runs: [serverRun({ path: '.github/workflows/desktop-ci.yml', name: 'desktop' })] });
   await assert.rejects(run(envFor({}), SHA, clocked(gh).options));
@@ -182,7 +186,7 @@ test('a green desktop run does not satisfy the server gate', async () => {
 });
 
 test('a run of another workflow path or a fork head repository is refused', async () => {
-  for (const bad of [{ path: '.github/workflows/other.yml' }, { name: 'server2' }, { head_repository: { full_name: 'fork/r' } }, { repository: { full_name: 'fork/r' } }, { head_repository: null }]) {
+  for (const bad of [{ path: '.github/workflows/other.yml' }, { head_repository: { full_name: 'fork/r' } }, { repository: { full_name: 'fork/r' } }, { head_repository: null }]) {
     const gh = fakeGithub({ runs: [serverRun(bad)] });
     // The fake lists by path; a run under another path is returned under server.yml's listing to prove the gate re-checks.
     const base = gh.fetchImpl;
@@ -286,7 +290,7 @@ test('no server run at all on the tree is refused at once, without waiting', asy
 });
 
 test('an in-flight run that is not a server run on the tree is not waited for', async () => {
-  for (const bad of [{ head_sha: OTHER }, { name: 'desktop' }, { head_repository: { full_name: 'fork/r' } }]) {
+  for (const bad of [{ head_sha: OTHER }, { path: '.github/workflows/desktop-gpui.yml' }, { head_repository: { full_name: 'fork/r' } }]) {
     const gh = fakeGithub({ runs: [inProgress(serverRun(bad))] });
     const { clock, options } = clocked(gh);
     await assert.rejects(run(envFor({}), SHA, options), /no green server run on the tree/, JSON.stringify(bad));
@@ -317,6 +321,34 @@ test('theGateAcceptsANightlyRunOnTheSameTree', async () => {
     const g = fakeGithub({ runs: [gpuiRun(over)] });
     assert.equal((await run(desktopEnv({}), SHA, desktop(clocked(g).options))).id, 77, JSON.stringify(over));
     assert.deepEqual(g.dispatches, []);
+  }
+});
+
+test('a_real_shaped_tier_run_is_accepted', async () => {
+  // GitHub sends run 45343271392 with name == display_title == 'desktop-gpui [nightly]'.
+  const real = gpuiRun({ head_sha: TWIN });
+  assert.equal(real.name, 'desktop-gpui [nightly]');
+  const gh = fakeGithub({ runs: [real] });
+  assert.equal((await run(desktopEnv({}), SHA, desktop(clocked(gh).options))).id, 77);
+  assert.deepEqual(gh.dispatches, []);
+  // A dispatched run named 'desktop-gpui [release]' is the one the gate follows.
+  const g = fakeGithub();
+  const c = clocked(g);
+  g.onDispatch = (s) => s.runs.push(releaseRun(c.clock));
+  assert.equal(releaseRun(c.clock).name, 'desktop-gpui [release]');
+  assert.equal((await run(desktopEnv({}), SHA, desktop(c.options))).id, 500);
+  assert.equal(g.dispatches.length, 1);
+});
+
+test('a forged tier title on another workflow path or a fork is refused', async () => {
+  for (const bad of [{ path: '.github/workflows/other.yml' }, { head_repository: { full_name: 'fork/r' } }, { repository: { full_name: 'fork/r' } }]) {
+    const g = fakeGithub({ runs: [gpuiRun({ head_sha: TWIN, ...bad })] });
+    const base = g.fetchImpl;
+    g.fetchImpl = async (url, init) => (url.pathname.endsWith('/desktop-gpui.yml/runs') ? Response.json({ workflow_runs: g.runs }) : base(url, init));
+    const c = clocked(g);
+    g.onDispatch = (s) => s.runs.push(releaseRun(c.clock));
+    assert.equal((await run(desktopEnv({}), SHA, desktop(c.options))).id, 500, JSON.stringify(bad));
+    assert.equal(g.dispatches.length, 1, JSON.stringify(bad));
   }
 });
 
