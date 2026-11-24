@@ -49,7 +49,7 @@ function fakeGithub(over = {}) {
     if (method === 'POST' && (m = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/rerun-failed-jobs$/.exec(p))) {
       state.reruns.push(m[1]);
       state.onRerun(state, m[1]);
-      return Response.json({}, { status: 201 }); // GitHub answers 201 with an empty JSON object
+      return state.emptyRerunBody ? new Response(null, { status: 201 }) : Response.json({}, { status: 201 });
     }
     if (method !== 'GET') return new Response('', { status: 405 });
     if ((m = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/attempts\/1\/jobs$/.exec(p))) {
@@ -577,4 +577,52 @@ test('the_rerun_extends_the_bound_by_RERUN_BOUND_MS', async () => {
   assert.ok(waited > BOUND_MS, `kept waiting past BOUND_MS (${waited} ms)`);
   assert.ok(waited <= BOUND_MS + RERUN_BOUND_MS, `ended within the extended bound (${waited} ms)`);
   assert.equal(gh.reruns.length, 1);
+});
+
+test('a_stale_read_of_attempt_1_after_the_rerun_keeps_waiting_for_attempt_2', async () => {
+  const gh = fakeGithub();
+  let polls = 0;
+  const { clock, options } = clocked(gh, { onSleep: () => {
+    const r = gh.runs.find((x) => x.id === 500);
+    if (gh.reruns.length && ++polls === 3) Object.assign(r, { run_attempt: 2, status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  const found = await run(desktopEnv({}), SHA, desktop(options)); // the run still reads as attempt 1 failure for two polls
+  assert.equal(found.run_attempt, 2);
+  assert.equal(gh.reruns.length, 1);
+});
+
+test('a_job_of_attempt_1_that_is_not_final_is_waited_for_and_never_rerun_meanwhile', async () => {
+  const gh = fakeGithub();
+  const { clock, options } = clocked(gh, { onSleep: () => {
+    if (gh.attemptJobs[500].some((j) => j.status !== 'completed') && clock.sleeps.length >= 2) gh.attemptJobs[500][0] = greenJob(11);
+    const r = gh.runs.find((x) => x.id === 500);
+    if (r.run_attempt === 2) Object.assign(r, { status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  gh.attemptJobs[500][0] = { ...greenJob(11), status: 'in_progress', conclusion: null };
+  gh.onRerun = (s) => {
+    assert.ok(s.attemptJobs[500].every((j) => j.status === 'completed'), 'no POST while a job is non-final');
+    Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'in_progress', conclusion: null });
+  };
+  assert.equal((await run(desktopEnv({}), SHA, desktop(options))).run_attempt, 2);
+  assert.equal(gh.reruns.length, 1);
+  // A job that never becomes final refuses at the bound, without a POST.
+  const stuck = fakeGithub();
+  const c = clocked(stuck);
+  redOnlyStarved(stuck, c.clock);
+  stuck.attemptJobs[500][0] = { ...greenJob(11), status: 'in_progress', conclusion: null };
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(c.options)), /run 500 .*still/);
+  assert.deepEqual(stuck.reruns, []);
+});
+
+test('the_rerun_post_succeeds_on_an_empty_201_body', async () => {
+  const gh = fakeGithub({ emptyRerunBody: true });
+  const { clock, options } = clocked(gh, { onSleep: () => {
+    const r = gh.runs.find((x) => x.id === 500);
+    if (r.run_attempt === 2) Object.assign(r, { status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  gh.onRerun = (s) => Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'in_progress', conclusion: null });
+  assert.equal((await run(desktopEnv({}), SHA, desktop(options))).run_attempt, 2);
 });

@@ -79,7 +79,8 @@ export async function request({ token, fetchImpl, sleep, log, path, method = 'GE
     }
     if (response.status >= 500 && response.status <= 599 && !last) { await response.body?.cancel(); await retry(`failed (${response.status})`); continue; }
     if (!response.ok) throw new Error(`GitHub API ${method} ${path.split('?')[0]} failed (${response.status})`);
-    if (response.status === 204) return null;
+    // A write's answer is never parsed: any 2xx (204, or 201 with an empty body or none) is success.
+    if (response.status === 204 || method !== 'GET') { await response.body?.cancel(); return null; }
     return response.json();
   }
 }
@@ -259,6 +260,8 @@ export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(m
     if (r.status === 'completed' && !(reran && r.run_attempt === 1)) {
       if (r.conclusion !== 'success' && !reran && r.run_attempt === 1 && r.conclusion === 'failure') {
         const jobs = await attemptOneJobs(r.id);
+        // A job not final yet may still fail for real or recover: judge only once every attempt-1 job has completed.
+        if (jobs.some((j) => j?.status !== 'completed')) { await waitOr(r); continue; }
         if (shouldRerun({ attempt: 1, conclusion: r.conclusion, jobs })) {
           // Job ids, never names (a fork controls names).
           log(`${label} run ${r.id}: ${starvedJobs(jobs).length} job(s) never got a runner (ids ${starvedJobs(jobs).map((j) => Number(j.id)).join(', ')}); re-running failed jobs once`);
