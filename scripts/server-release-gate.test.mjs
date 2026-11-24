@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { run, BOUND_MS, SKIPPED_JOB } from './server-release-gate.mjs';
+import { run, BOUND_MS, RERUN_BOUND_MS, SKIPPED_JOB } from './server-release-gate.mjs';
 import { ISSUE_TITLE, ISSUE_LABEL } from './ci-nightly-issue.mjs';
 
 const SHA = 'a'.repeat(40), OTHER = 'b'.repeat(40), TWIN = 'c'.repeat(40);
@@ -18,6 +18,10 @@ const gpuiRun = (over = {}) => {
   const title = 'display_title' in over ? over.display_title : 'desktop-gpui [nightly]';
   return serverRun({ name: title, path: '.github/workflows/desktop-gpui.yml', display_title: title, event: 'schedule', ...over });
 };
+// Attempt-1 jobs of a run: one that really ran and failed, one green, one GitHub never gave a runner.
+const realFailedJob = (id) => ({ id, name: 'build', status: 'completed', conclusion: 'failure', runner_name: 'runner-1', steps: [{ name: 'compile' }] });
+const greenJob = (id) => ({ id, name: 'test', status: 'completed', conclusion: 'success', runner_name: 'runner-2', steps: [{ name: 'run' }] });
+const starvedJob = (id, runner_name = null) => ({ id, name: 'gpui-mac-package', status: 'completed', conclusion: 'cancelled', runner_name, steps: [] });
 const inProgress = (r) => ({ ...r, status: 'in_progress', conclusion: null });
 const queued = serverRun({ status: 'queued', conclusion: null });
 
@@ -28,7 +32,7 @@ const queued = serverRun({ status: 'queued', conclusion: null });
  * a path's answer with an HTTP status.
  */
 function fakeGithub(over = {}) {
-  const state = { runs: [], trees: { [SHA]: TREE, [OTHER]: OTHER_TREE, [TWIN]: TREE }, jobs: {}, issues: [], dispatches: [], seen: [], status: {}, onDispatch: () => {}, ...over };
+  const state = { runs: [], trees: { [SHA]: TREE, [OTHER]: OTHER_TREE, [TWIN]: TREE }, jobs: {}, attemptJobs: {}, issues: [], dispatches: [], reruns: [], seen: [], status: {}, onDispatch: () => {}, onRerun: () => {}, ...over };
   state.fetchImpl = async (url, init = {}) => {
     const key = `${url.pathname}${url.search}`;
     const method = init.method ?? 'GET';
@@ -42,7 +46,16 @@ function fakeGithub(over = {}) {
       state.onDispatch(state, body);
       return new Response(null, { status: 204 });
     }
+    if (method === 'POST' && (m = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/rerun-failed-jobs$/.exec(p))) {
+      state.reruns.push(m[1]);
+      state.onRerun(state, m[1]);
+      return state.emptyRerunBody ? new Response(null, { status: 201 }) : Response.json({}, { status: 201 });
+    }
     if (method !== 'GET') return new Response('', { status: 405 });
+    if ((m = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/attempts\/1\/jobs$/.exec(p))) {
+      const jobs = state.attemptJobs[m[1]] ?? [realFailedJob(1)];
+      return Response.json({ total_count: jobs.length, jobs });
+    }
     if ((m = /^\/repos\/o\/r\/actions\/workflows\/([\w.-]+)\/runs$/.exec(p))) {
       const runs = state.runs.filter((r) => r.path === `.github/workflows/${m[1]}`
         && (!q.get('event') || r.event === q.get('event')) && (!q.get('head_sha') || r.head_sha === q.get('head_sha')));
@@ -307,7 +320,7 @@ test('an unknown gated workflow is refused before any request', async () => {
 // ---------------------------------------------------------------- the desktop-gpui gate
 
 // A dispatched release run, as GitHub creates it: workflow_dispatch on the tag, titled [release], created now.
-const releaseRun = (clock, over = {}) => gpuiRun({ id: 500, run_number: 50, event: 'workflow_dispatch', head_branch: TAG, display_title: 'desktop-gpui [release]', created_at: iso(clock.now), ...over });
+const releaseRun = (clock, over = {}) => gpuiRun({ id: 500, run_number: 50, run_attempt: 1, event: 'workflow_dispatch', head_branch: TAG, display_title: 'desktop-gpui [release]', created_at: iso(clock.now), ...over });
 
 test('theGateAcceptsANightlyRunOnTheSameTree', async () => {
   // Last night's schedule run on main, at another commit with the same tree.
@@ -496,4 +509,120 @@ test('a green server run does not satisfy the desktop-gpui gate, nor a desktop-g
   assert.equal((await run(desktopEnv({}), SHA, desktop(options))).id, 500);
   assert.equal(gh.dispatches.length, 1);
   await assert.rejects(run(envFor({}), SHA, clocked(fakeGithub({ runs: [gpuiRun()] })).options), /no green server run/);
+});
+
+// ---------------------------------------------------------------- a starved dispatched run is re-run once
+const redOnlyStarved = (gh, clock) => {
+  gh.attemptJobs[500] = [greenJob(11), starvedJob(12, '')];
+  gh.onDispatch = (s) => s.runs.push(releaseRun(clock, { conclusion: 'failure' }));
+};
+
+test('a_dispatched_run_red_only_from_a_starved_job_is_rerun_once_and_its_green_attempt_passes', async () => {
+  const gh = fakeGithub();
+  const lines = [];
+  const { clock, options } = clocked(gh, { lines, onSleep: () => {
+    const r = gh.runs.find((x) => x.id === 500);
+    if (r?.run_attempt === 2 && r.status === 'in_progress') Object.assign(r, { status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  gh.onRerun = (s) => Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'in_progress', conclusion: null });
+  const found = await run(desktopEnv({}), SHA, desktop(options));
+  assert.equal(found.id, 500);
+  assert.equal(found.run_attempt, 2);
+  assert.deepEqual(gh.reruns, ['500']);
+  assert.deepEqual(gh.seen.filter((s) => s.startsWith('POST') && s.includes('rerun')), ['POST /repos/o/r/actions/runs/500/rerun-failed-jobs']);
+  assert.ok(gh.seen.includes('GET /repos/o/r/actions/runs/500/attempts/1/jobs?per_page=100&page=1'));
+  const log = lines.join('\n');
+  assert.match(log, /ids 12/);
+  assert.ok(!log.includes('gpui-mac-package'), 'no job name in the log');
+});
+
+test('a_dispatched_run_with_a_real_failure_is_refused_without_a_rerun', async () => {
+  const gh = fakeGithub();
+  const { clock, options } = clocked(gh);
+  redOnlyStarved(gh, clock);
+  gh.attemptJobs[500].push(realFailedJob(13));
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(options)), /run 500 .*concluded failure/);
+  assert.deepEqual(gh.reruns, []);
+  assert.ok(gh.seen.every((s) => !s.includes('rerun')));
+});
+
+test('a_rerun_attempt_that_is_red_again_is_refused_without_a_second_rerun', async () => {
+  const gh = fakeGithub();
+  const { clock, options } = clocked(gh);
+  redOnlyStarved(gh, clock);
+  // The second attempt is red again; its own listing (attempt 1's jobs stay starved-only) would allow a rerun if the gate looped.
+  gh.onRerun = (s) => Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'completed', conclusion: 'failure' });
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(options)), /run 500 .*concluded failure/);
+  assert.equal(gh.seen.filter((s) => s.startsWith('POST') && s.includes('rerun')).length, 1);
+});
+
+test('a_refused_rerun_post_refuses_the_release', async () => {
+  const gh = fakeGithub({ status: { '/repos/o/r/actions/runs/500/rerun-failed-jobs': 403 } });
+  const { clock, options } = clocked(gh);
+  redOnlyStarved(gh, clock);
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(options)), /re-run.*403|403.*re-run/);
+  assert.equal(gh.seen.filter((s) => s.startsWith('POST') && s.includes('rerun')).length, 1, 'the write is never retried');
+});
+
+test('the_rerun_extends_the_bound_by_RERUN_BOUND_MS', async () => {
+  assert.equal(RERUN_BOUND_MS, 120 * 60 * 1000);
+  const gh = fakeGithub();
+  const { clock, options } = clocked(gh);
+  redOnlyStarved(gh, clock);
+  gh.onRerun = (s) => Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'in_progress', conclusion: null });
+  const started = clock.now;
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(options)), /run 500 .*still in_progress after 270 min/);
+  const waited = clock.now - started;
+  assert.ok(waited > BOUND_MS, `kept waiting past BOUND_MS (${waited} ms)`);
+  assert.ok(waited <= BOUND_MS + RERUN_BOUND_MS, `ended within the extended bound (${waited} ms)`);
+  assert.equal(gh.reruns.length, 1);
+});
+
+test('a_stale_read_of_attempt_1_after_the_rerun_keeps_waiting_for_attempt_2', async () => {
+  const gh = fakeGithub();
+  let polls = 0;
+  const { clock, options } = clocked(gh, { onSleep: () => {
+    const r = gh.runs.find((x) => x.id === 500);
+    if (gh.reruns.length && ++polls === 3) Object.assign(r, { run_attempt: 2, status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  const found = await run(desktopEnv({}), SHA, desktop(options)); // the run still reads as attempt 1 failure for two polls
+  assert.equal(found.run_attempt, 2);
+  assert.equal(gh.reruns.length, 1);
+});
+
+test('a_job_of_attempt_1_that_is_not_final_is_waited_for_and_never_rerun_meanwhile', async () => {
+  const gh = fakeGithub();
+  const { clock, options } = clocked(gh, { onSleep: () => {
+    if (gh.attemptJobs[500].some((j) => j.status !== 'completed') && clock.sleeps.length >= 2) gh.attemptJobs[500][0] = greenJob(11);
+    const r = gh.runs.find((x) => x.id === 500);
+    if (r.run_attempt === 2) Object.assign(r, { status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  gh.attemptJobs[500][0] = { ...greenJob(11), status: 'in_progress', conclusion: null };
+  gh.onRerun = (s) => {
+    assert.ok(s.attemptJobs[500].every((j) => j.status === 'completed'), 'no POST while a job is non-final');
+    Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'in_progress', conclusion: null });
+  };
+  assert.equal((await run(desktopEnv({}), SHA, desktop(options))).run_attempt, 2);
+  assert.equal(gh.reruns.length, 1);
+  // A job that never becomes final refuses at the bound, without a POST.
+  const stuck = fakeGithub();
+  const c = clocked(stuck);
+  redOnlyStarved(stuck, c.clock);
+  stuck.attemptJobs[500][0] = { ...greenJob(11), status: 'in_progress', conclusion: null };
+  await assert.rejects(run(desktopEnv({}), SHA, desktop(c.options)), /run 500 .*still/);
+  assert.deepEqual(stuck.reruns, []);
+});
+
+test('the_rerun_post_succeeds_on_an_empty_201_body', async () => {
+  const gh = fakeGithub({ emptyRerunBody: true });
+  const { clock, options } = clocked(gh, { onSleep: () => {
+    const r = gh.runs.find((x) => x.id === 500);
+    if (r.run_attempt === 2) Object.assign(r, { status: 'completed', conclusion: 'success' });
+  } });
+  redOnlyStarved(gh, clock);
+  gh.onRerun = (s) => Object.assign(s.runs.find((x) => x.id === 500), { run_attempt: 2, status: 'in_progress', conclusion: null });
+  assert.equal((await run(desktopEnv({}), SHA, desktop(options))).run_attempt, 2);
 });

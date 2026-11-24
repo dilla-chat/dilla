@@ -103,6 +103,7 @@ jobs:
             scripts/ci-same-tree.mjs
             scripts/server-release-gate.mjs
             scripts/ci-nightly-issue.mjs
+            scripts/ci-rerun-starved.mjs
           sparse-checkout-cone-mode: false
       - id: tree
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

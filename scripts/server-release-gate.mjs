@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ISSUE_TITLE, ISSUE_LABEL } from './ci-nightly-issue.mjs';
+import { shouldRerun, starvedJobs } from './ci-rerun-starved.mjs';
 
 /**
  * The release gates (CI speed plan, Task 5). Everything is re-derived from the API, never from the tag's name. A run
@@ -21,6 +22,11 @@ import { ISSUE_TITLE, ISSUE_LABEL } from './ci-nightly-issue.mjs';
  *   3. while such a run is queued or in progress it waits for it; otherwise it dispatches desktop-gpui.yml on the tag
  *      (RELEASE_TAG) with tier=release and follows that one run until it is green (pass) or anything else (refuse,
  *      `cancelled` included), all within 150 min. The issue is checked again before it passes.
+ *      One exception: when the dispatched run's attempt 1 failed only because a job never got a runner (GitHub's macOS
+ *      capacity; scripts/ci-rerun-starved.mjs decides, a real failure never counts), the gate re-runs the failed jobs
+ *      once (POST .../rerun-failed-jobs, never retried), keeps following the same run and has RERUN_BOUND_MS (120 min,
+ *      gpui-mac-package's own timeout) more. Attempt 2 must be green: a second red or starved attempt refuses.
+ *      (The dispatch uses GITHUB_TOKEN, so GitHub raises no workflow_run event and ci-rerun-starved.yml never sees it.)
  * Without RELEASE_TAG (desktop-gpui-sign.yml's gate, which may not dispatch) step 3 refuses instead of dispatching.
  * A green server run never satisfies the desktop-gpui gate, nor a desktop-gpui run the server gate.
  *
@@ -42,6 +48,8 @@ export const RELEASE_TITLE = 'desktop-gpui [release]';
 export const SKIPPED_JOB = 'same-tree: skipped';
 const POLL_MS = 30 * 1000;
 export const BOUND_MS = 150 * 60 * 1000;
+/** What the one re-run of a starved dispatched run adds to the bound: gpui-mac-package's own timeout-minutes. */
+export const RERUN_BOUND_MS = 120 * 60 * 1000;
 /** How long a dispatched run may take to show up in the listing before the gate gives up on it. */
 const APPEAR_MS = 10 * 60 * 1000;
 /** GitHub's clock and the runner's may differ: a dispatched run created this much before the dispatch still counts. */
@@ -71,7 +79,8 @@ export async function request({ token, fetchImpl, sleep, log, path, method = 'GE
     }
     if (response.status >= 500 && response.status <= 599 && !last) { await response.body?.cancel(); await retry(`failed (${response.status})`); continue; }
     if (!response.ok) throw new Error(`GitHub API ${method} ${path.split('?')[0]} failed (${response.status})`);
-    if (response.status === 204) return null;
+    // A write's answer is never parsed: any 2xx (204, or 201 with an empty body or none) is success.
+    if (response.status === 204 || method !== 'GET') { await response.body?.cancel(); return null; }
     return response.json();
   }
 }
@@ -158,10 +167,11 @@ export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(m
   const what = workflow === 'server' ? 'server run' : `${label} [nightly] or [release] run`;
   const refuse = (why) => new Error(`There is no green ${what} on the tree of ${sha} (${tagTree})${why}; the ${label} release needs one`);
   const started = now();
+  let bound = boundMs; // the one re-run of a starved dispatched run raises it
   const waitOr = async (pending) => {
     const waited = now() - started;
-    if (waited + pollMs > boundMs) throw refuse(`: ${label} run ${pending.id} (#${pending.run_number}) is still ${String(pending.status)} after ${duration(boundMs)}`);
-    log(`${label} run ${pending.id} (#${pending.run_number}) is ${String(pending.status)} on the tree of ${sha}; waiting ${duration(pollMs)} (${duration(waited)} of ${duration(boundMs)} so far)`);
+    if (waited + pollMs > bound) throw refuse(`: ${label} run ${pending.id} (#${pending.run_number}) is still ${String(pending.status)} after ${duration(bound)}`);
+    log(`${label} run ${pending.id} (#${pending.run_number}) is ${String(pending.status)} on the tree of ${sha}; waiting ${duration(pollMs)} (${duration(waited)} of ${duration(bound)} so far)`);
     await sleep(pollMs);
   };
 
@@ -229,12 +239,43 @@ export async function run(env, sha, { fetchImpl = fetch, sleep = (ms) => delay(m
     await sleep(pollMs);
   }
   log(`following ${label} run ${ours.id} (#${ours.run_number}), dispatched on ${tag}`);
+  /** Every job of attempt 1 of the run, paged like ci-rerun-starved does. */
+  const attemptOneJobs = async (id) => {
+    const jobs = [];
+    for (let page = 1; ; page++) {
+      const result = await api(`/repos/${repository}/actions/runs/${id}/attempts/1/jobs?per_page=100&page=${page}`);
+      if (!Array.isArray(result?.jobs)) throw new Error(`GitHub returned a malformed job list for run ${id}`);
+      jobs.push(...result.jobs);
+      if (result.jobs.length < 100) return jobs;
+      if (page >= MAX_JOB_PAGES) throw new Error(`cannot list every job of run ${id}`);
+    }
+  };
+  let reran = false; // at most one re-run per gate invocation
   for (;;) {
     const r = await api(`/repos/${repository}/actions/runs/${ours.id}`);
     if (!r || r.id !== ours.id || !isOwnRun(r, repository, gated) || r.head_sha !== sha || r.display_title !== RELEASE_TITLE || r.event !== 'workflow_dispatch') {
       throw refuse(`: run ${ours.id} no longer looks like the dispatched ${RELEASE_TITLE} run`);
     }
-    if (r.status === 'completed') {
+    // Right after the re-run the run may still read as its completed attempt 1: keep waiting for attempt 2.
+    if (r.status === 'completed' && !(reran && r.run_attempt === 1)) {
+      if (r.conclusion !== 'success' && !reran && r.run_attempt === 1 && r.conclusion === 'failure') {
+        const jobs = await attemptOneJobs(r.id);
+        // A job not final yet may still fail for real or recover: judge only once every attempt-1 job has completed.
+        if (jobs.some((j) => j?.status !== 'completed')) { await waitOr(r); continue; }
+        if (shouldRerun({ attempt: 1, conclusion: r.conclusion, jobs })) {
+          // Job ids, never names (a fork controls names).
+          log(`${label} run ${r.id}: ${starvedJobs(jobs).length} job(s) never got a runner (ids ${starvedJobs(jobs).map((j) => Number(j.id)).join(', ')}); re-running failed jobs once`);
+          reran = true;
+          try {
+            await api(`/repos/${repository}/actions/runs/${r.id}/rerun-failed-jobs`, { method: 'POST' });
+          } catch (error) {
+            throw refuse(`: the dispatched ${label} run ${r.id} could not be re-run after a starved job (${error.message})`);
+          }
+          bound += RERUN_BOUND_MS;
+          await sleep(pollMs);
+          continue;
+        }
+      }
       if (r.conclusion !== 'success') throw refuse(`: the dispatched ${label} run ${r.id} (#${r.run_number}) concluded ${String(r.conclusion)}`);
       if (await isSkipped(r)) throw refuse(`: the dispatched ${label} run ${r.id} has a "${SKIPPED_JOB}" job`);
       return pass(r);

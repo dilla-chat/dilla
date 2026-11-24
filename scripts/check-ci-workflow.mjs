@@ -1811,7 +1811,7 @@ const sameTreeCheckJob = (file) => ({
   permissions: { actions: 'read', contents: 'read' },
   outputs: { skip: "${{ steps.tree.outputs.skip == 'true' && 'true' || 'false' }}" },
   steps: [
-    { if: ON_MAIN_PUSH, uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', with: { 'persist-credentials': false, 'sparse-checkout': 'scripts/ci-same-tree.mjs\nscripts/server-release-gate.mjs\nscripts/ci-nightly-issue.mjs\n', 'sparse-checkout-cone-mode': false } },
+    { if: ON_MAIN_PUSH, uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', with: { 'persist-credentials': false, 'sparse-checkout': 'scripts/ci-same-tree.mjs\nscripts/server-release-gate.mjs\nscripts/ci-nightly-issue.mjs\nscripts/ci-rerun-starved.mjs\n', 'sparse-checkout-cone-mode': false } },
     { id: 'tree', if: ON_MAIN_PUSH, run: 'node scripts/ci-same-tree.mjs', env: { GH_TOKEN: '${{ github.token }}', WORKFLOW_FILE: file } },
   ],
 });
