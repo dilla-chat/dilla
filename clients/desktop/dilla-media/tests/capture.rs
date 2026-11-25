@@ -441,6 +441,11 @@ fn kde_nodes_gone() -> bool {
 #[test]
 #[ignore = "needs a KDE Plasma Wayland session whose KWin offers Dilla its window list and screencast (6.8+, or 6.0-6.7 with the installed .desktop file), pw-dump and kdialog"]
 fn kde_picker_lists_captures_and_lets_go() {
+    // CI runs every ignored capture test on a runner with no KWin; like the Mac test, this one is opted into.
+    if std::env::var("DILLA_KDE_CAPTURE").as_deref() != Ok("1") {
+        eprintln!("skipped: set DILLA_KDE_CAPTURE=1 in a KDE Plasma Wayland session (KWin 6.8+)");
+        return;
+    }
     use dilla_media::capture_source::{CaptureSource, Pull};
     use dilla_media::sources::desktop::{self, SourceKind};
 
