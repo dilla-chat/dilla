@@ -283,6 +283,39 @@ pub(crate) fn thumbnails(
         .collect()
 }
 
+/// KWin's answer to one request for a stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Answer<T> {
+    Created(T),
+    /// `failed`: KWin does not manage the window yet (it lists a window as soon as the window is set up, a moment before
+    /// it manages it), or could not make the stream.
+    Refused,
+    /// `closed`, no answer in time, or the connection broke.
+    Gone,
+}
+
+/// How often a refused stream is asked for, and the pause between (about half a second at most in all).
+const STREAM_TRIES: u32 = 4;
+const STREAM_PAUSE: Duration = Duration::from_millis(150);
+
+/// Asks `attempt` up to `tries` times while KWin refuses, pausing `pause` in between; a stream that was created comes
+/// back, one that is gone (closed, unanswered) ends the asking at once.
+pub(crate) fn with_retries<T>(
+    tries: u32,
+    pause: Duration,
+    mut attempt: impl FnMut() -> Answer<T>,
+) -> Option<T> {
+    for n in 1..=tries.max(1) {
+        match attempt() {
+            Answer::Created(t) => return Some(t),
+            Answer::Gone => return None,
+            Answer::Refused if n < tries => std::thread::sleep(pause),
+            Answer::Refused => {}
+        }
+    }
+    None
+}
+
 /// Follows the share's rate for KWin (re-review N3): a change asks KWin once through `ask` (an `EnumFormat` with the
 /// new maximum); a refusal is not retried every turn of the capture loop, only the next change asks again, and only
 /// the first refusal of a capture is logged (the stream keeps its old maximum).
@@ -592,13 +625,35 @@ impl Session {
         }
     }
 
-    /// Asks KWin for a stream of `target`, waiting up to `wait` for its PipeWire node.
+    /// Asks KWin for a stream of `target`, waiting up to `wait` in all for its PipeWire node. A window KWin lists but
+    /// does not manage yet (it was just opened) is refused at first: the request is made again a few times
+    /// ([`with_retries`]), within `wait`.
     fn stream(
         &mut self,
         target: &Target,
         pointer: u32,
         wait: Duration,
     ) -> Option<(kwin_stream::ZkdeScreencastStreamUnstableV1, usize, u32)> {
+        let deadline = Instant::now() + wait;
+        let got = with_retries(STREAM_TRIES, STREAM_PAUSE, || {
+            if Instant::now() >= deadline {
+                return Answer::Gone;
+            }
+            self.stream_once(target, pointer, deadline)
+        });
+        if got.is_none() {
+            log::warn!("dilla-media: KWin gave no screencast stream");
+        }
+        got
+    }
+
+    /// One request for a stream of `target`, answered by `deadline`.
+    fn stream_once(
+        &mut self,
+        target: &Target,
+        pointer: u32,
+        deadline: Instant,
+    ) -> Answer<(kwin_stream::ZkdeScreencastStreamUnstableV1, usize, u32)> {
         let qh = self.queue.handle();
         let slot = self.state.casts.len();
         self.state.casts.push(Cast::default());
@@ -606,20 +661,23 @@ impl Session {
             Target::Screen(output) => self.cast.stream_output(output, pointer, &qh, slot),
             Target::Window(uuid) => self.cast.stream_window(uuid.clone(), pointer, &qh, slot),
         };
-        let deadline = Instant::now() + wait;
         loop {
             if self.queue.roundtrip(&mut self.state).is_err() {
-                return None;
+                return Answer::Gone;
             }
             let cast = &self.state.casts[slot];
             if let Some(node) = cast.node.filter(|_| !cast.failed && !cast.closed) {
-                return Some((stream, slot, node));
+                return Answer::Created((stream, slot, node));
             }
             if cast.failed || cast.closed || Instant::now() >= deadline {
-                log::warn!("dilla-media: KWin gave no screencast stream");
+                let refused = cast.failed && !cast.closed;
                 stream.close();
                 let _ = self.conn.flush();
-                return None;
+                return if refused {
+                    Answer::Refused
+                } else {
+                    Answer::Gone
+                };
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1343,6 +1401,51 @@ mod tests {
                 ))) => Some((default.num, min.num, max.num)),
                 _ => None,
             })
+    }
+
+    /// Live open failure: KWin announces a window in its list as soon as the window is set up, a moment before it
+    /// manages it, and `stream_window` in that moment answers `failed` ("Could not find window id"). A refused stream is
+    /// asked for again after a short pause, a bounded number of times; a stream that was closed, or never answered, is
+    /// not.
+    #[test]
+    fn a_refused_stream_is_asked_for_again_a_bounded_number_of_times() {
+        let calls = Cell::new(0);
+        let answer = |plan: &'static [Answer<u32>]| {
+            let calls = &calls;
+            move || {
+                let n = calls.get();
+                calls.set(n + 1);
+                plan.get(n).copied().unwrap_or(Answer::Refused)
+            }
+        };
+        let quick = Duration::from_millis(1);
+        calls.set(0);
+        assert_eq!(
+            with_retries(
+                3,
+                quick,
+                answer(&[Answer::Refused, Answer::Refused, Answer::Created(203)])
+            ),
+            Some(203),
+            "the window was managed by the third ask"
+        );
+        assert_eq!(calls.get(), 3);
+        calls.set(0);
+        assert_eq!(with_retries(3, quick, answer(&[])), None, "always refused");
+        assert_eq!(calls.get(), 3, "bounded");
+        calls.set(0);
+        assert_eq!(with_retries(3, quick, answer(&[Answer::Gone])), None);
+        assert_eq!(
+            calls.get(),
+            1,
+            "a closed or unanswered stream is not asked for again"
+        );
+        calls.set(0);
+        assert_eq!(
+            with_retries(3, quick, answer(&[Answer::Created(7)])),
+            Some(7)
+        );
+        assert_eq!(calls.get(), 1);
     }
 
     /// Re-review N3: a rate change mid-share asks KWin once; a refusal is not retried every turn of the loop (the next
