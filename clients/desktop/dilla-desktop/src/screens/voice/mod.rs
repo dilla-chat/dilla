@@ -2114,8 +2114,8 @@ pub fn share_app_audio(
     }
 }
 
-/// The sound section's choice for `window` (the chooser's application, or `None` when the switch goes off): kept for
-/// the next share, and sent to the running one.
+/// The sound section's choice for `window` (the chooser's application, or `None` when the switch goes off): for the
+/// running share only (it is dropped when that share or the call ends), and sent to it.
 pub fn set_share_app(
     window: WindowId,
     source: Option<dilla_media::app_audio::AppSource>,

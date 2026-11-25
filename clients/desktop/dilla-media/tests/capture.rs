@@ -561,6 +561,11 @@ fn kde_picker_lists_captures_and_lets_go() {
     let n = frames_in(&mut capture, Duration::from_secs(2));
     eprintln!("screen {w}x{h}: {n} frames pulled in 2 s, 10 fps asked");
     assert!((1..=24).contains(&n), "KWin did not keep to the asked rate");
+    // Re-review N3: the rate changes mid-share (a quality change): KWin is asked again and the share goes on.
+    capture.set_fps(5);
+    let n5 = frames_in(&mut capture, Duration::from_secs(2));
+    eprintln!("screen after a change to 5 fps: {n5} frames pulled in 2 s");
+    assert!(n5 <= 14, "KWin did not take the new rate");
     assert_eq!(kde_capture_nodes(), 1, "one capture node while sharing");
     drop(capture);
     assert!(kde_nodes_gone(), "the screen's stream outlived its share");

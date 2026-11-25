@@ -283,6 +283,43 @@ pub(crate) fn thumbnails(
         .collect()
 }
 
+/// Follows the share's rate for KWin (re-review N3): a change asks KWin once through `ask` (an `EnumFormat` with the
+/// new maximum); a refusal is not retried every turn of the capture loop, only the next change asks again, and only
+/// the first refusal of a capture is logged (the stream keeps its old maximum).
+pub(crate) struct Renegotiation {
+    asked: u32,
+    refusals: u32,
+}
+
+impl Renegotiation {
+    pub(crate) fn new(fps: u32) -> Renegotiation {
+        Renegotiation {
+            asked: fps,
+            refusals: 0,
+        }
+    }
+
+    pub(crate) fn follow(&mut self, fps: u32, ask: impl FnOnce(u32) -> bool) {
+        if fps == self.asked {
+            return;
+        }
+        self.asked = fps;
+        if !ask(fps) {
+            self.refusals += 1;
+            if self.refusals == 1 {
+                log::warn!(
+                    "dilla-media: KWin's stream refused a new frame rate; it keeps the old one"
+                );
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refusals(&self) -> u32 {
+        self.refusals
+    }
+}
+
 /// The links from KWin's node (`from`, its output ports) to Dilla's stream (`to`, its input ports), from the ports the
 /// registry listed (`port id -> (node id, is an output)`), in a stable order.
 pub(crate) fn links(ports: &HashMap<u32, (u32, bool)>, from: u32, to: u32) -> Vec<(u32, u32)> {
@@ -876,7 +913,8 @@ fn consume(
     let Ok(_listener) = listener else {
         return End::Failed;
     };
-    let mut asked = fps.load(Ordering::Relaxed).clamp(1, 60);
+    let asked = fps.load(Ordering::Relaxed).clamp(1, 60);
+    let mut rate = Renegotiation::new(asked);
     let Some(values) = enum_format(asked) else {
         return End::Failed;
     };
@@ -945,14 +983,14 @@ fn consume(
             break End::Stopped;
         }
         // The share's rate changed (its quality): KWin is asked for the new maximum.
-        let now_fps = fps.load(Ordering::Relaxed).clamp(1, 60);
-        if now_fps != asked
-            && let Some(values) = enum_format(now_fps)
-            && let Some(pod) = spa::pod::Pod::from_bytes(&values)
-            && stream.update_params(&mut [pod]).is_ok()
-        {
-            asked = now_fps;
-        }
+        rate.follow(fps.load(Ordering::Relaxed).clamp(1, 60), |fps| {
+            enum_format(fps)
+                .and_then(|values| {
+                    let pod = spa::pod::Pod::from_bytes(&values)?;
+                    Some(stream.update_params(&mut [pod]).is_ok())
+                })
+                .unwrap_or(false)
+        });
         let now = Instant::now();
         if now >= next_tick {
             every.set(interval(fps));
@@ -1305,6 +1343,36 @@ mod tests {
                 ))) => Some((default.num, min.num, max.num)),
                 _ => None,
             })
+    }
+
+    /// Re-review N3: a rate change mid-share asks KWin once; a refusal is not retried every turn of the loop (the next
+    /// change asks again), and only the first refusal is logged.
+    #[test]
+    fn a_rate_change_mid_share_asks_kwin_once() {
+        let mut r = Renegotiation::new(10);
+        let asked = Cell::new(Vec::new());
+        let ask = |ok: bool| {
+            let asked = &asked;
+            move |fps: u32| {
+                let mut v = asked.take();
+                v.push(fps);
+                asked.set(v);
+                ok
+            }
+        };
+        r.follow(10, ask(true));
+        assert!(asked.take().is_empty(), "the same rate asks nothing");
+        r.follow(5, ask(true));
+        r.follow(5, ask(true));
+        assert_eq!(asked.take(), [5], "asked once");
+        r.follow(30, ask(false));
+        r.follow(30, ask(false));
+        r.follow(30, ask(false));
+        assert_eq!(asked.take(), [30], "a refusal is not retried");
+        assert_eq!(r.refusals(), 1);
+        r.follow(15, ask(false));
+        assert_eq!(asked.take(), [15], "a new change asks again");
+        assert_eq!(r.refusals(), 2);
     }
 
     #[test]

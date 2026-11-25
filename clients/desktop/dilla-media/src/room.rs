@@ -713,6 +713,8 @@ struct LocalShare {
     source: SharedSource,
     /// Its frames on the own tile.
     self_view: SelfViewTap,
+    /// Its last sent picture, for the next feeder after a quality change.
+    resend: SharedResend,
 }
 
 /// The size a `width` x `height` source is sent at under `bound` (`None`: as it is): scaled down to fit, keeping its
@@ -807,6 +809,36 @@ impl Resend {
     }
 }
 
+/// A share's [`Resend`], kept by its [`LocalShare`] so that a quality change (a new track, a new feeder) starts from the
+/// last picture instead of nothing: KWin sends no frame while the share stands still.
+type SharedResend = Arc<Mutex<Resend>>;
+
+/// A new feeder's first picture (re-review N1): for a source that `repeats`, the share's last sent buffer, scaled to
+/// fit the new `bound` when it does not already (libyuv on the small sent buffer, never the full-size frame), sent once
+/// through `send` and kept for the repeats. False when there is none.
+fn first_picture(
+    shared: &SharedResend,
+    bound: Option<(u32, u32)>,
+    repeats: bool,
+    send: impl FnOnce(&I420Buffer),
+) -> bool {
+    use livekit::webrtc::video_frame::VideoBuffer as _;
+    let mut resend = shared.lock().unwrap_or_else(|p| p.into_inner());
+    if !repeats {
+        resend.0 = None;
+        return false;
+    }
+    let Some(last) = resend.0.as_mut() else {
+        return false;
+    };
+    let size = fit(last.width(), last.height(), bound);
+    if size != (last.width(), last.height()) {
+        *last = last.scale(size.0 as i32, size.1 as i32);
+    }
+    send(last);
+    true
+}
+
 async fn feed(
     source: SharedSource,
     rtc: NativeVideoSource,
@@ -814,11 +846,26 @@ async fn feed(
     fps: u32,
     sent: Arc<std::sync::atomic::AtomicU64>,
     end: EndOfShare,
-    mut self_view: SelfView,
+    (mut self_view, resend): (SelfView, SharedResend),
 ) {
     let mut tick = tokio::time::interval(Duration::from_micros(1_000_000 / u64::from(fps.max(1))));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut resend = Resend::default();
+    let repeats = source
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .is_some_and(|s| s.repeats_when_idle());
+    // After a quality change: the last picture at once, so a still share is not blank on its new track.
+    if first_picture(&resend, bound, repeats, |last| {
+        rtc.capture_frame(&VideoFrame {
+            rotation: VideoRotation::VideoRotation0,
+            timestamp_us: 0,
+            frame_metadata: None,
+            buffer: last,
+        });
+    }) {
+        sent.fetch_add(1, Ordering::Relaxed);
+    }
     loop {
         tick.tick().await;
         let (kind, pulled, repeats) = {
@@ -831,6 +878,7 @@ async fn feed(
             Pull::Idle => {
                 // A source that sends only changes (KWin's) keeps the share's rate with its last picture: at most one
                 // repeat per tick, so never above the share's frame rate.
+                let resend = resend.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(last) = resend.idle(repeats) {
                     rtc.capture_frame(&VideoFrame {
                         rotation: VideoRotation::VideoRotation0,
@@ -863,7 +911,10 @@ async fn feed(
         });
         let frames = sent.fetch_add(1, Ordering::Relaxed) + 1;
         self_view.offer(&mut i420, frames, std::time::Instant::now());
-        resend.sent(i420, repeats);
+        resend
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sent(i420, repeats);
     }
 }
 
@@ -1491,8 +1542,12 @@ impl Call {
         let kind = source.kind();
         self.unpublish_video(kind).await;
         let tap = SelfViewTap::new(kind, self.local_videos.clone());
-        self.publish_shared(Arc::new(Mutex::new(Some(source))), quality, tap)
-            .await
+        self.publish_shared(
+            Arc::new(Mutex::new(Some(source))),
+            quality,
+            (tap, SharedResend::default()),
+        )
+        .await
     }
 
     /// The person changed the stream quality of the running share of `kind` (beta.5 `configure-screen-capture`): the
@@ -1520,8 +1575,9 @@ impl Call {
         {
             log::warn!("dilla-media: unpublish: {e}");
         }
-        // The same source goes on: its self-view stays, so the own tile does not blink.
-        self.publish_shared(share.source, quality, share.self_view)
+        // The same source goes on: its self-view stays, so the own tile does not blink, and its last picture goes on to
+        // the new track (a still KDE share sends nothing new).
+        self.publish_shared(share.source, quality, (share.self_view, share.resend))
             .await
     }
 
@@ -1530,10 +1586,10 @@ impl Call {
         &self,
         source: SharedSource,
         quality: ShareOptions,
-        tap: SelfViewTap,
+        (tap, resend): (SelfViewTap, SharedResend),
     ) -> Result<(), MediaError> {
         let published = self
-            .publish_shared_tapped(source, quality, tap.clone())
+            .publish_shared_tapped(source, quality, (tap.clone(), resend))
             .await;
         if published.is_err() {
             tap.stop();
@@ -1545,7 +1601,7 @@ impl Call {
         &self,
         source: SharedSource,
         quality: ShareOptions,
-        tap: SelfViewTap,
+        (tap, resend): (SelfViewTap, SharedResend),
     ) -> Result<(), MediaError> {
         let (kind, (width, height)) = {
             let guard = source.lock().unwrap_or_else(|p| p.into_inner());
@@ -1630,7 +1686,7 @@ impl Call {
                 sid: sid.clone(),
                 ended: self.shares_ended.clone(),
             },
-            SelfView::new(tap.clone()),
+            (SelfView::new(tap.clone()), resend.clone()),
         ));
         self.shares
             .lock()
@@ -1643,6 +1699,7 @@ impl Call {
                     sent,
                     source,
                     self_view: tap,
+                    resend,
                 },
             );
         Ok(())
@@ -2442,6 +2499,45 @@ mod self_view_tests {
         r.sent(sent(16, 8), false);
         assert!(r.idle(false).is_none(), "a source that is not repeated");
         assert!(r.idle(true).is_none(), "its buffer was not kept");
+    }
+
+    /// Re-review N1: a quality change publishes a new track with a new feeder, and KWin sends nothing while the share is
+    /// still. The last sent buffer is carried over (the share keeps its `Resend`) and the new feeder starts with it,
+    /// at the new bound, so a still KDE share has a picture on its new track at once.
+    #[test]
+    fn a_still_share_keeps_its_picture_across_a_quality_change() {
+        use livekit::webrtc::video_frame::VideoBuffer as _;
+        let shared = SharedResend::default();
+        let seen = |shared: &SharedResend, bound, repeats| {
+            let mut got = None;
+            let sent_one = first_picture(shared, bound, repeats, |b| {
+                got = Some((b.width(), b.height(), b.data().0.as_ptr() as usize));
+            });
+            assert_eq!(sent_one, got.is_some());
+            got
+        };
+        assert!(
+            seen(&shared, Some((32, 32)), true).is_none(),
+            "nothing sent yet"
+        );
+        shared.lock().unwrap().sent(sent(64, 32), true);
+        // To a smaller bound: the carried buffer is scaled to it, sent at once, and kept for the repeats.
+        let (w, h, at) = seen(&shared, Some((32, 32)), true).expect("a picture on the new track");
+        assert_eq!((w, h), (32, 16));
+        let kept = shared
+            .lock()
+            .unwrap()
+            .idle(true)
+            .map(|b| (b.width(), b.height(), b.data().0.as_ptr() as usize));
+        assert_eq!(
+            kept,
+            Some((32, 16, at)),
+            "the new feeder repeats the scaled one"
+        );
+        // The same bound again: the very buffer, no scale.
+        assert_eq!(seen(&shared, Some((32, 32)), true), Some((32, 16, at)));
+        // A source that does not repeat starts empty, as before.
+        assert!(seen(&shared, Some((32, 32)), false).is_none());
     }
 
     #[test]
