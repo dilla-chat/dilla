@@ -636,20 +636,19 @@ async fn a_join_that_lands_after_its_cancel_is_left() {
         let (routes, core) = (routes.clone(), core.clone());
         tokio::spawn(async move { leave_if_cancelled(&*core, &*routes, Ok(joined), true).await })
     };
-    // Alone (it registered the group): the call is ended conditionally, then the self-Remove is posted.
+    // Alone (it registered the group): the call is ended conditionally; the end closed its group, so no self-Remove
+    // follows and the group is forgotten.
     let (id, _) = script.request(0).await;
     socket.on_response(&response(id, 204, b""));
-    let (id, _) = script.request(1).await;
-    socket.on_response(&response(id, 200, &seq_answer(3)));
     let refused = leaving.await.unwrap().unwrap_err();
     assert_eq!(refused.code, "E_NO_CALL");
     assert_eq!(refused.leave, None);
-    assert_eq!(core.lock().unwrap().log, ["leave_proposal", "forget"]);
+    assert_eq!(core.lock().unwrap().log, ["forget"]);
 
     // Not cancelled: answered as it is, nothing posted.
     let r = leave_if_cancelled(&*core, &*routes, Err(join_refused()), false).await;
     assert_eq!(r.unwrap_err().code, "E_X");
-    assert_eq!(script.written(), 2);
+    assert_eq!(script.written(), 1);
 }
 
 fn join_refused() -> JoinRefused {

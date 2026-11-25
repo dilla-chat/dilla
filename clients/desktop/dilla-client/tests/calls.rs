@@ -640,15 +640,77 @@ async fn a_failed_start_of_a_call_this_device_registered_is_ended_alone() {
     assert!(refused.alone);
 }
 
-#[tokio::test]
-async fn a_leave_ends_the_call_when_alone_then_proposes_its_remove_and_forgets() {
-    let core = Mutex::new(FakeCore::default());
+#[tokio::test(start_paused = true)]
+async fn a_leave_that_ended_the_call_sends_no_self_remove_and_the_next_join_starts_at_once() {
+    // 2026-11-25 lockout investigation, section 4a: a leave with only the Bot left is alone, and its conditional end
+    // ends the call and closes its group. A self-Remove into the closed group was refused (422 rule `epoch`) and spent
+    // up to LEAVE_CATCH_UP on a catch-up that could not explain it, delaying the next join. Now nothing is posted after
+    // the end: no self-Remove, no catch-up; the group is forgotten and the leave answers at once.
+    let core = Mutex::new(FakeCore {
+        groups: vec![call_row(0)],
+        ..Default::default()
+    });
     let routes = FakeRoutes {
         alone: true,
         ..Default::default()
     };
+    // What the closed group would answer a self-Remove, and a catch-up that never ends: neither is reached.
+    routes
+        .proposal
+        .lock()
+        .unwrap()
+        .push_back(Err(epoch_refused()));
+    let began = tokio::time::Instant::now();
+    let left = leave_call_caught_up(&core, &routes, Some(&Hangs), &GROUP, &CHANNEL, true).await;
+    assert_eq!(
+        left,
+        dilla_client::calls::Left {
+            ended: true,
+            proposed: false
+        }
+    );
+    assert_eq!(
+        began.elapsed(),
+        Duration::ZERO,
+        "no catch-up was waited for"
+    );
+    assert_eq!(routes.posted(), ["end_if_alone"], "no self-Remove");
+    assert_eq!(core.lock().unwrap().log, ["forget 44"]);
+
+    // The next join reads the ended call (no group) and registers a fresh one at once.
+    routes.calls.lock().unwrap().push_back(ChannelCall {
+        group_id: None,
+        call_id: None,
+        participants: vec![],
+    });
+    let joined = join_call(&core, &routes, &hooks(), &target())
+        .await
+        .unwrap();
+    assert_eq!(joined.group_id, FRESH);
+    assert_eq!(began.elapsed(), Duration::ZERO, "the join started at once");
+    assert_eq!(
+        routes.posted(),
+        ["end_if_alone", "get_call", "post_group", "start"]
+    );
+}
+
+/// Review Focus 2: a leave that is alone by its own roster but whose conditional end does not end the call (another
+/// person is still in it, or the end failed) still sends its self-Remove, so the others see this device go.
+#[tokio::test]
+async fn a_leave_whose_end_does_not_end_the_call_still_proposes_its_remove_and_forgets() {
+    let core = Mutex::new(FakeCore::default());
+    let routes = FakeRoutes {
+        alone: false,
+        ..Default::default()
+    };
     let left = leave_call(&core, &routes, &GROUP, &CHANNEL, true).await;
-    assert!(left.ended && left.proposed);
+    assert_eq!(
+        left,
+        dilla_client::calls::Left {
+            ended: false,
+            proposed: true
+        }
+    );
     assert_eq!(routes.posted(), ["end_if_alone", "post_proposal remove"]);
     assert_eq!(core.lock().unwrap().log, ["leave_proposal 44", "forget 44"]);
 }
