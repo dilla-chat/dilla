@@ -1012,6 +1012,55 @@ fn the_quality_menu_draws_the_share_options(cx: &mut TestAppContext) {
     assert_eq!(voice::frame_stat(1080, 30), "1080p · 30 fps");
 }
 
+/// KDE share picker plan, Task 2 (the old client's VoiceToolbar popover): the share panel opens at the Share button, its
+/// right edge on the button's and its foot 10px over it, not centred on the stage. Before a share it asks no sound
+/// question (the picker's window brings its sound, D21; the portal's pick reopens the panel with the row); while sharing,
+/// the sound row is there wherever application audio is.
+#[gpui::test]
+fn the_share_panel_opens_at_its_button_without_a_sound_question_first(cx: &mut TestAppContext) {
+    let cx = host(cx, state(2));
+    area(cx, |ui| ui.share_menu = true);
+    // The first draw finds the button, the second hangs the panel on it.
+    redraw(cx);
+    redraw(cx);
+    let panel = cx.debug_bounds("voice-share-menu").expect("the panel");
+    let button = cx
+        .debug_bounds("voice-share-anchor")
+        .expect("the Share control");
+    assert!(
+        (panel.right() - button.right()).abs() < gpui::px(1.0),
+        "right edges: panel {:?}, button {:?}",
+        panel.right(),
+        button.right()
+    );
+    assert!(
+        (button.top() - panel.bottom() - gpui::px(10.0)).abs() < gpui::px(1.0),
+        "10px over the button: panel foot {:?}, button top {:?}",
+        panel.bottom(),
+        button.top()
+    );
+    assert!(
+        cx.debug_bounds("voice-share-sound").is_none(),
+        "a sound question before the pick"
+    );
+
+    let sharing = {
+        let mut s = (*state(2)).clone();
+        s.voice.share.screen = true;
+        Arc::new(s)
+    };
+    cx.update(|window, cx| voice::sync(voice::wid(window), sharing, None, cx));
+    area(cx, |ui| ui.share_menu = true);
+    redraw(cx);
+    redraw(cx);
+    assert!(cx.debug_bounds("voice-share-menu").is_some());
+    assert_eq!(
+        cx.debug_bounds("voice-share-sound").is_some(),
+        dilla_media::app_audio::supported(),
+        "the live panel's sound row"
+    );
+}
+
 /// Review C1: a call belongs to its instance window. Window B's syncs (every state its client publishes) never replace
 /// window A's voice state, and one repaint loop runs per live call, ending when the call does or its window closes.
 #[gpui::test]

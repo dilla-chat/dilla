@@ -2,7 +2,10 @@
 //! `ScreenSourcePicker` it drew): Share in a call opens it over the window, it lists the screens and windows with a
 //! thumbnail each (refreshed every 2 s, beta.5 `PICKER_REFRESH_MS`), and the person's choice starts the share of that
 //! source. Cancel, Escape, the scrim, the 2-minute deadline (`PICKER_DEADLINE_MS`) or the window going away share
-//! nothing. Linux on Wayland has no picker: the system portal's own dialog chooses (`dilla_media::sources::desktop::portal`).
+//! nothing. KDE Plasma on Wayland draws this same picker too (KDE share picker plan, D22), listing and capturing through
+//! KWin's own window list and screencast, so a shared window brings its sound (D21). Elsewhere on Wayland (GNOME, a
+//! sandboxed Dilla, an older KWin without the installed package's `.desktop` file) there is no picker: the system
+//! portal's own dialog chooses (`dilla_media::sources::desktop::portal`), and is not remembered.
 //! macOS draws this same picker since GPUI gaps Task 45 (D22), listing through ScreenCaptureKit: the first open in a
 //! process asks for Screen Recording, and without it the picker's empty state says how to allow it.
 //!
@@ -122,7 +125,8 @@ pub fn set_lister(lister: Lister, cx: &mut App) {
     cx.default_global::<SharePickers>().lister = Some(lister);
 }
 
-/// Whether the system portal chooses the source instead of the picker (Linux on Wayland, and no test list).
+/// Whether the system portal chooses the source instead of the picker (Linux on Wayland without KWin's protocols, and
+/// no test list).
 pub fn portal(cx: &App) -> bool {
     cx.try_global::<SharePickers>()
         .is_none_or(|p| p.lister.is_none())
