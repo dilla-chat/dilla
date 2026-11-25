@@ -2294,6 +2294,7 @@ fn start_dm_call(id: ChannelId, window: &mut Window, cx: &mut gpui::App) {
     crate::screens::voice::after_leaving_other_calls(
         w,
         client.voice(),
+        id,
         move |voice| voice.join_dm(id),
         cx,
     );

@@ -326,6 +326,9 @@ pub struct VoiceUi {
     /// of every state the shell syncs (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     sim: Sim,
+    /// A test's own left room, open while it holds ([`put_test_room_open`], feature `test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    test_room_open: Option<Rc<std::cell::Cell<bool>>>,
 }
 
 /// A simulated call's media (the automation command `voice-sim`): the GPUI-only references of speaking, camera and screen
@@ -1510,40 +1513,115 @@ pub type VoiceAnswer = tokio::sync::oneshot::Receiver<Result<(), dilla_client::C
 /// started while another instance's leave is still committing races it in the call group (`E_COMMIT_INVALID`), so the
 /// join waits, for [`HANDOVER_WAIT`] at most. It also waits, within the same bound, for the other windows' call media
 /// to end ([`handover_after_media`]): this process routes one call's media at a time, and a join whose media starts
-/// while another window's is still live fails with `E_CALL_BUSY`. `start` starts the join (`Voice::join`,
-/// `Voice::join_dm`).
+/// while another window's is still live fails with `E_CALL_BUSY`. This window's own call elsewhere is left first too,
+/// and the join waits for its own left room to close ([`rooms_open_for_join`]). `start` starts the join of `channel`
+/// (`Voice::join`, `Voice::join_dm`).
 pub fn after_leaving_other_calls(
     window: WindowId,
     voice: dilla_client::features::voice::Voice,
+    channel: ChannelId,
     start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
     cx: &mut App,
 ) {
-    after_leaving_other_calls_then(window, voice, start, None, cx);
+    after_leaving_other_calls_then(window, voice, channel, start, None, cx);
 }
 
 /// [`after_leaving_other_calls`] that also tells `done` how the join ended ([`handover_then`]).
 fn after_leaving_other_calls_then(
     window: WindowId,
     voice: dilla_client::features::voice::Voice,
+    channel: ChannelId,
     start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
     done: Option<JoinDone>,
     cx: &mut App,
 ) {
-    let leaves: Vec<_> = other_calls(window, cx)
+    let mut leaves: Vec<_> = other_calls(window, cx)
         .into_iter()
         .map(|c| c.voice().leave())
         .collect();
-    let sessions = other_sessions(window, cx);
+    // This window's own call elsewhere is left here, not inside the join: the handover then waits for its room to
+    // close before the join's first read (call fix round B1).
+    let own = client_of(window, cx).map(|c| c.state().borrow().clone());
+    if own.is_some_and(|s| own_call_before_join(&s, channel) == OwnFirst::Leave) {
+        leaves.push(voice.leave());
+    }
+    let rooms = rooms_open_for_join(window, channel, cx);
     let undo = voice.clone();
     handover_then(
         window,
         leaves,
-        Box::new(move || sessions.iter().any(|s| s.media_live())),
+        Box::new(rooms),
         move || start(&voice),
         move || drop(undo.leave()),
         done,
         cx,
     );
+}
+
+/// What a join of `channel` does first about its own client's call (`state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnFirst {
+    /// No call: the join waits only for the last call's room to close.
+    Wait,
+    /// A call (or a join, or a rejoin waiting) elsewhere: it is left first, and its room's close waited for.
+    Leave,
+    /// Already in (or on the way into) `channel`'s call: the join is a no-op, and nothing is left or waited for.
+    Nothing,
+}
+
+/// [`OwnFirst`] for a join of `channel` by a client in `state`.
+pub fn own_call_before_join(state: &AppState, channel: ChannelId) -> OwnFirst {
+    if !state.voice.in_call() {
+        OwnFirst::Wait
+    } else if state.voice.call.channel == Some(channel) {
+        OwnFirst::Nothing
+    } else {
+        OwnFirst::Leave
+    }
+}
+
+/// What a join of `channel` in `window` waits for before its first read, within [`HANDOVER_WAIT`]: the other windows'
+/// call media ending ([`MediaSession::media_live`]), and this window's own left call's room closing
+/// ([`MediaSession::room_open`], itself bounded by [`session::ROOM_CLOSE_WAIT`]). A join of the call this window is
+/// already in waits for nothing of its own (it is a no-op). The sessions are held weakly: the handover outlives the
+/// wait, and a window that closes meanwhile must still drop its session (its own drop ends the media).
+pub fn rooms_open_for_join(
+    window: WindowId,
+    channel: ChannelId,
+    cx: &App,
+) -> impl Fn() -> bool + use<> {
+    let others: Vec<_> = other_sessions(window, cx)
+        .iter()
+        .map(Rc::downgrade)
+        .collect();
+    let same = client_of(window, cx)
+        .is_some_and(|c| own_call_before_join(&c.state().borrow(), channel) == OwnFirst::Nothing);
+    let own = session_of(window, cx)
+        .filter(|_| !same)
+        .map(|s| Rc::downgrade(&s));
+    #[cfg(feature = "test-hooks")]
+    let test_room = ui_of(window, cx)
+        .and_then(|u| u.test_room_open.clone())
+        .filter(|_| !same);
+    move || {
+        #[cfg(feature = "test-hooks")]
+        if test_room.as_ref().is_some_and(|r| r.get()) {
+            return true;
+        }
+        others
+            .iter()
+            .any(|s| s.upgrade().is_some_and(|s| s.media_live()))
+            || own
+                .as_ref()
+                .and_then(std::rc::Weak::upgrade)
+                .is_some_and(|s| s.room_open())
+    }
+}
+
+/// Test hook: `window`'s own left room reads as open while `open` holds (the window has no media session).
+#[cfg(feature = "test-hooks")]
+pub fn put_test_room_open(window: WindowId, open: Rc<std::cell::Cell<bool>>, cx: &mut App) {
+    ui_mut(window, cx).test_room_open = Some(open);
 }
 
 /// The media sessions of the other instance windows (not `window`'s, nor one of its client's): the process's media
@@ -1646,12 +1724,10 @@ fn handover_then(
             if waited >= HANDOVER_WAIT {
                 if leaves.is_empty() {
                     log::warn!(
-                        "voice: another instance's call media did not end; the join is dropped"
+                        "voice: a left call's media or room did not end; the join is dropped"
                     );
                 } else {
-                    log::warn!(
-                        "voice: another instance's call did not answer its leave; the join is dropped"
-                    );
+                    log::warn!("voice: a left call did not answer its leave; the join is dropped");
                 }
                 return cx.update(|cx| {
                     join_failed(window, cx);
@@ -1830,7 +1906,7 @@ fn join_notice(window: WindowId, key: &'static str, cx: &mut App) {
 /// instance window is in has been left.
 pub fn join(channel: ChannelId, window: WindowId, cx: &mut App) {
     let Some(v) = voice(window, cx) else { return };
-    after_leaving_other_calls(window, v, move |v| v.join(channel), cx);
+    after_leaving_other_calls(window, v, channel, move |v| v.join(channel), cx);
 }
 
 /// [`join`] that tells `done` how it ended (`/join`, builtin.ts `waitForVoiceJoin`): `Ok` once the call is joined, the
@@ -1843,7 +1919,7 @@ pub fn join_then(channel: ChannelId, window: WindowId, done: JoinDone, cx: &mut 
             cx,
         );
     };
-    after_leaving_other_calls_then(window, v, move |v| v.join(channel), Some(done), cx);
+    after_leaving_other_calls_then(window, v, channel, move |v| v.join(channel), Some(done), cx);
 }
 
 /// Leaves `window`'s call; the focus goes back to the call's voice row (leave-reload.spec.ts).

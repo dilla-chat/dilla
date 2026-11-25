@@ -460,6 +460,13 @@ impl MediaSession {
         self.live.is_live()
     }
 
+    /// Whether this session's call media is live, or its left call's room is still closing (for [`ROOM_CLOSE_WAIT`] at
+    /// most). This window's own next join waits for it to clear ([`super::rooms_open_for_join`]), so a rejoin never
+    /// starts while its own old room is still connected.
+    pub fn room_open(&self) -> bool {
+        self.live.room_open()
+    }
+
     /// Every remote video stream's newest frame.
     pub fn videos(&self) -> RemoteVideos {
         self.videos
@@ -564,14 +571,59 @@ struct Ctx {
 /// Whether a call's media is live in the session: from the start of a join until the call's media ended (or the join
 /// or the call's task went). A dropped session waits for it to clear, and only while it is set: a call that already ended (and is
 /// only closing its room) holds nothing up.
+///
+/// Call fix round B1: after the media ends, the call's room may still be closing ([`RoomClosing`]). This window's next
+/// join waits for that too ([`MediaLive::room_open`]), so a rejoin never starts beside its own old room; the dropped
+/// session's wait does not.
 #[derive(Default)]
 struct MediaLive {
     live: Mutex<bool>,
     cleared: std::sync::Condvar,
+    /// A left call's room is closing ([`close_room`]).
+    closing: std::sync::atomic::AtomicBool,
 }
 
 /// A live call's media; clears [`MediaLive`] when dropped, however the call's task ends.
 struct LiveGuard(Arc<MediaLive>);
+
+/// A left call's room that is still closing; clears [`MediaLive::room_open`] when dropped.
+struct RoomClosing(Arc<MediaLive>);
+
+impl LiveGuard {
+    /// The media ended and the room's close begins: the room stays open (never a moment closed in between) while the
+    /// media is no longer live.
+    fn closing(self) -> RoomClosing {
+        self.0.closing.store(true, Ordering::SeqCst);
+        RoomClosing(self.0.clone())
+    }
+}
+
+impl Drop for RoomClosing {
+    fn drop(&mut self) {
+        self.0.closing.store(false, Ordering::SeqCst);
+    }
+}
+
+/// How long a left call's room close holds this window's next join ([`close_room`]): less than the join's own bound
+/// ([`super::HANDOVER_WAIT`]), so a close that hangs delays the join and never fails it.
+pub const ROOM_CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Closes a left call's room (`leave`: `Call::leave`) while `closing` holds it open for this window's next join, for
+/// [`ROOM_CLOSE_WAIT`] at most. Past it the join goes on and the close runs on to its end (never cancelled: a room
+/// whose close is dropped stays connected).
+async fn close_room(closing: RoomClosing, leave: impl std::future::Future<Output = ()>) {
+    let mut leave = std::pin::pin!(leave);
+    if tokio::time::timeout(ROOM_CLOSE_WAIT, leave.as_mut())
+        .await
+        .is_err()
+    {
+        log::warn!(
+            "voice: the left call's room did not close within {ROOM_CLOSE_WAIT:?}; the next join goes on"
+        );
+        drop(closing);
+        leave.await;
+    }
+}
 
 impl MediaLive {
     fn begin(self: &Arc<Self>) -> LiveGuard {
@@ -581,6 +633,11 @@ impl MediaLive {
 
     fn is_live(&self) -> bool {
         *self.live.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether a call's media is live or its left room is still closing (bounded: [`close_room`]).
+    fn room_open(&self) -> bool {
+        self.closing.load(Ordering::SeqCst) || self.is_live()
     }
 
     /// Waits until no call's media is live, at most `bound`; true when none is.
@@ -1069,10 +1126,10 @@ async fn in_call(
     ctx.voice.set_speaking(BTreeSet::new());
     feeder.abort();
     drop(ping);
-    // The media ends at once (shares, keys, the router), then the room is left.
+    // The media ends at once (shares, keys, the router), then the room is left. The live guard becomes the room's
+    // closing one: a dropped session does not wait for the close, this window's next join does (bounded).
     call.end_media();
-    drop(live);
-    call.leave().await;
+    close_room(live.closing(), call.leave()).await;
 }
 
 /// Whether `call_id` is still the call this device's media should be in.
@@ -1921,6 +1978,56 @@ mod tests {
         assert!(live.wait_ended(Duration::from_secs(3)));
         assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
         ender.join().unwrap();
+    }
+
+    /// Call fix round B1: a left call's room is open until its close ends. The window's next join waits for that
+    /// ([`MediaLive::room_open`]), while a dropped session's wait stays on the media only (the close runs on after it).
+    #[tokio::test(start_paused = true)]
+    async fn a_left_call_s_room_stays_open_until_its_close_ends() {
+        let live = Arc::new(MediaLive::default());
+        assert!(!live.room_open(), "no call");
+        let guard = live.begin();
+        assert!(live.room_open(), "a live call's room is open");
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let close = tokio::spawn(close_room(guard.closing(), async move {
+            let _ = held.await;
+        }));
+        tokio::task::yield_now().await;
+        assert!(
+            live.wait_ended(std::time::Duration::ZERO),
+            "the media ended: a dropped session does not wait for the close"
+        );
+        tokio::time::sleep(ROOM_CLOSE_WAIT / 2).await;
+        assert!(
+            live.room_open(),
+            "the close is held open: the next join waits"
+        );
+        release.send(()).unwrap();
+        close.await.unwrap();
+        assert!(!live.room_open(), "the close ended: the next join goes on");
+    }
+
+    /// Call fix round B1 (review focus 3): a close that never ends holds the next join for [`ROOM_CLOSE_WAIT`] only,
+    /// which is less than the join's own bound ([`super::super::HANDOVER_WAIT`]); the close itself runs on.
+    #[tokio::test(start_paused = true)]
+    async fn a_room_close_that_hangs_holds_the_next_join_for_a_bounded_time() {
+        assert!(ROOM_CLOSE_WAIT < super::super::HANDOVER_WAIT);
+        let live = Arc::new(MediaLive::default());
+        let guard = live.begin();
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let close_ended = ended.clone();
+        let (_release, held) = tokio::sync::oneshot::channel::<()>();
+        let close = tokio::spawn(close_room(guard.closing(), async move {
+            let _ = held.await;
+            close_ended.store(true, Ordering::SeqCst);
+        }));
+        tokio::time::sleep(ROOM_CLOSE_WAIT - std::time::Duration::from_millis(10)).await;
+        assert!(live.room_open());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!live.room_open(), "past the bound the next join goes on");
+        assert!(!close.is_finished(), "the close itself is not cancelled");
+        assert!(!ended.load(Ordering::SeqCst));
+        close.abort();
     }
 
     fn epoch(n: u64, key: u8) -> dilla_client::calls::MediaEpoch {

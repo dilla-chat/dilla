@@ -2143,6 +2143,66 @@ fn the_handover_waits_for_the_left_call_s_media_to_end(cx: &mut TestAppContext) 
     assert_eq!(toast_in(cx, id), None);
 }
 
+/// Call fix round B1: a join in a window whose own last call is still closing its room waits for that close: the
+/// join's first route is not called until the room has closed (a rejoin never starts beside its own old room).
+#[gpui::test]
+fn a_rejoin_waits_for_its_own_old_room_to_close(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    let room = Rc::new(std::cell::Cell::new(true));
+    cx.update(|cx| voice::put_test_room_open(id, room.clone(), cx));
+    let waits = cx.update(|cx| voice::rooms_open_for_join(id, VOICE, cx));
+    cx.update(|cx| voice::handover_after_media(id, Vec::new(), waits, start, undo, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "the window's own old room is still closing: no join yet"
+    );
+    room.set(false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get(), "the join starts once that room closed");
+    assert_eq!(toast_in(cx, id), None);
+}
+
+/// Call fix round B1: what a join does first about its own window's call. A call elsewhere is left before the join
+/// starts, so its room's close can be waited for; a join of the call it is already in leaves nothing (it is a no-op).
+#[test]
+fn a_join_leaves_its_own_window_s_other_call_first() {
+    let ch = VOICE;
+    let other = ChannelId([99; 16]);
+    let mut s = (*state(1)).clone();
+    s.voice.call = OwnCall::default();
+    assert_eq!(voice::own_call_before_join(&s, ch), voice::OwnFirst::Wait);
+    for phase in [
+        CallPhase::Joining,
+        CallPhase::WaitingForRemove,
+        CallPhase::In,
+    ] {
+        s.voice.call = OwnCall {
+            phase,
+            channel: Some(other),
+            ..OwnCall::default()
+        };
+        assert_eq!(
+            voice::own_call_before_join(&s, ch),
+            voice::OwnFirst::Leave,
+            "{phase:?}"
+        );
+        s.voice.call.channel = Some(ch);
+        assert_eq!(
+            voice::own_call_before_join(&s, ch),
+            voice::OwnFirst::Nothing,
+            "{phase:?}"
+        );
+    }
+}
+
 /// A left call's media that never ends holds the join for [`voice::HANDOVER_WAIT`] only, as a leave that never
 /// answers does: the join is dropped and the window says it could not join.
 #[gpui::test]
