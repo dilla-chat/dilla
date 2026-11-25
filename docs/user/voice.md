@@ -426,8 +426,12 @@ checks every device again.
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the call panel | The connection dropped; the call comes back by itself |
 
-If your connection drops while only the Bot is in the call with you, rejoining can take up to about a minute: the server
-ends that call first, then **join voice** starts a fresh one. Start the music again afterwards if you want it.
+If your connection drops while only the Bot is in the call with you, you can't get back into that call: the Bot can't let
+you back in, so the server ends the call first. That usually takes about a minute. It can take up to about three
+minutes when your old connection keeps trying to come back. Meanwhile **join voice** waits about 30 seconds, then says
+"Could not join voice. Try again."; press it again. Once the call has ended, **join voice** starts a fresh one. Start
+the music again afterwards if you want it. If you press **leave** yourself with only the Bot left, the call ends at once
+and you can join again straight away.
 
 ### You see people speaking but hear nothing
 

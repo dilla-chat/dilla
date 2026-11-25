@@ -80,6 +80,13 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 	// left to commit it) is told the call is over and registers a fresh group, instead of waiting on
 	// E_REMOVE_PENDING for a Remove no commit can ever clear. Nothing more gets through: a closed
 	// group refuses every commit. After the ACL's answer above, so a stranger learns nothing more.
+	//
+	// Unlike commit step 1/1b it also comes before the capability check (lockout review M2), and that
+	// order is kept on purpose: commit step 1 checks the capability first because a stale-epoch
+	// refusal returns the winning commit and outstanding refs, recovery bytes scoped to the group
+	// capability. E_GROUP_CLOSED carries none of them, only that the caller's own call is over, which
+	// a member or an eligible joiner may learn whatever its wire version; and commitPreflight runs no
+	// capability check for an external commit before its own 1b either.
 	if row.ClosedAt != nil {
 		return CommitResult{}, errGroupClosed()
 	}

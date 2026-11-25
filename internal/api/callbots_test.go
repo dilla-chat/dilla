@@ -1,8 +1,11 @@
 package api_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +215,8 @@ func putInstanceRemove(t *testing.T, e *env, group, dev id.ID, leaf uint32) {
 // internal/ds TestAResyncByARemoveTargetOfAClosedGroupIsGroupClosed).
 func TestBotsOnlyEndsWhenTheOnlyHumanIsAbsentAndPendingRemoval(t *testing.T) {
 	f := newEventsFixture(t, api.CallsConfig{})
+	var logs bytes.Buffer
+	f.calls.SetLogForTest(slog.New(slog.NewTextHandler(&logs, nil)))
 	botDev := seedCallBot(t, f.e, f.ch, f.group)
 	f.e.Clk.Advance(5 * time.Second) // the human's session was admitted, then it dropped
 	putInstanceRemove(t, f.e, f.group, f.dev, 0)
@@ -228,6 +233,10 @@ func TestBotsOnlyEndsWhenTheOnlyHumanIsAbsentAndPendingRemoval(t *testing.T) {
 	}
 	if row.Ended == nil {
 		t.Fatal("two sweeps kept a call whose only human is absent and pending removal, beside only the Bot")
+	}
+	ended := "msg=\"call ended\" call_id=" + f.callID.String() + " reason=bots_only"
+	if !strings.Contains(logs.String(), ended) {
+		t.Fatalf("the call did not end as bots_only; want %q in:\n%s", ended, logs.String())
 	}
 	if rooms := f.stub.deletedRooms(); len(rooms) != 1 || rooms[0] != f.room {
 		t.Fatalf("deleted rooms = %v, want the bots-only room", rooms)

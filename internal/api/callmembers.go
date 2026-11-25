@@ -249,8 +249,9 @@ func (h *Calls) resetBotOnly(call id.ID) {
 // remains. A human leaf that is absent and the target of an outstanding instance Remove is outside
 // its window unless it was admitted again at or after the Remove was issued: the Bot cannot commit
 // that Remove, and until the call ends its device's every rejoin is refused E_REMOVE_PENDING. An
-// account kind or proposal list that cannot be read is logged and keeps the call live. While waiting it queues no Removes: bots cannot commit the human's Remove, so the caller
-// must end the call under its existing call lock instead. Uncertain observations reset the wait.
+// account kind or proposal list that cannot be read is logged and keeps the call live. While waiting
+// it queues no Removes: bots cannot commit the human's Remove, so the caller must end the call under
+// its existing call lock instead. Uncertain observations reset the wait.
 func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow, parts []*livekit.ParticipantInfo, cut map[string]bool) (bool, error) {
 	if row.GroupID == nil {
 		h.resetBotOnly(row.CallID)
@@ -325,6 +326,14 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 		// admission at or after the Remove was issued is the device coming back (a reconnect through
 		// /rtc as the sweep runs), so it still counts and the call is kept on a listing that may be
 		// stale.
+		//
+		// What this rule buys (lockout review I1): before it, such a leaf already stopped counting once
+		// its latest admission was admissionJoinWindow old, so it only shortens the bots-only end by at
+		// most one admission window (30 s), and only when that admission falls in the window before
+		// the Remove's IssuedAt. It does not cover a lockout caused by an uncommitted Remove of a leaf
+		// that left: the Remove stays uncommitted (only the call's end closes the group), a device the
+		// room still lists keeps the call live, and a dropped session's SDK reconnects through /rtc
+		// (each an admission after IssuedAt) keep the human active for up to about a minute more.
 		if issued, ok := removing[m.LeafIndex]; ok && latest.Unix() < issued {
 			continue
 		}
