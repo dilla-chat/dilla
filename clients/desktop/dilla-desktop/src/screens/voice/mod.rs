@@ -23,7 +23,9 @@ use dilla_client::calls::CallPhase;
 use dilla_client::state::voice::SfuRemote;
 use dilla_client::state::voice::{STRANGER_USER, VoiceNotice, VoiceParticipant};
 use dilla_client::state::{AppState, Channel, ChannelId, DeviceId, UserId};
-use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
+use dilla_media::{
+    LocalVideos, RemoteFrame, RemoteVideos, ShareKind, ShareOptions, ShareResolution, StreamKey,
+};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
@@ -276,6 +278,9 @@ pub struct VoiceUi {
     images: HashMap<StreamKey, (u64, Arc<RenderImage>)>,
     /// Each stream's frame rate, measured over the last second: `(at, frames then, fps)`.
     rates: HashMap<StreamKey, (std::time::Instant, u64, u32)>,
+    /// The frame height of each stream whose tile says its frames (every one but the own camera, whose tile says its
+    /// codec as the old client's did).
+    heights: HashMap<StreamKey, u32>,
     /// The stream-quality menu (the share button's split half, or the picker before a share) is open.
     pub share_menu: bool,
     /// The stream quality the next (or the running) screen share uses.
@@ -314,6 +319,9 @@ pub struct VoiceUi {
     /// A test's remote frames, drawn while there is no media session (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_frames: HashMap<StreamKey, Arc<RenderImage>>,
+    /// A test's remote and sent frames, drawn as a media session's are while there is none (feature `test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    test_videos: (RemoteVideos, LocalVideos),
     /// What `voice-sim` made up over the state: devices whose media "is there" and who is heard speaking, applied on top
     /// of every state the shell syncs (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
@@ -912,6 +920,24 @@ impl VoiceUi {
     #[cfg(feature = "test-hooks")]
     pub fn put_test_frame(&mut self, stream: StreamKey, image: Arc<RenderImage>) {
         self.test_frames.insert(stream, image);
+    }
+
+    /// Test hook: the remote streams' newest frames, drawn as a media session's are while this window has none.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_test_videos(&mut self, videos: RemoteVideos) {
+        self.test_videos.0 = videos;
+    }
+
+    /// Test hook: what this device sends ([`session::MediaSession::local_videos`]), while this window has no media session.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_test_local_videos(&mut self, videos: LocalVideos) {
+        self.test_videos.1 = videos;
+    }
+
+    /// Test hook: the image a stream's tile draws now, if any.
+    #[cfg(feature = "test-hooks")]
+    pub fn frame_image_for_tests(&self, stream: &StreamKey) -> Option<Arc<RenderImage>> {
+        self.images.get(stream).map(|(_, i)| i.clone())
     }
 }
 
@@ -2641,10 +2667,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let images = refresh_images(window, cx);
     let stats: HashMap<StreamKey, (u32, u32)> = ui_of(w, cx)
         .map(|u| {
-            let videos = u.session.as_ref().map(|s| s.videos()).unwrap_or_default();
             u.rates
                 .iter()
-                .filter_map(|(k, (_, _, fps))| Some((k.clone(), (videos.get(k)?.height, *fps))))
+                .filter_map(|(k, (_, _, fps))| Some((k.clone(), (*u.heights.get(k)?, *fps))))
                 .collect()
         })
         .unwrap_or_default();
@@ -2975,22 +3000,89 @@ fn stage_key(key: &str, n: usize, window: WindowId, cx: &mut App) {
     }
 }
 
-/// The newest remote frames as images, rebuilt only for streams with a new frame.
-/// A replaced or ended stream's image leaves the GPU atlas (`drop_image`): without that every frame would stay there.
+/// This device's id on the stage: the room's own row when it lists one, else the account's (as [`tiles`] keys the own
+/// tiles).
+fn own_device(state: &AppState) -> Option<DeviceId> {
+    state
+        .voice
+        .call
+        .channel
+        .and_then(|c| {
+            state
+                .voice
+                .participants(c)
+                .iter()
+                .find(|p| p.own)
+                .map(|p| p.device_id)
+        })
+        .or(state.account.device_id)
+}
+
+/// The stage's frames: every remote stream's, and what this device sends under its own id, the own tiles' self-view
+/// (session.ts `localCamera` / `localScreen`: a local view, never a received stream). The own camera is the one stream
+/// drawn mirrored (VoiceView.tsx `mirrorCamera: true`); its key is returned with them.
+fn stage_videos(
+    state: &AppState,
+    remote: RemoteVideos,
+    local: LocalVideos,
+) -> (RemoteVideos, Option<StreamKey>) {
+    let Some(own) = own_device(state).map(|d| d.hex()) else {
+        return (remote, None);
+    };
+    let mut videos = remote;
+    for (kind, frame) in local {
+        videos.insert(
+            StreamKey {
+                device: own.clone(),
+                kind,
+            },
+            frame,
+        );
+    }
+    let mirrored = StreamKey {
+        device: own,
+        kind: ShareKind::Camera,
+    };
+    (videos, Some(mirrored))
+}
+
+/// `frame`'s RGBA rows as the BGRA gpui draws, mirrored left to right with `mirror` (the own camera's self-view only:
+/// what is sent is never mirrored).
+fn bgra_of(frame: &RemoteFrame, mirror: bool) -> Vec<u8> {
+    let mut bgra = frame.rgba.as_ref().clone();
+    let row = frame.width as usize * 4;
+    if row == 0 {
+        return bgra;
+    }
+    for line in bgra.chunks_exact_mut(row) {
+        let pixels = line.as_chunks_mut::<4>().0;
+        if mirror {
+            pixels.reverse();
+        }
+        for px in pixels {
+            px.swap(0, 2);
+        }
+    }
+    bgra
+}
+
+/// The newest frames as images (the remote streams' and this device's own, [`stage_videos`]), rebuilt only for streams
+/// with a new frame. A replaced or ended stream's image leaves the GPU atlas (`drop_image`): without that every frame
+/// would stay there. A share that stops takes its own tile's picture with it.
 fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<RenderImage>> {
     let w = wid(window);
-    let Some(videos) = ui_of(w, cx)
-        .and_then(|u| u.session.as_ref())
-        .map(|s| s.videos())
-    else {
-        // No media session: only a test's frames ([`VoiceUi::put_test_frame`]).
-        #[cfg(feature = "test-hooks")]
-        return ui_of(w, cx)
-            .map(|u| u.test_frames.clone())
-            .unwrap_or_default();
-        #[cfg(not(feature = "test-hooks"))]
+    let Some(ui) = ui_of(w, cx) else {
         return HashMap::new();
     };
+    let (remote, local) = match ui.session.as_ref() {
+        Some(s) => (s.videos(), s.local_videos()),
+        // No media session: a test's frames, else none.
+        #[cfg(feature = "test-hooks")]
+        None => ui.test_videos.clone(),
+        #[cfg(not(feature = "test-hooks"))]
+        None => Default::default(),
+    };
+    let (videos, mirrored) = stage_videos(&ui.state, remote, local);
     let mut stale: Vec<Arc<RenderImage>> = Vec::new();
     let ui = ui_mut(w, cx);
     let now = std::time::Instant::now();
@@ -3003,6 +3095,11 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
             *rate = (now, f.frames, rate.2);
         }
     }
+    ui.heights = videos
+        .iter()
+        .filter(|(k, _)| Some(*k) != mirrored.as_ref())
+        .map(|(k, f)| (k.clone(), f.height))
+        .collect();
     ui.images.retain(|k, (_, image)| {
         let keep = videos.contains_key(k);
         if !keep {
@@ -3014,11 +3111,7 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
         if ui.images.get(k).is_some_and(|(n, _)| *n == f.frames) {
             continue;
         }
-        // gpui draws BGRA.
-        let mut bgra = f.rgba.as_ref().clone();
-        for px in bgra.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
+        let bgra = bgra_of(f, Some(k) == mirrored.as_ref());
         if let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, bgra) {
             let frame = image::Frame::new(buf);
             if let Some((_, old)) = ui.images.insert(
@@ -3029,11 +3122,15 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
             }
         }
     }
-    let out = ui
-        .images
-        .iter()
-        .map(|(k, (_, i))| (k.clone(), i.clone()))
-        .collect();
+    let images = ui.images.iter().map(|(k, (_, i))| (k.clone(), i.clone()));
+    // A test's prebuilt frames ([`VoiceUi::put_test_frame`]), drawn while there is no media session.
+    #[cfg(feature = "test-hooks")]
+    let images = images.chain(if ui.session.is_none() {
+        ui.test_frames.clone()
+    } else {
+        HashMap::new()
+    });
+    let out: HashMap<StreamKey, Arc<RenderImage>> = images.collect();
     for image in stale {
         cx.drop_image(image, Some(window));
     }
@@ -3191,10 +3288,22 @@ fn tile(
         AvatarSize::Stage
     };
     let media = match video {
-        Some(image) => img(ImageSource::Render(image))
-            .size_full()
-            .object_fit(gpui::ObjectFit::Contain)
-            .into_any_element(),
+        Some(image) => {
+            let selector = format!(
+                "voice-tile-{}{}-media",
+                k.device.hex(),
+                if k.screen { "-screen" } else { "" }
+            );
+            div()
+                .debug_selector(move || selector.clone())
+                .size_full()
+                .child(
+                    img(ImageSource::Render(image))
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
+                .into_any_element()
+        }
         None if k.screen => div()
             .size_full()
             .flex()

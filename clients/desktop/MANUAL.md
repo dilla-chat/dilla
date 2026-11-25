@@ -14,9 +14,9 @@ seconds, printing the frame size; `ended` means the source closed.
 | `capture-probe windows` lists the open windows by title, frames arrive; closing the window prints `ended` | the first run asks for Screen Recording; thumbnails on 14+, one frame on 13 | the capture border appears around the window | — | n/a |
 | `capture-probe portal` opens the system's "share your screen" dialog; Share gives frames, Cancel prints `did not open: the selection was cancelled` | n/a | n/a | n/a | KDE and GNOME |
 | `capture-probe camera` lists the cameras and frames arrive (about 640 x 480) | no camera source yet (follow-up) | the camera light comes on, and goes off at the end | V4L2 camera | V4L2 camera |
-| In a call: Share, then pick a screen; the other side sees it; Stop ends it, and closing the window ends it | | | | |
+| In a call: Share, then pick a screen; the other side sees it, and your own tile shows your share; Stop ends it (your own tile's picture goes with it), and closing the window ends it | | | | |
 | In a call: Share opens Dilla's picker; without Screen Recording it shows the permission line, and after allowing and relaunching it lists the tiles | | n/a | n/a | n/a |
-| In a call: the camera button starts the camera; the other side sees it | n/a | | | |
+| In a call: the camera button starts the camera; the other side sees it, and your own tile shows it mirrored (the other side sees it the right way round) | n/a | | | |
 
 ## Application audio (parity plan Package 3)
 

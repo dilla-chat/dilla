@@ -24,8 +24,8 @@ use dilla_media::noise::NoiseMode;
 use dilla_media::sources::OpenError;
 use dilla_media::sources::desktop::{self, DesktopSource};
 use dilla_media::{
-    Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, MediaEvent, Mic,
-    RemoteVideos, ShareKind, ShareOptions,
+    Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, LocalVideos, MediaEvent,
+    Mic, RemoteVideos, ShareKind, ShareOptions,
 };
 use tokio::sync::{mpsc, watch};
 use zeroize::Zeroizing;
@@ -217,7 +217,9 @@ pub struct MediaSession {
     /// the runtime shuts down.
     room_closes: dilla_media::RoomCloses,
     videos: Arc<Mutex<RemoteVideos>>,
-    /// Bumped on every new remote video frame: the view repaints when it moved.
+    /// What this device sends, for its own tiles ([`MediaSession::local_videos`]).
+    local_videos: Arc<Mutex<LocalVideos>>,
+    /// Bumped on every new remote or own video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
     /// The devices (hex) whose screen share carries sound.
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
@@ -354,6 +356,7 @@ impl MediaSession {
         let room_closes = dilla_media::RoomCloses::default();
         let (closing, closed) = watch::channel(());
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
+        let local_videos = Arc::new(Mutex::new(LocalVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
         let app_sound = Arc::new(Mutex::new(None));
@@ -362,6 +365,7 @@ impl MediaSession {
             states: client.state(),
             prefs: client.prefs(),
             videos: videos.clone(),
+            local_videos: local_videos.clone(),
             video_seq: video_seq.clone(),
             screen_sound: screen_sound.clone(),
             app_sound: app_sound.clone(),
@@ -379,6 +383,7 @@ impl MediaSession {
             live,
             room_closes,
             videos,
+            local_videos,
             video_seq,
             screen_sound,
             app_sound,
@@ -462,6 +467,15 @@ impl MediaSession {
             .unwrap_or_else(|p| p.into_inner())
             .clone()
     }
+
+    /// What this device sends now, for its own tiles' self-view (session.ts `localCamera` / `localScreen`): each running
+    /// share's newest sent frame ([`dilla_media::Call::local_videos`]), empty while nothing is sent.
+    pub fn local_videos(&self) -> LocalVideos {
+        self.local_videos
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
 }
 
 impl Drop for MediaSession {
@@ -534,6 +548,7 @@ struct Ctx {
     states: watch::Receiver<Arc<AppState>>,
     prefs: dilla_client::prefs::Prefs,
     videos: Arc<Mutex<RemoteVideos>>,
+    local_videos: Arc<Mutex<LocalVideos>>,
     video_seq: Arc<AtomicU64>,
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
@@ -803,6 +818,7 @@ async fn in_call(
     let mut states = ctx.states.clone();
     let mut levels = call.remote_audio_levels();
     let mut videos = call.remote_videos();
+    let mut local_videos = call.local_videos();
     let mut remotes = call.remote_participants();
     let mut events = call.events();
     let mut ended = call.shares_ended();
@@ -913,6 +929,13 @@ async fn in_call(
                         publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
                         *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
                         *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
+                        ctx.video_seq.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                r = local_videos.changed() => {
+                    if r.is_ok() {
+                        let next = local_videos.borrow_and_update().clone();
+                        *ctx.local_videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
                         ctx.video_seq.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -1036,6 +1059,10 @@ async fn in_call(
     drop(opened);
     drop(opens);
     ctx.videos.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    ctx.local_videos
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
     // The call's end stops every share and the application sound with them (`Call::end_media`): none is published.
     *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;

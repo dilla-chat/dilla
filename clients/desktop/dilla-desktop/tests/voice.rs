@@ -128,6 +128,144 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
     cx.run_until_parked();
 }
 
+/// A synthetic sent frame (never a screen's content): its left half one colour, its right half another, so a mirrored
+/// image reads the right half first.
+fn sent_frame(w: u32, h: u32, frames: u64) -> dilla_media::RemoteFrame {
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..h {
+        for x in 0..w {
+            rgba.extend_from_slice(if x < w / 2 {
+                &[250, 10, 10, 255]
+            } else {
+                &[10, 10, 250, 255]
+            });
+        }
+    }
+    dilla_media::RemoteFrame {
+        width: w,
+        height: h,
+        rgba: Arc::new(rgba),
+        frames,
+    }
+}
+
+fn own_stream(kind: dilla_media::ShareKind) -> dilla_media::StreamKey {
+    dilla_media::StreamKey {
+        device: DeviceId([100; 16]).hex(),
+        kind,
+    }
+}
+
+/// The stage drawn again after its frames changed.
+fn redraw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+/// Jonas 2026-11-25 (the old client's session.ts `localScreen`, VoiceView.tsx :210-222): while this device shares its
+/// screen, its own screen tile shows what it sends; once the share stops, the tile has no picture and its image is gone.
+#[gpui::test]
+fn the_own_screen_tile_shows_the_local_share(cx: &mut TestAppContext) {
+    let sharing = {
+        let mut s = (*state(2)).clone();
+        s.voice.share.screen = true;
+        Arc::new(s)
+    };
+    let cx = host(cx, sharing);
+    let own = DeviceId([100; 16]).hex();
+    let media = selector(format!("voice-tile-{own}-screen-media"));
+    let key = own_stream(dilla_media::ShareKind::Screen);
+    assert!(
+        area(cx, |ui| voice::tiles(&ui.state, VOICE)
+            .iter()
+            .any(|k| k.screen && k.device == DeviceId([100; 16]))),
+        "the own screen tile is on the stage"
+    );
+    assert!(cx.debug_bounds(media).is_none(), "no frame sent yet");
+
+    area(cx, |ui| {
+        ui.set_test_local_videos(
+            [(dilla_media::ShareKind::Screen, sent_frame(64, 36, 1))]
+                .into_iter()
+                .collect(),
+        );
+    });
+    redraw(cx);
+    assert!(
+        cx.debug_bounds(media).is_some(),
+        "the own share shows on its tile"
+    );
+    let shown =
+        area(cx, |ui| ui.frame_image_for_tests(&key)).and_then(|i| i.as_bytes(0).map(<[u8]>::len));
+    assert_eq!(
+        shown,
+        Some(64 * 36 * 4),
+        "the image is the sent frame's size"
+    );
+
+    // The share stops: the state no longer shares and the tap holds nothing.
+    cx.update(|window, cx| voice::sync(voice::wid(window), state(2), None, cx));
+    area(cx, |ui| ui.set_test_local_videos(Default::default()));
+    redraw(cx);
+    assert!(cx.debug_bounds(media).is_none(), "no stale picture");
+    assert!(
+        area(cx, |ui| ui.frame_image_for_tests(&key)).is_none(),
+        "the stopped share's image left the atlas"
+    );
+}
+
+/// The old client's own tile (VoiceView.tsx `mirrorCamera: true`): the own camera shows on the own person tile, mirrored;
+/// another person's camera is never mirrored.
+#[gpui::test]
+fn the_own_camera_tile_shows_the_local_camera_mirrored(cx: &mut TestAppContext) {
+    let cx = host(cx, state(2));
+    let own = DeviceId([100; 16]).hex();
+    let bob = DeviceId([101; 16]).hex();
+    let remote = dilla_media::StreamKey {
+        device: bob.clone(),
+        kind: dilla_media::ShareKind::Camera,
+    };
+    area(cx, |ui| {
+        ui.set_test_videos(
+            [(remote.clone(), sent_frame(8, 2, 1))]
+                .into_iter()
+                .collect(),
+        );
+        ui.set_test_local_videos(
+            [(dilla_media::ShareKind::Camera, sent_frame(8, 2, 1))]
+                .into_iter()
+                .collect(),
+        );
+    });
+    redraw(cx);
+    assert!(
+        cx.debug_bounds(selector(format!("voice-tile-{own}-media")))
+            .is_some(),
+        "the own camera shows on the own tile"
+    );
+    assert!(
+        cx.debug_bounds(selector(format!("voice-tile-{bob}-media")))
+            .is_some()
+    );
+    // gpui draws BGRA: the first pixel's blue byte says which half it came from.
+    let first_blue = |key: &dilla_media::StreamKey, cx: &mut VisualTestContext| {
+        area(cx, |ui| ui.frame_image_for_tests(key)).and_then(|i| i.as_bytes(0).map(|b| b[0]))
+    };
+    assert_eq!(
+        first_blue(&own_stream(dilla_media::ShareKind::Camera), cx),
+        Some(250),
+        "the own camera is mirrored"
+    );
+    assert_eq!(first_blue(&remote, cx), Some(10), "another's camera is not");
+    // The camera stops: the own tile goes back to its face.
+    area(cx, |ui| ui.set_test_local_videos(Default::default()));
+    redraw(cx);
+    assert!(
+        cx.debug_bounds(selector(format!("voice-tile-{own}-media")))
+            .is_none()
+    );
+}
+
 /// e2e/voice/stage.spec.ts (the view half): a tile per person and one per shared screen; Enter focuses the selected
 /// tile, the arrows move the selection, Escape leaves focus mode.
 #[gpui::test]

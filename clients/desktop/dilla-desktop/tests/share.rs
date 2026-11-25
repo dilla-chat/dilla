@@ -405,6 +405,44 @@ fn cancel_publishes_nothing_and_the_call_goes_on(cx: &mut TestAppContext) {
     w.rt.block_on(until(&w.alice, "alice mutes", |s| s.voice.self_mute));
 }
 
+/// Jonas 2026-11-25 (the old client's session.ts `localScreen`): alice's window gets the frames her share sends, at the
+/// size it sends them, for her own screen tile; once she stops, it holds none. Sizes only, never pixels.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn the_own_share_s_sent_frames_reach_its_window_until_it_stops(cx: &mut TestAppContext) {
+    let w = world("t-share-self-view");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = alice_shares(cx, &w, &rec);
+    let session = cx
+        .update(|cx: &mut App| voice::session_of(a.window_id(), cx))
+        .expect("alice's session");
+    let sent = |kind| {
+        session
+            .local_videos()
+            .get(&kind)
+            .map(|f| (f.width, f.height, f.rgba.len()))
+    };
+    wait(cx, "alice's own share frame", || {
+        sent(ShareKind::Screen).is_some()
+    });
+    assert_eq!(
+        sent(ShareKind::Screen),
+        Some((320, 180, 320 * 180 * 4)),
+        "the sent size"
+    );
+    assert_eq!(sent(ShareKind::Camera), None, "no camera is sent");
+    press_share(cx, &a);
+    w.rt.block_on(until(&w.alice, "alice's share is off", |s| {
+        !s.voice.share.screen
+    }));
+    wait(cx, "the own share frame goes", || {
+        session.local_videos().is_empty()
+    });
+    drop(session);
+}
+
 /// share.spec.ts "a share without sound says so on both sides": alice shares a screen (a source without sound). She is
 /// told the share carries none (`voice.shareAudio.none.application`); bob's view of her screen tile carries the no-sound
 /// mark (a remote screen without a screen-audio stream), and her own tile does not.
