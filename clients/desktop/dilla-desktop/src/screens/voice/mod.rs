@@ -2201,6 +2201,17 @@ pub fn ping_text(ms: Option<u32>) -> String {
     }
 }
 
+/// The dock's line under the place (VoiceView.tsx `callPhase`): the link once the call is in, "reconnecting" while a rejoin
+/// waits for this device's earlier Remove (its sentence, `voice.announce.rejoining`, is only spoken: the shell's call
+/// announcements), else "connecting".
+pub fn dock_line(call: &dilla_client::state::voice::OwnCall) -> String {
+    match call.phase {
+        CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
+        CallPhase::WaitingForRemove => t("voice.dock.reconnecting").to_owned(),
+        _ => t("voice.dock.connecting").to_owned(),
+    }
+}
+
 /// The voice dock over the user panel (`slots::dock`, first): the call's channel, its state and leave. Shown from the
 /// join's start to the leave.
 pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -2212,11 +2223,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     }
     // VoiceView.tsx `Dock`'s `where`: the channel, or "the call with {name}" for a DM.
     let name = call_place(&state).unwrap_or_default();
-    let where_ = match call.phase {
-        CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
-        CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
-        _ => t("voice.dock.connecting").to_owned(),
-    };
+    let where_ = dock_line(call);
     // VoiceDock.css:21-24: the line is `--fg-3`, `--warn` when poor and `--danger` when bad, once the call is in and both
     // the ping and the loss are read; then it also has its spoken text (never announced).
     let quality = match (call.phase, call.ping_ms, call.loss_pct) {
@@ -5058,6 +5065,33 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Jonas 2026-11-25 (a screenshot of "Rejoining {where}. This can take up…"): while a rejoin waits for this device's
+    /// earlier Remove, the dock's line says "reconnecting" (`voice.dock.reconnecting`); the rejoining sentence is only
+    /// spoken (useCall.tsx :1105). Joining says "connecting", and no line carries a raw placeholder.
+    #[test]
+    fn the_dock_says_reconnecting_while_a_call_rejoins() {
+        use dilla_client::state::voice::OwnCall;
+        let at = |phase| OwnCall {
+            phase,
+            ..OwnCall::default()
+        };
+        assert_eq!(
+            super::dock_line(&at(super::CallPhase::WaitingForRemove)),
+            "reconnecting"
+        );
+        assert_eq!(
+            super::dock_line(&at(super::CallPhase::Joining)),
+            "connecting"
+        );
+        for phase in [
+            super::CallPhase::Joining,
+            super::CallPhase::WaitingForRemove,
+            super::CallPhase::In,
+        ] {
+            assert!(!super::dock_line(&at(phase)).contains('{'), "{phase:?}");
+        }
+    }
+
     /// VoiceView.tsx :283/:293: the paused notice's Compare opens Privacy when the window holds no trust record of the
     /// changed contact (its trust not read yet), instead of doing nothing.
     #[gpui::test]

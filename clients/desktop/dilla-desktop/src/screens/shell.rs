@@ -1431,6 +1431,9 @@ impl Render for ShellView {
         let (muted_now, deaf_now) = self.mic_and_deaf();
         let call_now = CallHeard {
             room: in_room_name(&state),
+            rejoining: (state.voice.call.phase == dilla_client::calls::CallPhase::WaitingForRemove)
+                .then(|| crate::screens::voice::call_place(&state))
+                .flatten(),
             muted: muted_now,
             deafened: deaf_now,
         };
@@ -2312,6 +2315,8 @@ pub(crate) fn no_server(state: &AppState) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CallHeard {
     room: Option<String>,
+    /// The place a rejoin is waiting to get back into (`CallPhase::WaitingForRemove`), `None` otherwise.
+    rejoining: Option<String>,
     muted: bool,
     deafened: bool,
 }
@@ -2321,9 +2326,16 @@ fn in_room_name(state: &AppState) -> Option<String> {
     crate::screens::voice::in_room(state)
 }
 
-/// useCall.tsx's announcements for a change from `before` to `now`: joining or leaving a place first (`voice.announce
-/// .joined` / `.left`), else the sound (`deafened` / `undeafened`), else the microphone (`muted` / `unmuted`).
+/// useCall.tsx's announcements for a change from `before` to `now`: a rejoin's wait as it starts (`voice.announce
+/// .rejoining`), then joining or leaving a place (`.joined` / `.left`), else the sound (`deafened` / `undeafened`), else
+/// the microphone (`muted` / `unmuted`).
 fn call_announcement(before: &CallHeard, now: &CallHeard) -> Option<String> {
+    // useCall.tsx :1105: a rejoin's wait (up to 30 s) is said once as it starts, so a reader knows why nothing happens.
+    if let Some(place) = &now.rejoining
+        && before.rejoining.as_ref() != Some(place)
+    {
+        return Some(tf("voice.announce.rejoining", &[("where", place)]));
+    }
     match (&before.room, &now.room) {
         (_, Some(room)) if before.room.as_ref() != Some(room) => {
             return Some(tf("voice.announce.joined", &[("where", room)]));
@@ -2358,6 +2370,7 @@ mod tests {
     fn the_call_announces_joining_leaving_and_its_switches() {
         let at = |room: Option<&str>, muted, deafened| CallHeard {
             room: room.map(str::to_owned),
+            rejoining: None,
             muted,
             deafened,
         };
@@ -2385,6 +2398,31 @@ mod tests {
         assert_eq!(
             call_announcement(&at(Some("a"), false, false), &at(Some("a"), false, false)),
             None
+        );
+    }
+
+    /// useCall.tsx :1105: a rejoin that waits for this device's earlier Remove is said once, with its place filled in
+    /// (Jonas 2026-11-25: the dock showed the raw sentence instead).
+    #[test]
+    fn a_rejoin_is_announced_once_with_its_place() {
+        let at = |room: Option<&str>, rejoining: Option<&str>| CallHeard {
+            room: room.map(str::to_owned),
+            rejoining: rejoining.map(str::to_owned),
+            muted: false,
+            deafened: false,
+        };
+        assert_eq!(
+            call_announcement(&at(None, None), &at(None, Some("lounge"))).as_deref(),
+            Some("Rejoining lounge. This can take up to 30 seconds.")
+        );
+        assert_eq!(
+            call_announcement(&at(None, Some("lounge")), &at(None, Some("lounge"))),
+            None,
+            "once"
+        );
+        assert_eq!(
+            call_announcement(&at(None, Some("lounge")), &at(Some("lounge"), None)).as_deref(),
+            Some("You joined lounge.")
         );
     }
 

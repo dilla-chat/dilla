@@ -282,6 +282,62 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 
 #[cfg(test)]
 mod tests {
+    /// Every `t("key")` in the app's source names a string without a `{placeholder}`: `t` draws a placeholder as it is
+    /// written ("Rejoining {where}. …" in the voice dock, Jonas 2026-11-25), so a string with one goes through `tf` with
+    /// its values, or fills it by hand (`.replace`). The scan reads `t(` followed by a string literal (a key chosen at run
+    /// time, `t(if … )`, is not seen).
+    #[test]
+    fn no_t_call_draws_a_raw_placeholder() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("the source directory") {
+                let path = entry.expect("a source entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let mut raw = Vec::new();
+        let mut seen = 0;
+        for file in files.iter().filter(|f| !f.ends_with("strings.rs")) {
+            let text = std::fs::read_to_string(file).expect("a source file");
+            for (at, _) in text.match_indices("t(") {
+                let before = text[..at].chars().next_back();
+                if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                    continue;
+                }
+                let rest = text[at + 2..].trim_start();
+                let Some(lit) = rest.strip_prefix('"') else {
+                    continue;
+                };
+                let Some(key) = lit.split('"').next() else {
+                    continue;
+                };
+                let Some(value) = crate::strings::try_t(key) else {
+                    continue;
+                };
+                seen += 1;
+                // A call that fills its placeholder by hand (`t("…").replace("{n}", …)`) draws none.
+                let after = lit[key.len() + 1..].trim_start();
+                let filled = after
+                    .strip_prefix(')')
+                    .is_some_and(|a| a.trim_start().starts_with(".replace("));
+                if value.contains('{') && !filled {
+                    raw.push(format!("{}: t(\"{key}\")", file.display()));
+                }
+            }
+        }
+        assert!(seen > 100, "the scan found only {seen} t(\"…\") calls");
+        assert!(
+            raw.is_empty(),
+            "t() of a string with a placeholder (use tf): {raw:#?}"
+        );
+    }
+
     /// KDE strips a trailing `.desktop` from the app id before it looks up the desktop entry, so the entry named
     /// `dev.dilla.desktop.desktop` was never found and Plasma drew a generic icon.
     #[test]
