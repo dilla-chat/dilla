@@ -166,32 +166,60 @@ pub struct Snapshot {
 /// closed after its one frame). macOS: `desktop_mac::snapshot` (`SCScreenshotManager` thumbnails on 14+, one captured
 /// frame on 13). Empty under the portal. Blocking: call it off the UI thread.
 pub fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
+    snapshot_until(max, max_w, max_h, &|| false)
+}
+
+/// [`snapshot`] for the picker: once `cancelled` answers true (the picker closed: a pick, Cancel, the deadline) no
+/// further thumbnail is taken, and the sources not reached come back without one. macOS takes its thumbnails in one
+/// system call and does not look.
+pub fn snapshot_until(
+    max: usize,
+    max_w: u32,
+    max_h: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Snapshot {
     if portal() {
         return Snapshot::default();
     }
     #[cfg(target_os = "macos")]
     {
+        let _ = cancelled;
         super::desktop_mac::snapshot(max, max_w, max_h)
     }
     #[cfg(not(target_os = "macos"))]
     {
         #[cfg(target_os = "linux")]
         if kde_picker() {
-            return super::desktop_kde::snapshot(max, max_w, max_h);
+            return super::desktop_kde::snapshot(max, max_w, max_h, cancelled);
         }
+        let mut stopped = false;
         Snapshot {
             sources: [SourceKind::Screen, SourceKind::Window]
                 .into_iter()
                 .flat_map(list)
                 .take(max)
                 .map(|source| {
-                    let thumbnail = thumbnail(&source, max_w, max_h);
+                    stopped = stopped || cancelled();
+                    let thumbnail = (!stopped)
+                        .then(|| thumbnail(&source, max_w, max_h))
+                        .flatten();
                     (source, thumbnail)
                 })
                 .collect(),
             denied: false,
         }
     }
+}
+
+/// The picker's sources without thumbnails, quickly, where taking the thumbnails is slow (KDE Plasma: one KWin stream
+/// each): the picker shows the tiles at once and the thumbnails when [`snapshot_until`] has them. `None` elsewhere.
+pub fn quick_titles(max: usize) -> Option<Snapshot> {
+    #[cfg(target_os = "linux")]
+    if kde_picker() {
+        return Some(super::desktop_kde::titles(max));
+    }
+    let _ = max;
+    None
 }
 
 /// Asks for what listing needs, from the picker's open (a press on the focused window came first). macOS: Screen
@@ -342,6 +370,8 @@ pub struct DesktopCapture {
     fps: Arc<AtomicU32>,
     size: (u32, u32),
     surface: Option<SourceKind>,
+    /// KWin's stream sends a frame only when the source changed: the feeder repeats its last one meanwhile.
+    repeats: bool,
 }
 
 impl DesktopCapture {
@@ -369,6 +399,9 @@ impl CaptureSource for DesktopCapture {
     }
     fn pull(&mut self) -> Pull {
         self.latest.pull()
+    }
+    fn repeats_when_idle(&self) -> bool {
+        self.repeats
     }
     fn set_fps(&mut self, fps: u32) {
         self.fps.store(fps.clamp(1, 60), Ordering::Relaxed);
@@ -398,6 +431,13 @@ fn copy(frame: &DesktopFrame) -> Option<Frame> {
         stride: w * 4,
         data,
     })
+}
+
+/// Whether a capture's feeder repeats its last frame while the source sends none: a picked source on KDE Plasma
+/// (KWin's streams are damage-driven). libwebrtc's capturers (X11, Windows, the portal) and macOS's stream deliver at
+/// the capture rate themselves.
+fn repeats_when_idle(picked: bool, kde: bool) -> bool {
+    picked && kde
 }
 
 /// Starts capturing `source` (or, under the portal, whatever the person chooses in its dialog: `None`) at `fps`, and
@@ -432,6 +472,7 @@ pub fn open(
         fps,
         size: (0, 0),
         surface: kind,
+        repeats: repeats_when_idle(source.is_some(), kde_picker()),
     };
     // Dropping `capture` on an error stops the thread.
     capture.size = capture.latest.first(wait, cancel)?;
@@ -551,6 +592,14 @@ mod tests {
         let wayland = |k: &str| (k == "XDG_SESSION_TYPE").then(|| "wayland".to_owned());
         assert!(!portal_in(wayland, || true));
         assert_eq!(portal_in(wayland, || false), cfg!(target_os = "linux"));
+    }
+
+    /// Review I3: only a picked source on KDE Plasma is repeated by the feeder.
+    #[test]
+    fn only_a_kwin_capture_is_repeated_while_idle() {
+        assert!(repeats_when_idle(true, true));
+        assert!(!repeats_when_idle(false, true), "the portal's choice");
+        assert!(!repeats_when_idle(true, false), "X11, Windows, macOS");
     }
 
     /// A source's `Debug` never carries its title (a window's title describes the person's desktop).

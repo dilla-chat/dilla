@@ -9,9 +9,11 @@
 //! - Listing: every `wl_output` is a screen; the window list's windows are offered without Dilla's own process tree,
 //!   and without unmapped, minimised, skip-taskbar and skip-switcher windows (panels, the desktop, OSDs).
 //! - Capture: `stream_output` / `stream_window` make a PipeWire node of KWin's. An input stream of Dilla's, never
-//!   autoconnected, is linked to it here (WirePlumber does not link it), and each buffer is copied into a [`Frame`]. KWin
-//!   sends a frame only when the source changes, so the share's ticks repeat the last one ([`Repeat`]). KWin closing the
-//!   stream (the window closed, the output went away) ends the source.
+//!   autoconnected, is linked to it here (WirePlumber does not link it), and each buffer is copied into a [`Frame`]. The
+//!   format asks for at most the share's rate, so KWin holds back what changes faster and sends the pending change
+//!   later; every buffer is read ([`Newest`]). KWin sends a frame only when the source changes: the share's feeder
+//!   re-sends its last encoded-size buffer while nothing new comes (`CaptureSource::repeats_when_idle`, room.rs).
+//!   KWin closing the stream (the window closed, the output went away) ends the source.
 //!
 //! Nothing is captured before a source is picked: the picker's thumbnails are one frame each of a stream that closes
 //! at once, one at a time, and a share's stream lives only as long as its [`super::desktop::DesktopCapture`].
@@ -92,7 +94,8 @@ pub(crate) fn offered<'a>(globals: impl IntoIterator<Item = (&'a str, u32)>) -> 
 pub(super) fn available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        let found = probe();
+        // Without libpipewire the picker would list tiles it can never capture: the portal then.
+        let found = probe() && crate::app_audio::linux::init().is_ok();
         log::info!(
             "dilla-media: KWin's window list and screencast {}",
             if found {
@@ -247,31 +250,37 @@ pub(crate) fn convert(
     })
 }
 
-/// KWin sends a frame only when the window (or the screen) changed: a share's tick with no new frame since the
-/// previous tick hands on the last one again, so the share keeps its rate (a viewer that joins, or asks for a key
-/// frame, gets a picture of a window that is standing still).
+/// The newest frame not handed on yet. Every buffer KWin sends is read into it (KWin keeps to the share's rate, see
+/// [`enum_format`]), so the last frame of a burst is the one the loop hands on.
 #[derive(Default)]
-pub(crate) struct Repeat {
-    last: Option<Frame>,
-    fresh: bool,
+pub(crate) struct Newest(Option<Frame>);
+
+impl Newest {
+    pub(crate) fn put(&mut self, frame: Frame) {
+        self.0 = Some(frame);
+    }
+
+    pub(crate) fn take(&mut self) -> Option<Frame> {
+        self.0.take()
+    }
 }
 
-impl Repeat {
-    /// A new frame: kept for the ticks to come, and handed on.
-    pub(crate) fn fresh(&mut self, frame: Frame) -> Frame {
-        self.last = Some(frame.clone());
-        self.fresh = true;
-        frame
-    }
-
-    /// The share's tick: the last frame again when none came since the previous tick.
-    pub(crate) fn tick(&mut self) -> Option<Frame> {
-        if std::mem::take(&mut self.fresh) {
-            None
-        } else {
-            self.last.clone()
-        }
-    }
+/// The thumbnails of `sources`, one `one(source)` each, in order, until `cancelled` says the picker closed: the sources
+/// not reached then come back without one, and no further stream opens.
+pub(crate) fn thumbnails(
+    sources: Vec<DesktopSource>,
+    cancelled: &dyn Fn() -> bool,
+    mut one: impl FnMut(&DesktopSource) -> Option<Frame>,
+) -> Vec<(DesktopSource, Option<Frame>)> {
+    let mut stopped = false;
+    sources
+        .into_iter()
+        .map(|source| {
+            stopped = stopped || cancelled();
+            let thumbnail = if stopped { None } else { one(&source) };
+            (source, thumbnail)
+        })
+        .collect()
 }
 
 /// The links from KWin's node (`from`, its output ports) to Dilla's stream (`to`, its input ports), from the ports the
@@ -606,6 +615,20 @@ struct Graph {
     removed: BTreeSet<u32>,
 }
 
+impl Graph {
+    /// Dilla linked to `node` (its ports were listed, so it is the live node of that id): a removal still on record is
+    /// an earlier object's.
+    fn linked(&mut self, node: u32) {
+        self.removed.remove(&node);
+    }
+
+    /// Whether KWin's `node` went away: a removal counts only once Dilla linked to it (`linked`), so a removal of a
+    /// reused id that is still being delivered never ends a new capture (KWin's `closed` covers the time before).
+    fn gone(&self, node: u32, linked: bool) -> bool {
+        linked && self.removed.contains(&node)
+    }
+}
+
 /// One PipeWire connection with the registry followed, for the thumbnails of one listing or for one share.
 struct Pipe {
     mainloop: pw::main_loop::MainLoopRc,
@@ -673,9 +696,11 @@ enum End {
     Failed,
 }
 
-/// The `EnumFormat` Dilla's stream offers: raw 8-bit RGB with alpha or padding in either order, any size, any rate, no
-/// DMA-BUF modifier (so KWin hands over memory buffers that can be mapped).
-fn enum_format() -> Option<Vec<u8>> {
+/// The `EnumFormat` Dilla's stream offers: raw 8-bit RGB with alpha or padding in either order, any size, at most `fps`
+/// frames a second (1 to 60: KWin holds back changes above it and sends the pending one later, so the final state
+/// always arrives), no DMA-BUF modifier (so KWin hands over memory buffers that can be mapped).
+fn enum_format(fps: u32) -> Option<Vec<u8>> {
+    let fps = fps.clamp(1, 60);
     use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
     use spa::param::video::VideoFormat;
     let obj = spa::pod::object!(
@@ -724,6 +749,15 @@ fn enum_format() -> Option<Vec<u8>> {
                 denom: 1
             }
         ),
+        spa::pod::property!(
+            FormatProperties::VideoMaxFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction { num: fps, denom: 1 },
+            spa::utils::Fraction { num: 1, denom: 1 },
+            spa::utils::Fraction { num: fps, denom: 1 }
+        ),
     );
     spa::pod::serialize::PodSerializer::serialize(
         std::io::Cursor::new(Vec::new()),
@@ -733,8 +767,8 @@ fn enum_format() -> Option<Vec<u8>> {
     .map(|(cursor, _)| cursor.into_inner())
 }
 
-/// Captures `target` until `on` says stop, KWin closes the stream, or an error. Frames come at most at `fps` (later
-/// buffers within the interval are given back unread); a [`Step::Tick`] comes every interval. KWin's stream and
+/// Captures `target` until `on` says stop, KWin closes the stream, or an error. KWin sends at most `fps` frames a second
+/// (renegotiated when `fps` changes) and each one is handed on; a [`Step::Tick`] comes every interval. KWin's stream and
 /// Dilla's PipeWire stream (and with it its link) are closed before this returns.
 fn capture(
     session: &mut Session,
@@ -768,8 +802,6 @@ fn consume(
     fps: &AtomicU32,
     on: &mut impl FnMut(Step) -> bool,
 ) -> End {
-    // KWin just made `node`: a removal of the same id that is still on record was an earlier stream's.
-    pipe.graph.borrow_mut().removed.remove(&node);
     let Ok(stream) = pw::stream::StreamRc::new(
         pipe.core.clone(),
         NODE_NAME,
@@ -785,15 +817,13 @@ fn consume(
         return End::Failed;
     };
     let format = Rc::new(Cell::new(None::<(Layout, u32, u32)>));
-    let pending = Rc::new(RefCell::new(None::<Frame>));
+    let pending = Rc::new(RefCell::new(Newest::default()));
     let own = Rc::new(Cell::new(None::<u32>));
     let failed = Rc::new(Cell::new(false));
     let every = Rc::new(Cell::new(interval(fps)));
     let listener = {
         let (format_p, format_f) = (format.clone(), format.clone());
-        let (pending, own, failed, every) =
-            (pending.clone(), own.clone(), failed.clone(), every.clone());
-        let mut last: Option<Instant> = None;
+        let (pending, own, failed) = (pending.clone(), own.clone(), failed.clone());
         stream
             .add_local_listener_with_user_data(())
             .state_changed(move |stream, _, _, state| match state {
@@ -817,16 +847,13 @@ fn consume(
                 format_p.set(Layout::of(info.format()).map(|l| (l, size.width, size.height)));
             })
             .process(move |stream, _| {
-                // Every buffer is dequeued (and given back when dropped); one per interval is read.
+                // Every buffer is read (KWin keeps to the share's rate) and given back when dropped.
                 let Some(mut buffer) = stream.dequeue_buffer() else {
                     return;
                 };
                 let Some((layout, w, h)) = format_f.get() else {
                     return;
                 };
-                if last.is_some_and(|t| t.elapsed() < every.get()) {
-                    return;
-                }
                 let Some(data) = buffer.datas_mut().first_mut() else {
                     return;
                 };
@@ -841,8 +868,7 @@ fn consume(
                 }
                 let Some(bytes) = data.data() else { return };
                 if let Some(frame) = convert(bytes, (offset, size, stride), (w, h), layout) {
-                    last = Some(Instant::now());
-                    pending.replace(Some(frame));
+                    pending.borrow_mut().put(frame);
                 }
             })
             .register()
@@ -850,7 +876,8 @@ fn consume(
     let Ok(_listener) = listener else {
         return End::Failed;
     };
-    let Some(values) = enum_format() else {
+    let mut asked = fps.load(Ordering::Relaxed).clamp(1, 60);
+    let Some(values) = enum_format(asked) else {
         return End::Failed;
     };
     let Some(pod) = spa::pod::Pod::from_bytes(&values) else {
@@ -877,7 +904,7 @@ fn consume(
         if !session.poll() {
             break End::Failed;
         }
-        if session.state.casts[slot].closed || pipe.graph.borrow().removed.contains(&node) {
+        if session.state.casts[slot].closed || pipe.graph.borrow().gone(node, !made.is_empty()) {
             break End::Closed;
         }
         if failed.get() {
@@ -900,7 +927,10 @@ fn consume(
                     .core
                     .create_object::<pw::link::Link>("link-factory", &props)
                 {
-                    Ok(link) => made.push(link),
+                    Ok(link) => {
+                        pipe.graph.borrow_mut().linked(node);
+                        made.push(link);
+                    }
                     Err(_) => {
                         failed.set(true);
                         break;
@@ -908,10 +938,20 @@ fn consume(
                 }
             }
         }
-        if let Some(frame) = pending.borrow_mut().take()
+        let newest = pending.borrow_mut().take();
+        if let Some(frame) = newest
             && !on(Step::Frame(frame))
         {
             break End::Stopped;
+        }
+        // The share's rate changed (its quality): KWin is asked for the new maximum.
+        let now_fps = fps.load(Ordering::Relaxed).clamp(1, 60);
+        if now_fps != asked
+            && let Some(values) = enum_format(now_fps)
+            && let Some(pod) = spa::pod::Pod::from_bytes(&values)
+            && stream.update_params(&mut [pod]).is_ok()
+        {
+            asked = now_fps;
         }
         let now = Instant::now();
         if now >= next_tick {
@@ -939,9 +979,29 @@ pub(super) fn list(kind: SourceKind) -> Vec<DesktopSource> {
         .collect()
 }
 
+/// The picker's sources without thumbnails (one round trip to KWin): what it shows while the thumbnails come.
+pub(super) fn titles(max: usize) -> Snapshot {
+    Snapshot {
+        sources: Session::open()
+            .map(|s| s.sources())
+            .unwrap_or_default()
+            .into_iter()
+            .take(max)
+            .map(|s| (s, None))
+            .collect(),
+        denied: false,
+    }
+}
+
 /// The picker's enumeration: every screen, then every offered window, at most `max`, each with a thumbnail of one
 /// frame from a stream that closes before the next one opens (one connection to KWin and to PipeWire for all of them).
-pub(super) fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
+/// Once `cancelled` answers true (the picker closed) no further stream opens, and a stream waiting for its frame stops.
+pub(super) fn snapshot(
+    max: usize,
+    max_w: u32,
+    max_h: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Snapshot {
     let Some(mut session) = Session::open() else {
         return Snapshot::default();
     };
@@ -950,15 +1010,10 @@ pub(super) fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
     if pipe.is_none() {
         log::warn!("dilla-media: no PipeWire for the share picker's thumbnails");
     }
-    let sources: Vec<(DesktopSource, Option<Frame>)> = sources
-        .into_iter()
-        .map(|source| {
-            let thumbnail = pipe
-                .as_ref()
-                .and_then(|pipe| one_frame(&mut session, pipe, &source, max_w, max_h));
-            (source, thumbnail)
-        })
-        .collect();
+    let sources = thumbnails(sources, cancelled, |source| {
+        pipe.as_ref()
+            .and_then(|pipe| one_frame(&mut session, pipe, source, (max_w, max_h), cancelled))
+    });
     log::debug!(
         "dilla-media: KWin offered {} screens and windows, {} with a thumbnail",
         sources.len(),
@@ -974,15 +1029,15 @@ pub(super) fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
 pub(super) fn thumbnail(source: &DesktopSource, max_w: u32, max_h: u32) -> Option<Frame> {
     let mut session = Session::open()?;
     let pipe = Pipe::new()?;
-    one_frame(&mut session, &pipe, source, max_w, max_h)
+    one_frame(&mut session, &pipe, source, (max_w, max_h), &|| false)
 }
 
 fn one_frame(
     session: &mut Session,
     pipe: &Pipe,
     source: &DesktopSource,
-    max_w: u32,
-    max_h: u32,
+    (max_w, max_h): (u32, u32),
+    cancelled: &dyn Fn() -> bool,
 ) -> Option<Frame> {
     let target = session.target(source)?;
     let deadline = Instant::now() + THUMB_WAIT;
@@ -999,7 +1054,7 @@ fn one_frame(
                 got = Some(fit_rgba(&frame, max_w, max_h));
                 false
             }
-            Step::Tick => Instant::now() < deadline,
+            Step::Tick => Instant::now() < deadline && !cancelled(),
         },
     );
     got
@@ -1019,7 +1074,7 @@ pub(super) fn owner(source: &DesktopSource) -> Option<u32> {
 }
 
 /// The capture thread of a share of `source`: until `stop`, KWin closing the stream, or an error; `latest` ends then.
-/// The share's ticks repeat the last frame when KWin sent none ([`Repeat`]).
+/// Only new frames go to `latest`: the feeder repeats its last one while KWin sends none.
 pub(super) fn run(source: &DesktopSource, latest: &Latest, stop: &AtomicBool, fps: &AtomicU32) {
     let started = Session::open().and_then(|session| {
         let target = session.target(source)?;
@@ -1030,7 +1085,6 @@ pub(super) fn run(source: &DesktopSource, latest: &Latest, stop: &AtomicBool, fp
         latest.end();
         return;
     };
-    let mut repeat = Repeat::default();
     let end = capture(
         &mut session,
         &pipe,
@@ -1041,13 +1095,8 @@ pub(super) fn run(source: &DesktopSource, latest: &Latest, stop: &AtomicBool, fp
             if stop.load(Ordering::Acquire) {
                 return false;
             }
-            match step {
-                Step::Frame(frame) => latest.put(repeat.fresh(frame)),
-                Step::Tick => {
-                    if let Some(frame) = repeat.tick() {
-                        latest.put(frame);
-                    }
-                }
+            if let Step::Frame(frame) = step {
+                latest.put(frame);
             }
             true
         },
@@ -1222,23 +1271,91 @@ mod tests {
         );
     }
 
-    /// A still window keeps its rate: a tick with no new frame since the last tick hands on the last frame again; a
-    /// tick right after a new frame hands on nothing more.
+    /// Review I1: every buffer KWin sends is read (KWin throttles to the share's rate itself), so the last frame of a
+    /// burst, the finished slide, is the one handed on; nothing is dropped for coming early.
     #[test]
-    fn the_last_frame_repeats_while_nothing_changes() {
-        let mut r = Repeat::default();
-        assert!(r.tick().is_none(), "nothing yet");
-        let f = r.fresh(Frame::rgba(4, 2, vec![0; 32]));
-        assert_eq!((f.width, f.height), (4, 2));
-        assert!(r.tick().is_none(), "that frame was new");
-        let again = r
-            .tick()
-            .expect("the window stood still: the last frame again");
-        assert_eq!((again.width, again.height, again.data.len()), (4, 2, 32));
-        assert!(r.tick().is_some(), "and again");
-        r.fresh(Frame::rgba(8, 2, vec![0; 64]));
-        assert!(r.tick().is_none());
-        assert_eq!(r.tick().map(|f| f.width), Some(8), "the newest one repeats");
+    fn the_last_frame_of_a_burst_is_delivered() {
+        let mut n = Newest::default();
+        assert!(n.take().is_none());
+        for w in 1..=3 {
+            n.put(Frame::rgba(w, 1, vec![0; (w * 4) as usize]));
+        }
+        assert_eq!(n.take().map(|f| f.width), Some(3), "the burst's last frame");
+        assert!(n.take().is_none(), "handed on once");
+    }
+
+    /// The maximum frame rate of the format Dilla asks KWin for (so KWin holds back changes above it and sends the
+    /// pending one later): the share's rate, 1 to 60.
+    fn max_framerate(bytes: &[u8]) -> Option<(u32, u32, u32)> {
+        use spa::pod::deserialize::PodDeserializer;
+        use spa::pod::{ChoiceValue, Value};
+        use spa::utils::{Choice, ChoiceEnum};
+        let (_, value) = PodDeserializer::deserialize_any_from(bytes).ok()?;
+        let Value::Object(obj) = value else {
+            return None;
+        };
+        let key = spa::param::format::FormatProperties::VideoMaxFramerate.as_raw();
+        obj.properties
+            .iter()
+            .find(|p| p.key == key)
+            .and_then(|p| match &p.value {
+                Value::Choice(ChoiceValue::Fraction(Choice(
+                    _,
+                    ChoiceEnum::Range { default, min, max },
+                ))) => Some((default.num, min.num, max.num)),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn kwin_is_asked_for_at_most_the_share_s_rate() {
+        assert_eq!(max_framerate(&enum_format(30).unwrap()), Some((30, 1, 30)));
+        assert_eq!(max_framerate(&enum_format(15).unwrap()), Some((15, 1, 15)));
+        assert_eq!(max_framerate(&enum_format(0).unwrap()), Some((1, 1, 1)));
+        assert_eq!(max_framerate(&enum_format(240).unwrap()), Some((60, 1, 60)));
+    }
+
+    /// Review I2: a listing whose picker closed opens no further stream: the thumbnails stop at the cancel, and the
+    /// sources not reached come back without one.
+    #[test]
+    fn a_cancelled_listing_opens_no_more_streams() {
+        let sources: Vec<DesktopSource> = (0..5)
+            .map(|id| DesktopSource {
+                kind: SourceKind::Window,
+                id,
+                title: String::new(),
+                owner: None,
+            })
+            .collect();
+        let opened = Cell::new(0);
+        let listed = thumbnails(sources.clone(), &|| opened.get() >= 2, |_| {
+            opened.set(opened.get() + 1);
+            Some(Frame::rgba(1, 1, vec![0; 4]))
+        });
+        assert_eq!(opened.get(), 2, "no stream after the cancel");
+        assert_eq!(listed.len(), 5);
+        assert_eq!(listed.iter().filter(|(_, t)| t.is_some()).count(), 2);
+        let none = thumbnails(sources, &|| true, |_| panic!("a stream after the cancel"));
+        assert!(none.iter().all(|(_, t)| t.is_none()));
+    }
+
+    /// Review m1: a removal of KWin's node counts only once Dilla linked to it, so a removal of the same id that was an
+    /// earlier stream's (PipeWire reuses ids) never ends a new capture.
+    #[test]
+    fn only_a_removal_after_the_link_ends_the_capture() {
+        let mut g = Graph::default();
+        g.removed.insert(203);
+        assert!(
+            !g.gone(203, false),
+            "an earlier stream's removal, not linked yet"
+        );
+        g.linked(203);
+        assert!(
+            !g.gone(203, true),
+            "the stale removal was cleared at the link"
+        );
+        g.removed.insert(203);
+        assert!(g.gone(203, true), "removed after the link");
     }
 
     /// KWin's node's output ports go to Dilla's stream's input ports only: never another node's, never the wrong way.

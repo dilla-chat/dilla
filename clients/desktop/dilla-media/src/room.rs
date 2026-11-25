@@ -789,6 +789,24 @@ pub fn to_i420(frame: &Frame, size: (u32, u32)) -> Option<I420Buffer> {
 /// A share's feeder: pulls the source's newest frame at `fps` and hands it to the encoder, sized under `bound` (a window
 /// that changes its size goes on at its new size). The source's end ends the track: the source is let go at once and
 /// `ended` is told.
+/// The last buffer a feeder sent, kept for a source that sends a frame only when it changes
+/// ([`CaptureSource::repeats_when_idle`]): an idle tick sends it again. It is libwebrtc's reference-counted buffer at the
+/// sent size, so a repeat costs no copy and no conversion, only the encoder's work on an unchanged picture.
+#[derive(Default)]
+struct Resend(Option<I420Buffer>);
+
+impl Resend {
+    /// `buffer` was just sent; it is kept only for a source that `repeats`.
+    fn sent(&mut self, buffer: I420Buffer, repeats: bool) {
+        self.0 = repeats.then_some(buffer);
+    }
+
+    /// What an idle tick sends again: the last buffer, for a source that `repeats`.
+    fn idle(&self, repeats: bool) -> Option<&I420Buffer> {
+        self.0.as_ref().filter(|_| repeats)
+    }
+}
+
 async fn feed(
     source: SharedSource,
     rtc: NativeVideoSource,
@@ -800,16 +818,30 @@ async fn feed(
 ) {
     let mut tick = tokio::time::interval(Duration::from_micros(1_000_000 / u64::from(fps.max(1))));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut resend = Resend::default();
     loop {
         tick.tick().await;
-        let (kind, pulled) = {
+        let (kind, pulled, repeats) = {
             let mut guard = source.lock().unwrap_or_else(|p| p.into_inner());
             let Some(s) = guard.as_mut() else { return };
-            (s.kind(), s.pull())
+            (s.kind(), s.pull(), s.repeats_when_idle())
         };
         let frame = match pulled {
             Pull::Frame(f) => f,
-            Pull::Idle => continue,
+            Pull::Idle => {
+                // A source that sends only changes (KWin's) keeps the share's rate with its last picture: at most one
+                // repeat per tick, so never above the share's frame rate.
+                if let Some(last) = resend.idle(repeats) {
+                    rtc.capture_frame(&VideoFrame {
+                        rotation: VideoRotation::VideoRotation0,
+                        timestamp_us: 0,
+                        frame_metadata: None,
+                        buffer: last,
+                    });
+                    sent.fetch_add(1, Ordering::Relaxed);
+                }
+                continue;
+            }
             Pull::Ended => {
                 // The screen, window or camera is let go at once, then the track ends.
                 source.lock().unwrap_or_else(|p| p.into_inner()).take();
@@ -831,6 +863,7 @@ async fn feed(
         });
         let frames = sent.fetch_add(1, Ordering::Relaxed) + 1;
         self_view.offer(&mut i420, frames, std::time::Instant::now());
+        resend.sent(i420, repeats);
     }
 }
 
@@ -2388,6 +2421,27 @@ mod self_view_tests {
         rx.borrow()
             .get(&kind)
             .map(|f| (f.width, f.height, f.rgba.len(), f.frames))
+    }
+
+    /// Review I3: a source that repeats while idle (KWin's) gets its last sent buffer again on an idle tick: the very
+    /// buffer, already at the sent size (no copy, no conversion). Any other source's idle tick sends nothing.
+    #[test]
+    fn an_idle_tick_resends_the_last_buffer_of_a_repeating_source_only() {
+        use livekit::webrtc::video_frame::VideoBuffer as _;
+        let mut r = Resend::default();
+        assert!(r.idle(true).is_none(), "nothing sent yet");
+        r.sent(sent(64, 32), true);
+        let first = r.idle(true).expect("the last buffer again");
+        assert_eq!((first.width(), first.height()), (64, 32));
+        let at = first.data().0.as_ptr();
+        assert_eq!(
+            r.idle(true).map(|b| b.data().0.as_ptr()),
+            Some(at),
+            "the same buffer, not a copy"
+        );
+        r.sent(sent(16, 8), false);
+        assert!(r.idle(false).is_none(), "a source that is not repeated");
+        assert!(r.idle(true).is_none(), "its buffer was not kept");
     }
 
     #[test]

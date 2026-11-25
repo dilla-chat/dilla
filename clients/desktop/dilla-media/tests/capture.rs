@@ -476,7 +476,8 @@ fn kde_picker_lists_captures_and_lets_go() {
         }
     }
 
-    /// The frames a capture hands over in `span`, pulled 10 times a second.
+    /// The frames a capture hands over in `span`, pulled every 10 ms (faster than the share's 10 fps, so a source
+    /// sending more than it was asked for would show).
     fn frames_in(capture: &mut desktop::DesktopCapture, span: Duration) -> usize {
         let end = Instant::now() + span;
         let mut n = 0;
@@ -489,7 +490,7 @@ fn kde_picker_lists_captures_and_lets_go() {
                 Pull::Idle => {}
                 Pull::Ended => panic!("the capture ended early"),
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(10));
         }
         n
     }
@@ -530,8 +531,17 @@ fn kde_picker_lists_captures_and_lets_go() {
         kde_nodes_gone(),
         "a thumbnail's stream outlived the listing"
     );
+    // A listing whose picker closed at once opens no stream at all.
+    let cancelled = desktop::snapshot_until(64, 320, 180, &|| true);
+    assert!(cancelled.sources.iter().all(|(_, t)| t.is_none()));
+    assert_eq!(cancelled.sources.len(), snapshot.sources.len());
+    assert!(
+        desktop::quick_titles(64).is_some_and(|t| t.sources.len() == snapshot.sources.len()),
+        "the quick listing names the same sources"
+    );
 
-    // The screen: frames come (KWin's, or the last one repeated while the screen stands still), then it lets go.
+    // The screen: KWin's frames come at no more than the asked 10 fps (the feeder repeats the last one while the screen
+    // stands still), then it lets go.
     let screen = snapshot
         .sources
         .iter()
@@ -544,15 +554,19 @@ fn kde_picker_lists_captures_and_lets_go() {
     let (w, h) = capture.size();
     assert!(w > 0 && h > 0);
     assert_eq!(capture.surface(), Some(SourceKind::Screen));
+    assert!(
+        capture.repeats_when_idle(),
+        "the feeder repeats KWin's last frame"
+    );
     let n = frames_in(&mut capture, Duration::from_secs(2));
-    eprintln!("screen {w}x{h}: {n} frames pulled in 2 s at 10 fps");
-    assert!(n >= 10, "the screen's rate was not kept");
+    eprintln!("screen {w}x{h}: {n} frames pulled in 2 s, 10 fps asked");
+    assert!((1..=24).contains(&n), "KWin did not keep to the asked rate");
     assert_eq!(kde_capture_nodes(), 1, "one capture node while sharing");
     drop(capture);
     assert!(kde_nodes_gone(), "the screen's stream outlived its share");
 
-    // Another process's window: its owner is that process, a still window keeps the share's rate, and closing it ends
-    // the share.
+    // Another process's window: its owner is that process, a still window sends its first frame (the feeder repeats it),
+    // and closing it ends the share.
     let nonce = format!("dilla-kde-probe-{}", std::process::id());
     let helper = Helper::start(&nonce);
     let pid = helper.0;
@@ -582,9 +596,10 @@ fn kde_picker_lists_captures_and_lets_go() {
         .unwrap_or_else(|e| panic!("the helper's window did not open: {e}"));
     let (w, h) = capture.size();
     assert!(w > 0 && h > 0);
+    assert!(capture.repeats_when_idle());
     let n = frames_in(&mut capture, Duration::from_secs(2));
-    eprintln!("window {w}x{h}: {n} frames pulled in 2 s at 10 fps (KWin sends one per change)");
-    assert!(n >= 10, "a still window's last frame was not repeated");
+    eprintln!("window {w}x{h}: {n} frames pulled in 2 s, 10 fps asked (KWin sends one per change)");
+    assert!(n >= 1, "the still window's first frame");
     helper.kill();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
