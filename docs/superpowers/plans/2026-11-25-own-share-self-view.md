@@ -83,23 +83,26 @@ TopBar `d-caret`.
   the caret, and update what names it.
 - [ ] Commit: `desktop: no blinking caret after DILLA in the top bar`.
 
-### Task 3: the voice dock says reconnecting while a call rejoins, not a raw {where}
+### Task 3: the voice dock no longer shows a raw {where} while a call rejoins
 
 **Spec:** Jonas, 2026-11-25, from a screenshot: while a call rejoins, the voice dock reads "Rejoining {where}. This can
 take up…", with the raw placeholder and cut off. `clients/desktop/dilla-desktop/src/screens/voice/mod.rs` `dock` mapped
 `CallPhase::WaitingForRemove` to `t("voice.announce.rejoining")`, an announcement string with a `{where}` placeholder,
 drawn unsubstituted.
 
-The old client:
-- The dock line for this state read "reconnecting": `packages/web/src/screens/voice/VoiceView.tsx:780-786` maps the phase
-  to connecting / reconnecting / connected, and the label is `voice.dock.reconnecting`.
+The old client (parity wins):
+- During the rejoin's wait for this device's earlier Remove the dock read "connecting": `packages/web/src/screens/voice/
+  useCall.tsx:1101-1102` ("up to 30 s, the dock says "connecting""); VoiceView.tsx `callPhase` gives `connecting` while
+  the call has no session. Its `reconnecting` is LiveKit's media reconnect, not this wait.
 - "Rejoining {where}. This can take up to 30 seconds." was only a screen-reader announcement, with `where` filled in by the
   channel (`useCall.tsx:1105`: `announce(t('voice.announce.rejoining', { where: whereOf(channelId) }))`).
 
-- [ ] The dock line during `WaitingForRemove` becomes `t("voice.dock.reconnecting")`. Check that the phone call bar, or any
-  other place showing the phase, does the same.
-- [ ] If the GPUI app has an announcement channel (how other `voice.announce.*` strings are announced), announce
-  `tf("voice.announce.rejoining", &[("where", <call_place>)])` once when the rejoin starts; if not, leave it out and say so.
-- [ ] A guard test: every `t(key)` call site whose string contains `{` fails, as a check over the source and `strings.rs`
-  if a central check is feasible; otherwise a focused test that the dock reads "reconnecting" in `WaitingForRemove`.
-- [ ] Commit: `desktop: the voice dock says reconnecting while a call rejoins, not a raw {where}`.
+- [x] The dock line during `WaitingForRemove` is `t("voice.dock.connecting")` (first committed as "reconnecting" from an
+  earlier reading of the spec, then corrected to the old client's "connecting"). No other place (the stage's call bar;
+  there is no phone call bar) shows the phase.
+- [x] The shell's call announcements (`dilla_desktop_ui::a11y::announce`) say
+  `tf("voice.announce.rejoining", &[("where", <call_place>)])` once when the rejoin starts.
+- [x] A guard test over the source: every `t(key)` call site whose string contains `{` fails, unless it fills the
+  placeholder by hand (`.replace`); plus a focused test that the dock reads "connecting" in `WaitingForRemove`.
+- [x] Commits: `desktop: the voice dock says reconnecting while a call rejoins, not a raw {where}`, then
+  `desktop: the dock says connecting while a rejoin waits, as the old client did`.

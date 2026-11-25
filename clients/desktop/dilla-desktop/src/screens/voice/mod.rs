@@ -2201,13 +2201,12 @@ pub fn ping_text(ms: Option<u32>) -> String {
     }
 }
 
-/// The dock's line under the place (VoiceView.tsx `callPhase`): the link once the call is in, "reconnecting" while a rejoin
-/// waits for this device's earlier Remove (its sentence, `voice.announce.rejoining`, is only spoken: the shell's call
-/// announcements), else "connecting".
+/// The dock's line under the place (VoiceView.tsx `callPhase`): the link once the call is in, else "connecting", a rejoin
+/// that waits for this device's earlier Remove included (useCall.tsx :1101-1102: "the dock says connecting"; its sentence,
+/// `voice.announce.rejoining`, is only spoken: the shell's call announcements).
 pub fn dock_line(call: &dilla_client::state::voice::OwnCall) -> String {
     match call.phase {
         CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
-        CallPhase::WaitingForRemove => t("voice.dock.reconnecting").to_owned(),
         _ => t("voice.dock.connecting").to_owned(),
     }
 }
@@ -5066,10 +5065,10 @@ fn count_label(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     /// Jonas 2026-11-25 (a screenshot of "Rejoining {where}. This can take up…"): while a rejoin waits for this device's
-    /// earlier Remove, the dock's line says "reconnecting" (`voice.dock.reconnecting`); the rejoining sentence is only
-    /// spoken (useCall.tsx :1105). Joining says "connecting", and no line carries a raw placeholder.
+    /// earlier Remove, the dock's line says "connecting", as the old client's did (useCall.tsx :1101-1102: "the dock says
+    /// connecting"); the rejoining sentence is only spoken (useCall.tsx :1105). No line carries a raw placeholder.
     #[test]
-    fn the_dock_says_reconnecting_while_a_call_rejoins() {
+    fn the_dock_says_connecting_while_a_rejoin_waits() {
         use dilla_client::state::voice::OwnCall;
         let at = |phase| OwnCall {
             phase,
@@ -5077,7 +5076,7 @@ mod tests {
         };
         assert_eq!(
             super::dock_line(&at(super::CallPhase::WaitingForRemove)),
-            "reconnecting"
+            "connecting"
         );
         assert_eq!(
             super::dock_line(&at(super::CallPhase::Joining)),
