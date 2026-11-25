@@ -48,11 +48,12 @@ As of the Signal redesign, wave B (unreleased, 2026-10-31), on top of web3.12 (2
 
 ### The native desktop client (GPUI)
 
-As of desktop alpha.2 (2026-11-21). The Rust/GPUI desktop client in `clients/desktop`. It replaces the Electron
-app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). Linux has alpha
-releases (`desktop-gpui-v0.2.0-alpha.N`: AppImage, tar.gz, deb, rpm and an AUR recipe; the packages replace an
-installed beta.5, [how to install it](docs/user/desktop.md#install-the-linux-alpha)); on macOS and Windows you build
-it from source ([how to run it](docs/user/desktop.md#the-native-desktop-client-gpui)). From the first signed alpha on
+As of desktop alpha.3 (2026-11-25). The Rust/GPUI desktop client in `clients/desktop`. It replaces the Electron
+app, which is discontinued at `desktop-v0.1.0-beta.5` (installed copies get no further updates). Alpha releases
+(`desktop-gpui-v0.2.0-alpha.N`) carry Linux packages (AppImage, tar.gz, deb, rpm and an AUR recipe; the packages
+replace an installed beta.5, [how to install it](docs/user/desktop.md#install-the-linux-alpha)), a signed and
+notarized Mac app (Apple silicon) and a Windows installer
+([install on macOS and Windows](docs/user/desktop.md#install-on-macos-and-windows)). From the first signed alpha on
 it checks for updates itself (an AppImage, the Mac app and the Windows install update in place; a package says a new
 version is available).
 It draws the Signal design at pixel parity with the web client on Linux (macOS and Windows tolerances are still being
