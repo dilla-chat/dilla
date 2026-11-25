@@ -3,6 +3,8 @@
 //!
 //! - [`portal`]: Linux on Wayland, where the XDG ScreenCast portal is the only chooser (beta.5 `screenPortal`): there
 //!   is no list, [`open`] with no source opens the portal's own dialog, and its Cancel is [`OpenError::Cancelled`].
+//!   Not on KDE Plasma when KWin offers its window list and screencast to Dilla ([`kde_picker`], decided by the
+//!   registry once per process): there `super::desktop_kde` lists and captures for Dilla's own picker (D22).
 //! - Elsewhere [`list`] names the screens and windows, [`snapshot`] lists them with a thumbnail each for the picker
 //!   ([`thumbnail`] grabs one frame of a source), and [`open`] captures the chosen one.
 //! - macOS (GPUI gaps Task 45, D22): Dilla's own picker, as on X11 and Windows, through webrtc-sys's `dilla_screen`
@@ -38,8 +40,9 @@ pub enum SourceKind {
 }
 
 /// One source the system offers. `id` is the capturer's own (a RandR CRTC or an X11 window, a CGDirectDisplayID or a
-/// CGWindowID, an HMONITOR or an HWND); it is never shown and never leaves the process.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// CGWindowID, an HMONITOR or an HWND, a `wl_output` global or a hash of KWin's window uuid); it is never shown and never
+/// leaves the process. Its `Debug` leaves the title out: titles are shown in the picker only, never logged.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DesktopSource {
     pub kind: SourceKind,
     pub id: u64,
@@ -49,21 +52,56 @@ pub struct DesktopSource {
     pub owner: Option<u32>,
 }
 
+impl std::fmt::Debug for DesktopSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopSource")
+            .field("kind", &self.kind)
+            .field("id", &self.id)
+            .field("title_len", &self.title.chars().count())
+            .field("owner", &self.owner.is_some())
+            .finish()
+    }
+}
+
 /// The longest wait for a chosen source's first frame (beta.5's broker gave a start 15 s).
 pub const START_WAIT: Duration = Duration::from_secs(15);
 /// The longest the portal's own dialog may stay open (beta.5 `PICKER_DEADLINE_MS`).
 pub const PORTAL_WAIT: Duration = Duration::from_secs(120);
 
 /// Whether the system chooses the source instead of Dilla's picker: Linux on Wayland (the XDG portal, beta.5's
-/// `screenPortal`). macOS has Dilla's own picker since Task 45 (D22), as X11 and Windows do.
+/// `screenPortal`), unless the compositor offers Dilla KWin's window list and screencast ([`kde_picker`]: KDE Plasma).
+/// macOS has Dilla's own picker since Task 45 (D22), as X11 and Windows do. Decided once per process.
 pub fn portal() -> bool {
-    portal_in(|k| std::env::var(k).ok())
+    static PORTAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PORTAL.get_or_init(|| portal_in(|k| std::env::var(k).ok(), own_picker_on_wayland))
 }
 
-fn portal_in(env: impl Fn(&str) -> Option<String>) -> bool {
+/// Whether Dilla's own picker lists and captures through KWin (KDE Plasma on Wayland, both protocols offered to this
+/// process: a registry round trip, once per process). False off Linux, on X11 and wherever the portal chooses.
+pub fn kde_picker() -> bool {
+    wayland(|k| std::env::var(k).ok()) && own_picker_on_wayland()
+}
+
+fn wayland(env: impl Fn(&str) -> Option<String>) -> bool {
     cfg!(target_os = "linux")
         && (env("XDG_SESSION_TYPE").as_deref() == Some("wayland")
             || env("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()))
+}
+
+/// The portal on Wayland, unless `own_picker` (asked on Wayland only) says the compositor lets Dilla list and capture.
+fn portal_in(env: impl Fn(&str) -> Option<String>, own_picker: impl FnOnce() -> bool) -> bool {
+    wayland(env) && !own_picker()
+}
+
+fn own_picker_on_wayland() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        super::desktop_kde::available()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -94,6 +132,10 @@ pub fn list(kind: SourceKind) -> Vec<DesktopSource> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(target_os = "linux")]
+        if kde_picker() {
+            return super::desktop_kde::list(kind);
+        }
         let Some(capturer) = DesktopCapturer::new(options(Some(kind))) else {
             return Vec::new();
         };
@@ -120,8 +162,9 @@ pub struct Snapshot {
 }
 
 /// The picker's enumeration ([`Snapshot`]). Linux and Windows: [`list`] the screens, then the windows, and take one
-/// [`thumbnail`] each; never denied. macOS: `desktop_mac::snapshot` (`SCScreenshotManager` thumbnails on 14+, one
-/// captured frame on 13). Empty under the portal. Blocking: call it off the UI thread.
+/// [`thumbnail`] each; never denied. KDE Plasma on Wayland: `desktop_kde::snapshot` (one KWin stream at a time, each
+/// closed after its one frame). macOS: `desktop_mac::snapshot` (`SCScreenshotManager` thumbnails on 14+, one captured
+/// frame on 13). Empty under the portal. Blocking: call it off the UI thread.
 pub fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
     if portal() {
         return Snapshot::default();
@@ -132,6 +175,10 @@ pub fn snapshot(max: usize, max_w: u32, max_h: u32) -> Snapshot {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(target_os = "linux")]
+        if kde_picker() {
+            return super::desktop_kde::snapshot(max, max_w, max_h);
+        }
         Snapshot {
             sources: [SourceKind::Screen, SourceKind::Window]
                 .into_iter()
@@ -165,6 +212,9 @@ pub fn request_access() -> bool {
 /// The process that owns a shared window, for its sound (Task 44). `None` for a screen, under the portal (Linux on
 /// Wayland: the system's dialog chooses and Dilla never holds a window id), and when the system does not say.
 ///
+/// KDE Plasma on Wayland: the window's process as KWin's window list gives it now (KWin knows a Wayland client's
+/// process from its socket), the window still offered.
+///
 /// macOS (Task 45): the owner the window list carried (`SCWindow.owningApplication`, the WindowServer's record), with
 /// no system call; the share is checked against that same list.
 ///
@@ -175,6 +225,9 @@ pub fn window_owner_pid(source: &DesktopSource) -> Option<u32> {
     }
     #[cfg(target_os = "linux")]
     {
+        if kde_picker() {
+            return super::desktop_kde::owner(source);
+        }
         x11_client_pid(u32::try_from(source.id).ok()?)
     }
     #[cfg(target_os = "windows")]
@@ -233,6 +286,10 @@ fn hwnd_pid(hwnd: u64) -> Option<u32> {
 /// One frame of `source`, scaled to fit `max_w` x `max_h` (RGBA), for the picker's tile; `None` when the source gives
 /// no frame within a second (a minimised window).
 pub fn thumbnail(source: &DesktopSource, max_w: u32, max_h: u32) -> Option<Frame> {
+    #[cfg(target_os = "linux")]
+    if kde_picker() {
+        return super::desktop_kde::thumbnail(source, max_w, max_h);
+    }
     let capture = open(Some(source), 10, Duration::from_secs(1), &|| false).ok()?;
     let frame = match capture.latest.pull() {
         Pull::Frame(f) => f,
@@ -393,6 +450,14 @@ fn run(source: Option<DesktopSource>, latest: &Latest, stop: &AtomicBool, fps: &
 
 #[cfg(not(target_os = "macos"))]
 fn run(source: Option<DesktopSource>, latest: &Latest, stop: &AtomicBool, fps: &AtomicU32) {
+    // KDE Plasma on Wayland: KWin's own stream of the picked source (there is no portal there, so one was picked).
+    #[cfg(target_os = "linux")]
+    if let Some(source) = &source
+        && kde_picker()
+    {
+        super::desktop_kde::run(source, latest, stop, fps);
+        return;
+    }
     let (kind, id) = (
         source.as_ref().map(|s| s.kind),
         source.as_ref().map(|s| s.id),
@@ -462,13 +527,45 @@ mod tests {
         };
         // macOS has Dilla's own picker (D22): the system never chooses there, whatever the environment says.
         let linux = cfg!(target_os = "linux");
-        assert_eq!(portal_in(env(&[("XDG_SESSION_TYPE", "wayland")])), linux);
-        assert_eq!(portal_in(env(&[("WAYLAND_DISPLAY", "wayland-0")])), linux);
-        assert!(!portal_in(env(&[
-            ("XDG_SESSION_TYPE", "x11"),
-            ("DISPLAY", ":0")
-        ])));
-        assert!(!portal_in(env(&[("WAYLAND_DISPLAY", "")])));
+        let no_kwin = || false;
+        assert_eq!(
+            portal_in(env(&[("XDG_SESSION_TYPE", "wayland")]), no_kwin),
+            linux
+        );
+        assert_eq!(
+            portal_in(env(&[("WAYLAND_DISPLAY", "wayland-0")]), no_kwin),
+            linux
+        );
+        let never = || panic!("the compositor is asked on Wayland only");
+        assert!(!portal_in(
+            env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", ":0")]),
+            never
+        ));
+        assert!(!portal_in(env(&[("WAYLAND_DISPLAY", "")]), never));
+    }
+
+    /// KDE Plasma (KWin offers its window list and screencast): Dilla's own picker, never the portal. A compositor
+    /// that does not (GNOME, a sandboxed Dilla, an older KWin without the trusted `.desktop` file) keeps the portal.
+    #[test]
+    fn kwin_s_protocols_replace_the_portal_on_wayland() {
+        let wayland = |k: &str| (k == "XDG_SESSION_TYPE").then(|| "wayland".to_owned());
+        assert!(!portal_in(wayland, || true));
+        assert_eq!(portal_in(wayland, || false), cfg!(target_os = "linux"));
+    }
+
+    /// A source's `Debug` never carries its title (a window's title describes the person's desktop).
+    #[test]
+    fn a_source_s_debug_has_no_title() {
+        let s = DesktopSource {
+            kind: SourceKind::Window,
+            id: 3,
+            title: "Secret plans.txt".to_owned(),
+            owner: Some(4242),
+        };
+        let shown = format!("{s:?}");
+        assert!(!shown.contains("Secret"), "{shown}");
+        assert!(!shown.contains("4242"), "{shown}");
+        assert!(shown.contains("Window"));
     }
 
     #[test]

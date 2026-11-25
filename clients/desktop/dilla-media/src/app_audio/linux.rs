@@ -25,7 +25,7 @@ use super::{
 
 const NODE_NAME: &str = "dilla-application-capture";
 
-pub(super) fn parent(pid: u32) -> Option<u32> {
+pub(crate) fn parent(pid: u32) -> Option<u32> {
     std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
         .and_then(|s| parent_from_stat(&s))
@@ -193,8 +193,8 @@ mod stubs {
     }
 }
 
-/// libpipewire, loaded into libwebrtc's stubs and initialised.
-fn init() -> Result<(), AppAudioError> {
+/// libpipewire, loaded into libwebrtc's stubs and initialised (the KDE screen capture, `sources::desktop_kde`, too).
+pub(crate) fn init() -> Result<(), AppAudioError> {
     static LOADED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if !*LOADED.get_or_init(stubs::load) {
         return Err(AppAudioError::Server(

@@ -397,3 +397,204 @@ fn mac_picker_window_owner_is_the_helper_app() {
     drop(helper);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The PipeWire nodes of Dilla's KWin capture streams (`dilla-screen-capture`) that exist now, counted from `pw-dump`'s
+/// JSON (nothing of it is printed).
+#[cfg(target_os = "linux")]
+fn kde_capture_nodes() -> usize {
+    let out = std::process::Command::new("pw-dump")
+        .output()
+        .expect("pw-dump runs");
+    let dump: Value = serde_json::from_slice(&out.stdout).expect("pw-dump's JSON");
+    dump.as_array()
+        .map(|objects| {
+            objects
+                .iter()
+                .filter(|o| {
+                    o["type"] == "PipeWire:Interface:Node"
+                        && o["info"]["props"]["node.name"] == "dilla-screen-capture"
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Waits up to 3 s for every KWin capture node of Dilla's to be gone.
+#[cfg(target_os = "linux")]
+fn kde_nodes_gone() -> bool {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while kde_capture_nodes() > 0 {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    true
+}
+
+/// KDE share picker plan, Task 1 (D22 on KDE Plasma): with KWin's window list and screencast offered, Dilla lists the
+/// screens and windows itself (thumbnails within the tile, none of its own windows), captures a screen and another
+/// process's window through KWin's PipeWire stream (linked by Dilla), repeats a still window's last frame at the
+/// share's rate, ends the share when the window closes, and leaves no PipeWire node of its own behind. It prints counts
+/// and sizes only: never a title, never a pixel. The helper window is a `kdialog` message box, killed on every path.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a KDE Plasma Wayland session whose KWin offers Dilla its window list and screencast (6.8+, or 6.0-6.7 with the installed .desktop file), pw-dump and kdialog"]
+fn kde_picker_lists_captures_and_lets_go() {
+    use dilla_media::capture_source::{CaptureSource, Pull};
+    use dilla_media::sources::desktop::{self, SourceKind};
+
+    /// The helper's process, killed on every path. It is started by a shell that exits at once, so it is not of this
+    /// process's tree (Dilla's own tree is never offered).
+    struct Helper(u32);
+    impl Helper {
+        fn start(title: &str) -> Helper {
+            let out = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "kdialog --title \"$1\" --msgbox \"$1\" >/dev/null 2>&1 & echo $!",
+                    "sh",
+                    title,
+                ])
+                .output()
+                .expect("sh runs");
+            let pid = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .expect("the helper's pid");
+            Helper(pid)
+        }
+        fn kill(&self) {
+            let _ = std::process::Command::new("kill")
+                .arg(self.0.to_string())
+                .status();
+        }
+    }
+    impl Drop for Helper {
+        fn drop(&mut self) {
+            self.kill();
+        }
+    }
+
+    /// The frames a capture hands over in `span`, pulled 10 times a second.
+    fn frames_in(capture: &mut desktop::DesktopCapture, span: Duration) -> usize {
+        let end = Instant::now() + span;
+        let mut n = 0;
+        while Instant::now() < end {
+            match capture.pull() {
+                Pull::Frame(f) => {
+                    assert!(f.is_whole() && f.width > 0 && f.height > 0);
+                    n += 1;
+                }
+                Pull::Idle => {}
+                Pull::Ended => panic!("the capture ended early"),
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        n
+    }
+
+    assert!(
+        desktop::kde_picker(),
+        "KWin offers no window list and screencast here"
+    );
+    assert!(!desktop::portal(), "the portal would choose");
+    assert!(
+        kde_nodes_gone(),
+        "a capture node of Dilla's was left from before"
+    );
+
+    let snapshot = desktop::snapshot(64, 320, 180);
+    assert!(!snapshot.denied);
+    let screens = snapshot
+        .sources
+        .iter()
+        .filter(|(s, _)| s.kind == SourceKind::Screen)
+        .count();
+    let windows = snapshot.sources.len() - screens;
+    let thumbs = snapshot.sources.iter().filter(|(_, t)| t.is_some()).count();
+    assert!(screens >= 1, "no screen listed");
+    for (source, thumbnail) in &snapshot.sources {
+        if let Some(t) = thumbnail {
+            assert!(t.width > 0 && t.height > 0 && t.width <= 320 && t.height <= 180);
+        } else {
+            assert_eq!(
+                source.kind,
+                SourceKind::Window,
+                "a screen without a thumbnail"
+            );
+        }
+    }
+    eprintln!("listed {screens} screens and {windows} windows, {thumbs} thumbnails");
+    assert!(
+        kde_nodes_gone(),
+        "a thumbnail's stream outlived the listing"
+    );
+
+    // The screen: frames come (KWin's, or the last one repeated while the screen stands still), then it lets go.
+    let screen = snapshot
+        .sources
+        .iter()
+        .find(|(s, _)| s.kind == SourceKind::Screen)
+        .map(|(s, _)| s.clone())
+        .unwrap();
+    assert_eq!(desktop::window_owner_pid(&screen), None);
+    let mut capture = desktop::open(Some(&screen), 10, desktop::START_WAIT, &|| false)
+        .unwrap_or_else(|e| panic!("the screen did not open: {e}"));
+    let (w, h) = capture.size();
+    assert!(w > 0 && h > 0);
+    assert_eq!(capture.surface(), Some(SourceKind::Screen));
+    let n = frames_in(&mut capture, Duration::from_secs(2));
+    eprintln!("screen {w}x{h}: {n} frames pulled in 2 s at 10 fps");
+    assert!(n >= 10, "the screen's rate was not kept");
+    assert_eq!(kde_capture_nodes(), 1, "one capture node while sharing");
+    drop(capture);
+    assert!(kde_nodes_gone(), "the screen's stream outlived its share");
+
+    // Another process's window: its owner is that process, a still window keeps the share's rate, and closing it ends
+    // the share.
+    let nonce = format!("dilla-kde-probe-{}", std::process::id());
+    let helper = Helper::start(&nonce);
+    let pid = helper.0;
+    let own = std::process::id();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let window = loop {
+        let listed = desktop::list(SourceKind::Window);
+        assert!(
+            listed
+                .iter()
+                .all(|s| desktop::window_owner_pid(s) != Some(own)),
+            "one of this process's windows is offered"
+        );
+        if let Some(s) = listed
+            .into_iter()
+            .find(|s| desktop::window_owner_pid(s) == Some(pid))
+        {
+            break s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the helper's window was never listed"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    let mut capture = desktop::open(Some(&window), 10, desktop::START_WAIT, &|| false)
+        .unwrap_or_else(|e| panic!("the helper's window did not open: {e}"));
+    let (w, h) = capture.size();
+    assert!(w > 0 && h > 0);
+    let n = frames_in(&mut capture, Duration::from_secs(2));
+    eprintln!("window {w}x{h}: {n} frames pulled in 2 s at 10 fps (KWin sends one per change)");
+    assert!(n >= 10, "a still window's last frame was not repeated");
+    helper.kill();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if matches!(capture.pull(), Pull::Ended) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the capture outlived its window");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(capture);
+    drop(helper);
+    assert!(kde_nodes_gone(), "the window's stream outlived its share");
+}
