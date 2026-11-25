@@ -65,3 +65,20 @@ style (the `test-hooks` feature and `put_test_frame` exist).
   - `cargo fmt --check` on your own files.
   - Afterwards delete `target/debug/incremental`.
 - [ ] **Step 4, commit:** `desktop: your own screen share and camera show on your own tile, as in the old client`.
+
+### Task 2: no blinking caret after DILLA in the top bar
+
+**Spec:** Jonas, 2026-11-25: "remove the blinking [] next to DILLA in the top". His call overrides the Signal prototype's
+TopBar `d-caret`.
+
+- [ ] Remove the brand caret child in `clients/desktop/dilla-desktop/src/screens/titlebar.rs` (the
+  `motion::blink(... "topbar-caret" ...)` after the "DILLA" line) and its `BRAND_CURSOR_W` and `BRAND_CURSOR_H`
+  constants.
+- [ ] If `dilla_desktop_ui::motion::blink` and its caret clock (`CaretEpoch`, `Blink`, `caret_*`) have no other caller,
+  remove them and their tests, or keep whatever another caller or test still uses. No dead code, no
+  `#[allow(dead_code)]`.
+- [ ] Keep the brand's layout otherwise as is (the gap after "DILLA" closes with it). Check the macOS traffic-light
+  clearance probe (`topbar-brand`) still holds.
+- [ ] Grep the tests, behaviour gates (`clients/desktop/BEHAVIOUR-GATES.md`, `behaviour-gates-titles.tsv`) and docs for
+  the caret, and update what names it.
+- [ ] Commit: `desktop: no blinking caret after DILLA in the top bar`.
