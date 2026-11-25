@@ -26,8 +26,6 @@ mod css {
     pub const GAP: f32 = 12.0;
     pub const BRAND_GAP: f32 = 8.0;
     pub const BRAND_MARK: f32 = 18.0;
-    pub const BRAND_CURSOR_W: f32 = 6.0;
-    pub const BRAND_CURSOR_H: f32 = 12.0;
     pub const SEARCH_SLOT: f32 = 420.0;
     pub const SEARCH_W: f32 = 360.0;
     pub const SEARCH_H: f32 = 28.0;
@@ -478,7 +476,6 @@ pub fn render(
     handlers: &TitlebarHandlers,
     reminders: Option<gpui::AnyElement>,
     menu: Option<gpui::AnyElement>,
-    window: &mut Window,
     cx: &mut App,
 ) -> impl IntoElement + use<> {
     let brand_name_line = dilla_desktop_ui::text::root_line_height(text::XS);
@@ -501,21 +498,12 @@ pub fn render(
         .items_center()
         .gap(Pixels::from(css::BRAND_GAP))
         .child(mark)
+        // Jonas 2026-11-25: no blinking caret after the name (the Signal prototype's TopBar `d-caret`).
         .child(
             line("DILLA", text::XS, brand_name_line, color::FG)
                 .weight(font::WEIGHT_DISPLAY)
                 .tracking(LABEL_TRACKING_WIDE),
-        )
-        // The brand caret blinks (TopBar.css `d-caret` on `--duration-caret`).
-        .child(dilla_desktop_ui::motion::blink(
-            div()
-                .w(Pixels::from(css::BRAND_CURSOR_W))
-                .h(Pixels::from(css::BRAND_CURSOR_H))
-                .bg(color::BRAND),
-            "topbar-caret",
-            window,
-            cx,
-        ));
+        );
     let search = div()
         .w(Pixels::from(css::SEARCH_SLOT))
         .flex_none()
@@ -825,6 +813,62 @@ mod tests {
             ["0", "1", "2"]
         );
         assert!(actions[1].partial_eq(&C));
+    }
+
+    /// Draws the top bar, counting its renders.
+    struct BarHost {
+        renders: usize,
+    }
+
+    impl gpui::Render for BarHost {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            self.renders += 1;
+            let noop: super::super::shell::Action = std::rc::Rc::new(|_, _| {});
+            render(
+                &TitlebarModel {
+                    controls: false,
+                    search_hint: "Ctrl K",
+                    reminders_due: 0,
+                    reminders_open: false,
+                    bell_focus: None,
+                    voice: None,
+                    menu_open: false,
+                    instance: String::new(),
+                },
+                &TitlebarHandlers {
+                    on_voice: noop.clone(),
+                    on_settings: noop.clone(),
+                    on_search: noop.clone(),
+                    on_reminders: noop,
+                },
+                None,
+                None,
+                cx,
+            )
+        }
+    }
+
+    /// Jonas 2026-11-25 ("remove the blinking [] next to DILLA in the top"), over the Signal prototype's TopBar `d-caret`:
+    /// an idle top bar draws nothing that blinks, so with motion on it is not redrawn as time passes.
+    #[gpui::test]
+    fn the_top_bar_has_no_blinking_caret(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let (host, vcx) = cx.add_window_view(|_, _| BarHost { renders: 0 });
+        vcx.run_until_parked();
+        let before = host.read_with(vcx, |h, _| h.renders);
+        for _ in 0..300 {
+            vcx.executor()
+                .advance_clock(std::time::Duration::from_millis(10));
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+        }
+        assert_eq!(
+            host.read_with(vcx, |h, _| h.renders),
+            before,
+            "the idle top bar was redrawn over three seconds"
+        );
     }
 
     /// beta.5 DesktopTitlebar.css: the compact windows' drag strip (`inset: 0 34px auto 0`) stops short of the close

@@ -2147,7 +2147,6 @@ impl Render for ShellView {
             self.controls
                 .then(|| titlebar::window_menu(window, cx))
                 .flatten(),
-            window,
             cx,
         );
 

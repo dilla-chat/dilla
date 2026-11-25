@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt, AnyElement, App, BoxShadow, ElementId, Hsla, IntoElement,
-    ParentElement, Pixels, SharedString, Styled, Window, div, linear_color_stop, linear_gradient,
-    point, px, relative,
+    ParentElement, Pixels, SharedString, Styled, div, linear_color_stop, linear_gradient, point,
+    px, relative,
 };
 
 use crate::icon::Icon;
@@ -91,23 +91,6 @@ pub fn sweep_at(elapsed: Duration, run: Duration) -> f32 {
         return 0.0;
     }
     -1.0 + 2.0 * (elapsed.as_secs_f32() / run.as_secs_f32()).rem_euclid(1.0)
-}
-
-/// `d-caret` (`0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 }`, on `ease` between its keyframes, infinite): the opacity
-/// `elapsed` into a period of `period`. It is on until 49% of the period, falls over the next 1% and is off for the rest.
-/// A period of zero is drawn on.
-pub fn caret_at(elapsed: Duration, period: Duration) -> f32 {
-    if period.is_zero() {
-        return 1.0;
-    }
-    let phase = (elapsed.as_secs_f32() / period.as_secs_f32()).rem_euclid(1.0);
-    if phase < 0.49 {
-        1.0
-    } else if phase < 0.5 {
-        1.0 - cubic_bezier(EASE, (phase - 0.49) / 0.01)
-    } else {
-        0.0
-    }
 }
 
 /// `d-ring` (`from { opacity: 0.6; scale(1) } to { opacity: 0; scale(1.5) }`, infinite): the wave's opacity and scale
@@ -313,97 +296,6 @@ where
         Animation::new(run).with_max_fps(INDICATOR_FPS),
         move |el, delta| el.opacity(1.0 - transition_at(run.mul_f32(delta), run)),
     )
-    .into_any_element()
-}
-
-/// Whether the caret is on `elapsed` into a period of `period`: `d-caret` is on until its 49% stop and off from there (its
-/// fall to 0 over the next 1%, 10ms of a 1s period, is shorter than a frame). A period of zero is on.
-pub fn caret_on(elapsed: Duration, period: Duration) -> bool {
-    period.is_zero() || (elapsed.as_nanos() % period.as_nanos()) < period.as_nanos() * 49 / 100
-}
-
-/// How long after `elapsed` the caret next changes: at its 49% stop, or at the end of the period, when it snaps back on.
-pub fn caret_next_stop(elapsed: Duration, period: Duration) -> Duration {
-    if period.is_zero() {
-        return Duration::MAX;
-    }
-    let at = Duration::from_nanos((elapsed.as_nanos() % period.as_nanos()) as u64);
-    let stop = period * 49 / 100;
-    if at < stop { stop - at } else { period - at }
-}
-
-/// The start of the caret's clock, shared by every caret in every window so that they blink in phase (GPUI's own shared
-/// animation clock, `synced_animation_epoch`, is private to it, so this is the app's own, set when the first caret draws).
-struct CaretEpoch(std::time::Instant);
-impl gpui::Global for CaretEpoch {}
-
-fn caret_elapsed(cx: &App) -> Duration {
-    let now = cx.background_executor().now();
-    cx.try_global::<CaretEpoch>()
-        .map_or(Duration::ZERO, |e| now.saturating_duration_since(e.0))
-}
-
-/// What keeps a caret blinking: whether it was drawn since the timer last fired, and whether a timer runs.
-struct Blink {
-    drawn: bool,
-    running: bool,
-}
-
-/// `el` blinking as the brand caret does (`d-caret` on `--duration-caret`, infinite), exactly: it is drawn on or off by the
-/// shared clock, and one timer wakes the view at each of the keyframe's stops (49% and 100% of the period): two renders a
-/// second, not a frame loop. The timer runs only while the caret is drawn: each wake needs a draw since the last, so a
-/// window that is hidden or a top bar that is gone stops it, and the next draw starts it again. With reduced motion the
-/// caret stays on and nothing is scheduled. `id` keys the caret's state at its place; `window` is the one it is drawn in.
-pub fn blink<E>(el: E, id: impl Into<ElementId>, window: &mut Window, cx: &mut App) -> AnyElement
-where
-    E: Styled + IntoElement + 'static,
-{
-    if cx.reduce_motion() {
-        return el.into_any_element();
-    }
-    if !cx.has_global::<CaretEpoch>() {
-        let now = cx.background_executor().now();
-        cx.set_global(CaretEpoch(now));
-    }
-    let period = motion::CARET;
-    let state = window.use_keyed_state(id, cx, |_, _| Blink {
-        drawn: false,
-        running: false,
-    });
-    let start = state.update(cx, |b, _| {
-        b.drawn = true;
-        !std::mem::replace(&mut b.running, true)
-    });
-    if start {
-        let weak = state.downgrade();
-        cx.spawn(async move |cx| {
-            loop {
-                let wait = cx.update(|cx| caret_next_stop(caret_elapsed(cx), period));
-                cx.background_executor()
-                    .timer(wait.max(Duration::from_millis(1)))
-                    .await;
-                let go = weak.update(cx, |b, cx| {
-                    let go = std::mem::replace(&mut b.drawn, false);
-                    if go {
-                        // The entity is observed by the view that drew the caret: this redraws it.
-                        cx.notify();
-                    } else {
-                        b.running = false;
-                    }
-                    go
-                });
-                if !go.unwrap_or(false) {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-    el.opacity(if caret_on(caret_elapsed(cx), period) {
-        1.0
-    } else {
-        0.0
-    })
     .into_any_element()
 }
 
@@ -1318,40 +1210,6 @@ mod tests {
         );
     }
 
-    /// `d-caret`: on until 49%, off from 50% (falling between), then again.
-    #[test]
-    fn the_caret_is_on_for_half_a_period_and_off_for_the_other() {
-        let p = motion::CARET;
-        assert!(near(caret_at(Duration::ZERO, p), 1.0));
-        assert!(near(caret_at(p * 3 / 10, p), 1.0));
-        assert!(near(caret_at(p * 49 / 100, p), 1.0));
-        let falling = caret_at(p * 495 / 1000, p);
-        assert!(
-            falling > 0.0 && falling < 1.0,
-            "{falling} between 49% and 50%"
-        );
-        assert!(near(caret_at(p / 2, p), 0.0));
-        assert!(near(caret_at(p * 9 / 10, p), 0.0));
-        assert!(near(caret_at(p + p / 10, p), 1.0), "the next period");
-        assert_eq!(caret_at(p / 2, Duration::ZERO), 1.0, "reduced: on");
-    }
-
-    /// The caret's timer wakes at the 49% stop and at the end of the period, on the shared clock, and is on until the first.
-    #[test]
-    fn the_caret_changes_at_forty_nine_percent_and_at_the_period() {
-        let p = motion::CARET;
-        let ms = Duration::from_millis;
-        assert!(caret_on(Duration::ZERO, p) && caret_on(ms(489), p));
-        assert!(!caret_on(ms(490), p) && !caret_on(ms(999), p));
-        assert!(caret_on(ms(1000), p), "on again at the period");
-        assert_eq!(caret_next_stop(Duration::ZERO, p), ms(490));
-        assert_eq!(caret_next_stop(ms(300), p), ms(190));
-        assert_eq!(caret_next_stop(ms(490), p), ms(510));
-        assert_eq!(caret_next_stop(ms(999), p), ms(1));
-        assert_eq!(caret_next_stop(ms(1300), p), ms(190), "the next period");
-        assert!(caret_on(ms(5), Duration::ZERO), "reduced: on");
-    }
-
     /// An opacity transition runs 0 to 1 on `ease`, and is over at once with a zero duration.
     #[test]
     fn a_transition_runs_from_clear_to_opaque_on_ease() {
@@ -1650,81 +1508,6 @@ mod tests {
         assert_eq!(
             renders_over(cx, false, 500, |_| div().into_any_element()),
             0
-        );
-    }
-
-    /// A view that draws a caret while `show`, and counts its renders.
-    struct CaretHost {
-        renders: usize,
-        show: bool,
-    }
-    impl gpui::Render for CaretHost {
-        fn render(
-            &mut self,
-            window: &mut gpui::Window,
-            cx: &mut gpui::Context<Self>,
-        ) -> impl IntoElement {
-            self.renders += 1;
-            if self.show {
-                blink(div().w(px(6.0)).h(px(12.0)), "caret", window, cx)
-            } else {
-                div().into_any_element()
-            }
-        }
-    }
-
-    fn run_frames(vcx: &mut gpui::VisualTestContext, ms: u64) {
-        for _ in 0..ms / 10 {
-            vcx.executor().advance_clock(Duration::from_millis(10));
-            vcx.run_until_parked();
-            vcx.update(|window, cx| window.simulate_next_frame(cx));
-            vcx.run_until_parked();
-        }
-    }
-
-    /// The caret's timer notifies once at each stop, so a drawn caret costs two renders a second; the timer stops when
-    /// the caret is no longer drawn; reduced motion keeps the caret on and schedules nothing.
-    #[gpui::test]
-    fn the_caret_notifies_twice_a_second_and_only_while_drawn(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| cx.set_reduce_motion(false));
-        let (host, vcx) = cx.add_window_view(|_, _| CaretHost {
-            renders: 0,
-            show: true,
-        });
-        vcx.run_until_parked();
-        let before = host.read_with(vcx, |h, _| h.renders);
-        run_frames(vcx, 4000);
-        let ticks = host.read_with(vcx, |h, _| h.renders) - before;
-        assert!(
-            (7..=9).contains(&ticks),
-            "{ticks} renders in four seconds (two a second)"
-        );
-        // No longer drawn: at most one more wake, then nothing.
-        host.update(vcx, |h, cx| {
-            h.show = false;
-            cx.notify();
-        });
-        run_frames(vcx, 1500);
-        let quiet = host.read_with(vcx, |h, _| h.renders);
-        run_frames(vcx, 3000);
-        assert_eq!(
-            host.read_with(vcx, |h, _| h.renders),
-            quiet,
-            "an undrawn caret schedules nothing"
-        );
-
-        cx.update(|cx| cx.set_reduce_motion(true));
-        let (host, vcx) = cx.add_window_view(|_, _| CaretHost {
-            renders: 0,
-            show: true,
-        });
-        vcx.run_until_parked();
-        let before = host.read_with(vcx, |h, _| h.renders);
-        run_frames(vcx, 3000);
-        assert_eq!(
-            host.read_with(vcx, |h, _| h.renders),
-            before,
-            "reduced motion"
         );
     }
 
