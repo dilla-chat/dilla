@@ -87,15 +87,20 @@ pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
     let proposed = loop {
         // The epoch the self-Remove is built on, read under the same lock: the sync engine applies commits under it.
         // An unreadable row only rules out a rebuild; the Remove still goes out.
-        let Ok((built, body)) = lock(core).and_then(|mut c| {
+        let built = lock(core).and_then(|mut c| {
             let epoch = c
                 .groups()
                 .ok()
                 .and_then(|rows| rows.into_iter().find(|r| r.group_id == *group))
                 .map(|r| r.epoch);
             Ok((epoch, c.call_leave_proposal(group)?))
-        }) else {
-            break false;
+        });
+        let (built, body) = match built {
+            Ok(built) => built,
+            Err(e) => {
+                log::warn!("calls: leave: the core refused the self-Remove: {}", e.code);
+                break false;
+            }
         };
         match routes.post_proposal(group, body).await {
             Ok(_) => break true,
@@ -139,7 +144,18 @@ pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
                     now.unwrap_or_default()
                 );
             }
-            Err(_) => break false,
+            Err(e) => {
+                // Visible, by the status, code and rule only: the self-Remove did not land, and the others see this
+                // device go only when the instance notices it gone.
+                log::warn!(
+                    "calls: leave: the self-Remove was refused: status {} code {} rule {}",
+                    e.status
+                        .map_or_else(|| "none".to_owned(), |s| s.to_string()),
+                    e.code.as_deref().unwrap_or("none"),
+                    e.rule.as_deref().unwrap_or("none")
+                );
+                break false;
+            }
         }
     };
     let _ = lock(core).map(|mut c| c.call_group_forget(group));

@@ -94,6 +94,10 @@ pub trait JoinHooks: Send + Sync {
     /// `rejoining`: the page says so in its status region), [`CallPhase::In`] when it has joined
     /// and [`CallPhase::Idle`] when it ended without a call.
     fn phase(&self, _phase: CallPhase) {}
+    /// The core holds `group` active now (registered or joined): the sync engine applies the frames of other members'
+    /// commits it held while the group registered or joined, in order, and catches the group up
+    /// (`Engine::call_group_active`). Without it a commit that arrived in that window is never applied.
+    async fn activated(&self, _group: &[u8; 16]) {}
 }
 
 /// A join that ended without a call. `leave` names an active call group this device must leave
@@ -357,6 +361,7 @@ async fn join_loop<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Sized>(
                                 core_failed("group registered", &e);
                                 refused(&e.code, None)
                             })?;
+                        hooks.activated(&group).await;
                         created = true;
                     }
                     Err(e) => {
@@ -596,6 +601,7 @@ async fn join_existing<C: CallCore, R: CallRoutes + ?Sized, H: JoinHooks + ?Size
                         core_failed("group joined", &e);
                         ExistingRefused::from(refused(&e.code, Some(*group)))
                     })?;
+                hooks.activated(group).await;
                 return Ok(());
             }
             Err(e) => {

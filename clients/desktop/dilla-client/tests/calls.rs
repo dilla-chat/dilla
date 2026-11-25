@@ -381,10 +381,15 @@ struct Hooks {
     refreshed: Mutex<u32>,
     phases: Mutex<Vec<CallPhase>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The groups handed to the sync engine as active (`JoinHooks::activated`).
+    activated: Mutex<Vec<[u8; 16]>>,
 }
 
 #[async_trait::async_trait]
 impl JoinHooks for Hooks {
+    async fn activated(&self, group: &[u8; 16]) {
+        self.activated.lock().unwrap().push(*group);
+    }
     fn random_id(&self) -> [u8; 16] {
         FRESH
     }
@@ -404,6 +409,7 @@ fn hooks() -> Hooks {
         refreshed: Mutex::new(0),
         phases: Mutex::new(Vec::new()),
         cancel: std::sync::Arc::default(),
+        activated: Mutex::new(Vec::new()),
     }
 }
 
@@ -426,9 +432,10 @@ async fn the_first_join_registers_the_call_group_then_starts_the_call() {
         call_id: None,
         participants: vec![],
     });
-    let joined = join_call(&core, &routes, &hooks(), &target())
-        .await
-        .unwrap();
+    let h = hooks();
+    let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
+    // The registered group goes to the sync engine as active, so a commit it held meanwhile is applied.
+    assert_eq!(*h.activated.lock().unwrap(), [FRESH]);
     assert_eq!(joined.group_id, FRESH);
     assert_eq!(joined.media.epoch, 3);
     assert_eq!(*joined.media.base_key, [7; 16]);
@@ -441,9 +448,10 @@ async fn the_first_join_registers_the_call_group_then_starts_the_call() {
 async fn a_join_of_a_live_call_posts_its_external_commit_only_after_the_gate_passes() {
     let core = Mutex::new(gated(vec![], vec![]));
     let routes = FakeRoutes::default();
-    let joined = join_call(&core, &routes, &hooks(), &target())
-        .await
-        .unwrap();
+    let h = hooks();
+    let joined = join_call(&core, &routes, &h, &target()).await.unwrap();
+    // The joined group goes to the sync engine as active, so a commit it held meanwhile is applied.
+    assert_eq!(*h.activated.lock().unwrap(), [GROUP]);
     assert_eq!(joined.group_id, GROUP);
     assert_eq!(
         routes.posted(),
@@ -2335,6 +2343,246 @@ async fn a_join_racing_the_last_members_end_registers_a_fresh_call() {
     drop(b_client);
     drop(a_client);
     drop(host);
+}
+
+/// Two people in a voice community, each with a running, connected client: the call-follow tests' world.
+struct TwoInVoice {
+    // Dropped last, in this order: the clients, then the people's stores, then the instance.
+    a_client: dilla_client::Client,
+    b_client: dilla_client::Client,
+    _people: (world::Person, world::Person),
+    _host: world::Host,
+    target: dilla_client::calls::CallTarget,
+}
+
+async fn two_in_voice(tag: &'static str) -> TwoInVoice {
+    let host = tokio::task::spawn_blocking(move || world::start_host(tag))
+        .await
+        .unwrap();
+    let invite = host.invites.last().unwrap().clone();
+    let alice = world::sign_up(&host, &invite, "alice", tag).await;
+    let bob = world::sign_up(&host, &invite, "bob", tag).await;
+    let (host, alice, bob, community, voice) = tokio::task::spawn_blocking(move || {
+        let (c, v) = world::voice_community(&host, &alice, &[&bob]);
+        world::clear_session(&alice);
+        world::clear_session(&bob);
+        (host, alice, bob, c, v)
+    })
+    .await
+    .unwrap();
+    let a_client = world::start(&alice).await;
+    let b_client = world::start(&bob).await;
+    world::connected(&a_client).await;
+    world::connected(&b_client).await;
+    TwoInVoice {
+        a_client,
+        b_client,
+        _people: (alice, bob),
+        _host: host,
+        target: dilla_client::calls::CallTarget {
+            channel: voice,
+            community: Some(community),
+            vdec: String::new(),
+        },
+    }
+}
+
+/// The epoch of `group` that `calls`' gate passes, polled until it reaches `want` or 10 s have gone by. Until the
+/// device's trust pass has read a new member's device list the gate holds the new epoch back (`E_DEVICE_LIST_STALE`,
+/// as `Voice::follow_epochs` meets it); any other refusal fails the test. `None`: the gate never passed.
+async fn epoch_reached(
+    calls: &dilla_client::calls::Calls,
+    group: &[u8; 16],
+    want: u64,
+) -> Option<u64> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let epoch = match calls.media_epoch(group) {
+            Ok(m) => Some(m.epoch),
+            Err(e) if e.code == "E_DEVICE_LIST_STALE" => None,
+            Err(e) => panic!("the gate refused: {}", e.code),
+        };
+        if epoch.is_some_and(|e| e >= want) || Instant::now() >= deadline {
+            return epoch;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The creator's call routes, with one step in: once the instance has answered the call group's registration, and
+/// before the join marks the group registered in the core, bob joins the call (his external commit opens epoch 1) and
+/// his commit's frame reaches alice's client. Bob's join is kept for the test.
+struct JoinDuringRegistration {
+    inner: std::sync::Arc<dilla_client::calls::SocketCallRoutes<dilla_client::calls::NoHttp>>,
+    /// Taken by the first registration.
+    bob: Mutex<Option<(dilla_client::calls::Calls, dilla_client::calls::CallTarget)>>,
+    joined: std::sync::Arc<Mutex<Option<dilla_client::calls::Joined>>>,
+}
+
+#[async_trait::async_trait]
+impl CallRoutes for JoinDuringRegistration {
+    async fn get_channel_call(&self, c: &[u8; 16]) -> Result<ChannelCall, RouteError> {
+        self.inner.get_channel_call(c).await
+    }
+    async fn post_group(&self, b: Vec<u8>) -> Result<u64, RouteError> {
+        let answer = self.inner.post_group(b).await;
+        let bob = self.bob.lock().unwrap().take();
+        if let Some((calls, target)) = bob {
+            let joined = calls
+                .join(target)
+                .outcome()
+                .await
+                .expect("bob's client")
+                .expect("bob joins the registered group");
+            *self.joined.lock().unwrap() = Some(joined);
+            // Long enough for the commit's frame to reach alice's client over the gateway.
+            tokio::time::sleep(Duration::from_millis(1_000)).await;
+        }
+        answer
+    }
+    async fn get_group_info(&self, g: &[u8; 16]) -> Result<Vec<u8>, RouteError> {
+        self.inner.get_group_info(g).await
+    }
+    async fn get_group_tree(&self, g: &[u8; 16]) -> Result<Vec<u8>, RouteError> {
+        self.inner.get_group_tree(g).await
+    }
+    async fn post_resync(&self, g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
+        self.inner.post_resync(g, b).await
+    }
+    async fn post_commit(
+        &self,
+        g: &[u8; 16],
+        b: Vec<u8>,
+        idem: [u8; 16],
+    ) -> Result<u64, RouteError> {
+        self.inner.post_commit(g, b, idem).await
+    }
+    async fn post_proposal(&self, g: &[u8; 16], b: Vec<u8>) -> Result<u64, RouteError> {
+        self.inner.post_proposal(g, b).await
+    }
+    async fn get_handshakes(
+        &self,
+        g: &[u8; 16],
+        from: u64,
+        limit: u64,
+    ) -> Result<HandshakePage, RouteError> {
+        self.inner.get_handshakes(g, from, limit).await
+    }
+    async fn start_call(&self, c: &[u8; 16], v: &str) -> Result<CallStarted, RouteError> {
+        self.inner.start_call(c, v).await
+    }
+    async fn end_call_if_alone(&self, c: &[u8; 16]) -> Result<bool, RouteError> {
+        self.inner.end_call_if_alone(c).await
+    }
+    async fn decline_call(&self, c: &[u8; 16], t: u64) -> Result<(), RouteError> {
+        self.inner.decline_call(c, t).await
+    }
+}
+
+/// The call group's epoch follows other members' commits (2026-11-25 lockout investigation, section 4b), against a
+/// real dillad: alice registers the call group (epoch 0) and bob joins it by external commit (epoch 1) while alice's
+/// join is still between the instance's answer to the registration and marking the group registered in her core. His
+/// commit's frame reaches her client while her row of the group is not active yet, so the sync engine holds it. Once
+/// the join has the group active, the held frame is applied (or a catch-up reads it): alice's row reaches epoch 1
+/// within a bound, with no later commit to pull it, and her leave's self-Remove is built at epoch 1 and taken by the
+/// instance (bob is still in, so the call does not end).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn the_call_creator_reaches_epoch_1_after_another_member_joins() {
+    let w = two_in_voice("follow-race").await;
+    let a_calls = w.a_client.calls();
+    let joined = std::sync::Arc::new(Mutex::new(None));
+    let join = a_calls.join_through(w.target.clone(), {
+        let bob = Some((w.b_client.calls(), w.target.clone()));
+        let joined = joined.clone();
+        move |inner| JoinDuringRegistration {
+            inner,
+            bob: Mutex::new(bob),
+            joined,
+        }
+    });
+    let first = tokio::time::timeout(Duration::from_secs(60), join.outcome())
+        .await
+        .expect("alice's join ends")
+        .expect("alice's client")
+        .expect("alice joins");
+    let second = joined.lock().unwrap().take().expect("bob joined");
+    assert_eq!(
+        second.group_id, first.group_id,
+        "bob joined alice's call group"
+    );
+    assert_eq!(
+        second.media.epoch, 1,
+        "bob's external commit opened epoch 1"
+    );
+
+    let reached = epoch_reached(&a_calls, &first.group_id, 1).await;
+    assert_eq!(
+        reached,
+        Some(1),
+        "alice's row of the call group follows bob's join commit"
+    );
+    let keys = a_calls.media_epoch(&first.group_id).expect("alice's keys");
+    assert_eq!(keys.roster.len(), 2, "alice's roster holds bob's leaf");
+
+    let left = a_calls
+        .leave(first.group_id, first.started.call_id, false)
+        .await
+        .unwrap()
+        .expect("alice's client");
+    assert_eq!(
+        left,
+        dilla_client::calls::Left {
+            ended: false,
+            proposed: true
+        },
+        "the self-Remove is built at epoch 1 and taken"
+    );
+    drop(w);
+}
+
+/// [`the_call_creator_reaches_epoch_1_after_another_member_joins`] with bob joining once alice's join has ended: his
+/// commit's frame reaches her active row and is applied as it arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn the_call_creator_follows_a_join_after_its_own() {
+    let w = two_in_voice("follow").await;
+    let a_calls = w.a_client.calls();
+    let first = a_calls
+        .join(w.target.clone())
+        .outcome()
+        .await
+        .expect("alice's client")
+        .expect("alice joins");
+    assert!(first.started.created, "alice registered the call group");
+    assert_eq!(first.media.epoch, 0);
+    let b_calls = w.b_client.calls();
+    let second = b_calls
+        .join(w.target.clone())
+        .outcome()
+        .await
+        .expect("bob's client")
+        .expect("bob joins");
+    assert_eq!(
+        second.group_id, first.group_id,
+        "bob joined alice's call group"
+    );
+    assert_eq!(second.media.epoch, 1);
+
+    assert_eq!(epoch_reached(&a_calls, &first.group_id, 1).await, Some(1));
+    let left = a_calls
+        .leave(first.group_id, first.started.call_id, false)
+        .await
+        .unwrap()
+        .expect("alice's client");
+    assert_eq!(
+        left,
+        dilla_client::calls::Left {
+            ended: false,
+            proposed: true
+        }
+    );
+    drop(w);
 }
 
 /// A leave that lands while the call's start is in flight: the start succeeded, so the device is admitted; the join

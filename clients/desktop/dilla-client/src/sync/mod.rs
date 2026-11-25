@@ -1075,6 +1075,22 @@ impl Engine {
                     true
                 }
                 Err(e) => {
+                    // Visible, by the group's id and the failure's status and code only: a catch-up that keeps failing
+                    // leaves the group behind its members' commits (a call's keys at an old epoch) with no other trace.
+                    // A group no longer active (forgotten, removed, lost) or a stopped engine ends it quietly.
+                    if matches!(e, SyncError::Stopped) {
+                        log::debug!(
+                            "sync: catch-up of {} ended: E_SYNC_STOPPED",
+                            crate::state::hex(&g)
+                        );
+                    } else {
+                        log::warn!(
+                            "sync: catch-up of {} failed: status {} code {}",
+                            crate::state::hex(&g),
+                            e.api().map_or(0, |a| a.status),
+                            e.code()
+                        );
+                    }
                     if matches!(e, SyncError::Core(_)) {
                         self.report_current(g);
                     }
@@ -1507,6 +1523,21 @@ impl Engine {
             // not at the publisher's next backoff tick.
             self.request_removal_read(g);
         })
+    }
+
+    /// A call group the call controller has just made active (`group_registered` or `group_joined`, calls/join.rs): it
+    /// is activated as the engine activates a text group ([`Self::activate`]), on the group's lane. A frame of another
+    /// member's commit that arrived while the row was still registering or joining was held (`frame_job`); it is applied
+    /// now, in seq order and under the engine's ordering rule, and a catch-up is queued behind it. Without this the held
+    /// frame was never applied and, with no later frame to show the gap, the call's keys stayed at the first epoch.
+    /// Running on the lane orders it after any `frame_job` of the group that read the row before it turned active.
+    pub async fn call_group_active(self: &Arc<Self>, g: Gid) {
+        if self.stopped() {
+            return;
+        }
+        let this = Arc::clone(self);
+        let lanes = Arc::clone(&self.lanes);
+        lanes.run(&key(&g), this.activate(g)).await;
     }
 
     /// Reads `g`'s removal feed on its lane now (coalesced). A read that succeeds releases its timeline
