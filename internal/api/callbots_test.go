@@ -1,8 +1,11 @@
 package api_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,5 +185,102 @@ func TestBotOnlyObservationResetsAfterRoomListingFailure(t *testing.T) {
 	f.calls.SweepRooms(t.Context())
 	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended == nil {
 		t.Fatalf("second observation after failed room listing did not end the call: %+v, %v", row, err)
+	}
+}
+
+// putInstanceRemove stores a non-void instance Remove (origin 0) of dev's leaf at the group's
+// current epoch, issued now: what the instance proposes when a device drops out of a call.
+func putInstanceRemove(t *testing.T, e *env, group, dev id.ID, leaf uint32) {
+	t.Helper()
+	g, err := e.Repo.GetGroup(t.Context(), group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := id.New()
+	if err := e.Repo.PutProposal(t.Context(), store.ProposalRow{
+		GroupID: group, Ref: ref[:], Epoch: g.Epoch, Kind: 3, /* Remove */
+		TargetLeaf: &leaf, TargetDevice: &dev, Origin: 0, ActionID: id.New(),
+		IssuedAt: e.Clk.Now().Unix(), TTL: 30,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// CT 144, 2026-11-25 (Casa Bonita): the human's device dropped and the instance proposed the Remove
+// of its leaf; the Bot is the only other member and is never elected to commit it, so every rejoin
+// was refused 409 E_REMOVE_PENDING. A human leaf that is both the target of an outstanding
+// instance Remove and absent from the room is no active human, even inside its admission window
+// (its session was admitted before the Remove), so two sweeps end the call bots_only and close its
+// group: the person's next join registers a fresh group (the resync then answers E_GROUP_CLOSED,
+// internal/ds TestAResyncByARemoveTargetOfAClosedGroupIsGroupClosed).
+func TestBotsOnlyEndsWhenTheOnlyHumanIsAbsentAndPendingRemoval(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	var logs bytes.Buffer
+	f.calls.SetLogForTest(slog.New(slog.NewTextHandler(&logs, nil)))
+	botDev := seedCallBot(t, f.e, f.ch, f.group)
+	f.e.Clk.Advance(5 * time.Second) // the human's session was admitted, then it dropped
+	putInstanceRemove(t, f.e, f.group, f.dev, 0)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: botDev.String()})
+	f.calls.SweepRooms(t.Context())
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended != nil {
+		t.Fatalf("the first observation ended the call: %+v, %v", row, err)
+	}
+	f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
+	f.calls.SweepRooms(t.Context())
+	row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Ended == nil {
+		t.Fatal("two sweeps kept a call whose only human is absent and pending removal, beside only the Bot")
+	}
+	ended := "msg=\"call ended\" call_id=" + f.callID.String() + " reason=bots_only"
+	if !strings.Contains(logs.String(), ended) {
+		t.Fatalf("the call did not end as bots_only; want %q in:\n%s", ended, logs.String())
+	}
+	if rooms := f.stub.deletedRooms(); len(rooms) != 1 || rooms[0] != f.room {
+		t.Fatalf("deleted rooms = %v, want the bots-only room", rooms)
+	}
+	if removes := f.ds.memberRemovals(); len(removes) != 0 {
+		t.Fatalf("the bots-only call queued Removes only the Bot could commit: %+v", removes)
+	}
+	f.calls.ProcessQueueForTest(t.Context())
+	if g, err := f.e.Repo.GetGroup(t.Context(), f.group); err != nil || g.ClosedAt == nil {
+		t.Fatalf("the call group was not closed: %+v, %v", g, err)
+	}
+}
+
+// Review focus 1: a human whose Remove is outstanding but whose device is in the room (a live
+// connection, slow to commit, or reconnected) keeps the call.
+func TestBotsOnlyKeepsACallWhoseHumanIsStillInTheRoom(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	botDev := seedCallBot(t, f.e, f.ch, f.group)
+	f.e.Clk.Advance(5 * time.Second)
+	putInstanceRemove(t, f.e, f.group, f.dev, 0)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: botDev.String()}, &livekit.ParticipantInfo{Identity: f.dev.String()})
+	for range 3 {
+		f.calls.SweepRooms(t.Context())
+		f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
+	}
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended != nil {
+		t.Fatalf("the sweep ended a call whose human is in the room: %+v, %v", row, err)
+	}
+}
+
+// Review focus 2: two humans plus the Bot, one dropped and pending removal: the other human is in
+// the room and can commit the Remove, so the call is kept.
+func TestBotsOnlyKeepsACallWithAnotherHuman(t *testing.T) {
+	f := newEventsFixture(t, api.CallsConfig{})
+	botDev := seedCallBot(t, f.e, f.ch, f.group)
+	_, other, _ := joinedMember(t, f.e, f.ch, f.group, "other")
+	f.e.Clk.Advance(5 * time.Second)
+	putInstanceRemove(t, f.e, f.group, f.dev, 0)
+	f.stub.setPresent(f.room, &livekit.ParticipantInfo{Identity: botDev.String()}, &livekit.ParticipantInfo{Identity: other.String()})
+	for range 3 {
+		f.calls.SweepRooms(t.Context())
+		f.e.Clk.Advance(api.RoomSweepInterval + time.Second)
+	}
+	if row, err := f.e.Repo.GetVoiceSession(t.Context(), f.callID); err != nil || row.Ended != nil {
+		t.Fatalf("the sweep ended a call with a second human in the room: %+v, %v", row, err)
 	}
 }

@@ -165,13 +165,16 @@ from the web's animation, none visible in a reference:
 
 ### Live indicators (Task 36e)
 
-The speaking meter, typing sweep, pending spinner, brand caret, ring wave and jump-to flash all draw their reduced-motion form
-in the references (the same `reduce_motion` as above): full meter bars, a still sweep gradient, an upright spinner, a caret
-that stays on, the plain 2px `--ok` ring, and MessageRow.css's own reduced form of the flash (the tint plus an inset 2px
-`--accent` edge). Accepted differences from the web's animation, none visible in a reference:
+The speaking meter, typing sweep, pending spinner, ring wave and jump-to flash all draw their reduced-motion form in the
+references (the same `reduce_motion` as above): full meter bars, a still sweep gradient, an upright spinner, the plain 2px
+`--ok` ring, and MessageRow.css's own reduced form of the flash (the tint plus an inset 2px `--accent` edge).
 
-- The caret is on until its 49% stop and off from there, on a timer at each stop; the keyframe's 10 ms `ease` fall between 49%
-  and 50% (shorter than a frame) is a step.
+The top bar has no brand caret (Jonas, 2026-11-25, over the prototype's TopBar `d-caret`). This one is a visible difference:
+the web references still draw the caret, and the desktop's top bar passes them only because the missing caret is within the
+shared limit.
+
+Accepted differences from the web's animation, none visible in a reference:
+
 - The speaking meter and the typing sweep fade as the web's `opacity` transitions do (`--duration-fast`, `--duration-turn`,
   `ease`); one difference: the fade-out of the sweep is drawn at rest, centred, as the web's (its animation is removed when
   typing stops), and the meter's keeps bouncing while it fades.

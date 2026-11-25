@@ -1032,6 +1032,52 @@ fn leaving_while_the_publisher_renegotiates_releases_every_frame_transformer() {
     }
 }
 
+/// The own tile's self-view (session.ts `localCamera` / `localScreen`): while a share is published, `local_videos` holds
+/// its newest frame at the size it is sent; once it is unpublished, nothing. Sizes and counters only, never pixels.
+#[test]
+#[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
+fn the_local_tap_yields_the_sent_frames_while_publishing_and_none_after() {
+    let _serial = serial();
+    let rt = call_runtime();
+    let (call, _bob, _host) = seat_alice_with_bob(&rt);
+    let mut local = call.local_videos();
+    rt.block_on(async {
+        call.publish_video(Box::new(dilla_media::TestPattern::new(
+            dilla_media::ShareKind::Camera,
+            320,
+            240,
+            15,
+        )))
+        .await
+        .expect("the camera is published");
+        let shown = tokio::time::timeout(
+            Duration::from_secs(10),
+            local.wait_for(|v| v.contains_key(&dilla_media::ShareKind::Camera)),
+        )
+        .await
+        .expect("a self-view frame within 10 s")
+        .expect("the call is live")
+        .get(&dilla_media::ShareKind::Camera)
+        .map(|f| (f.width, f.height, f.rgba.len(), f.frames));
+        let (w, h, len, frames) = shown.expect("the camera's frame");
+        assert_eq!((w, h, len), (320, 240, 320 * 240 * 4), "the sent size");
+        assert!(frames >= 1);
+        assert!(
+            !local.borrow().contains_key(&dilla_media::ShareKind::Screen),
+            "no screen is sent"
+        );
+        call.unpublish_video(dilla_media::ShareKind::Camera).await;
+        assert!(
+            local.borrow().is_empty(),
+            "nothing after the camera is unpublished"
+        );
+        // A feeder that was mid-frame leaves nothing behind either.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(local.borrow().is_empty());
+        call.leave().await;
+    });
+}
+
 #[test]
 #[ignore = "needs dillad with its SFU: target/dilla-testhost and the wasi core"]
 fn a_dropped_call_releases_every_frame_transformer() {

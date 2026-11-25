@@ -335,8 +335,8 @@ fn find<'a>(state: &'a AppState, key: &SharedString) -> Option<&'a IncomingRing>
 
 /// Answer (Ring.tsx `onAnswer`): the ring's DM opens, then its call. One call per device: a call another instance
 /// window is in is left first, and this client's own call is left before the ring area's gate posts anything of the
-/// new join (`Voice::join_dm` leaves, then joins through `Ring::join`; calling `Ring::join` here first would start
-/// the DM join while the old call is still on).
+/// new join (the handover leaves it and waits for its room to close, then `Voice::join_dm` joins through
+/// `Ring::join`; calling `Ring::join` here first would start the DM join while the old call is still on).
 fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) {
     let Some(ring) = find(&env.ctx.state, key) else {
         return;
@@ -349,6 +349,7 @@ fn answer(env: &RingEnv, key: &SharedString, window: &mut Window, cx: &mut App) 
     crate::screens::voice::after_leaving_other_calls(
         crate::screens::voice::wid(window),
         client.voice(),
+        channel,
         move |voice| voice.join_dm(channel),
         cx,
     );

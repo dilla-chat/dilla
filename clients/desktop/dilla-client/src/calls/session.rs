@@ -174,6 +174,10 @@ impl JoinHooks for Hooks {
     fn phase(&self, phase: CallPhase) {
         self.phase.send_replace(phase);
     }
+
+    async fn activated(&self, group: &[u8; 16]) {
+        self.engine.call_group_active(*group).await;
+    }
 }
 
 /// [`CallCatchUp`] as the sync engine's own catch-up of the group (engine.ts `catchUpNow`).

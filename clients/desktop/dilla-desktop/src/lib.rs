@@ -282,6 +282,160 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 
 #[cfg(test)]
 mod tests {
+    /// The `{name}` placeholders of `value` that the `.replace("…", …)` chain at the start of `chain` (the source right
+    /// after a `t("key")` call) does not replace: the chain's literals are replaced in the string in order, as
+    /// `str::replace` does, so `.replace("#{n}", …)` fills only the `{n}` after a `#` (two sites replace `#{channel}`).
+    /// The chain ends at the first thing that is not a `.replace(`.
+    fn placeholders_left(value: &str, chain: &str) -> Vec<String> {
+        let mut replaced: Vec<&str> = Vec::new();
+        let mut rest = chain.trim_start();
+        while let Some(args) = rest.strip_prefix(".replace(") {
+            let Some(lit) = args.trim_start().strip_prefix('"') else {
+                break;
+            };
+            let Some(end) = lit.find('"') else { break };
+            replaced.push(&lit[..end]);
+            // Past the call's closing parenthesis (its value may hold calls and string literals of its own).
+            let mut depth = 1usize;
+            let mut quoted = false;
+            let mut close = None;
+            for (i, c) in lit[end + 1..].char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '(' if !quoted => depth += 1,
+                    ')' if !quoted => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(end + 1 + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { break };
+            rest = lit[close + 1..].trim_start();
+        }
+        // The chain applied to the string as `str::replace` applies it, in order (each replaces every occurrence of its
+        // literal): what is left is drawn.
+        let mut drawn = value.to_owned();
+        for r in &replaced {
+            if !r.is_empty() {
+                drawn = drawn.replace(r, "\u{0}");
+            }
+        }
+        let mut left = Vec::new();
+        let mut text = drawn.as_str();
+        while let Some(open) = text.find('{') {
+            let Some(len) = text[open..].find('}') else {
+                break;
+            };
+            let name = &text[open..open + len + 1];
+            if !left.iter().any(|l| l == name) {
+                left.push(name.to_owned());
+            }
+            text = &text[open + len + 1..];
+        }
+        left
+    }
+
+    /// Every `t("key")` in the app's source names a string without a `{placeholder}`: `t` draws a placeholder as it is
+    /// written ("Rejoining {where}. …" in the voice dock, Jonas 2026-11-25), so a string with one goes through `tf` with
+    /// its values, or fills it by hand (`.replace`). The scan reads `t(` followed by a string literal (a key chosen at run
+    /// time, `t(if … )`, is not seen).
+    #[test]
+    fn no_t_call_draws_a_raw_placeholder() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("the source directory") {
+                let path = entry.expect("a source entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        let mut raw = Vec::new();
+        let mut seen = 0;
+        for file in files.iter().filter(|f| !f.ends_with("strings.rs")) {
+            let text = std::fs::read_to_string(file).expect("a source file");
+            for (at, _) in text.match_indices("t(") {
+                let before = text[..at].chars().next_back();
+                if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                    continue;
+                }
+                let rest = text[at + 2..].trim_start();
+                let Some(lit) = rest.strip_prefix('"') else {
+                    continue;
+                };
+                let Some(key) = lit.split('"').next() else {
+                    continue;
+                };
+                let Some(value) = crate::strings::try_t(key) else {
+                    continue;
+                };
+                seen += 1;
+                // A call that fills its placeholders by hand (`t("…").replace("{n}", …)`) draws none: every `{name}`
+                // of the string must be in a `.replace("…"` of this call site's chain.
+                let after = lit[key.len() + 1..].trim_start();
+                let chain = after.strip_prefix(')').unwrap_or("");
+                let left = placeholders_left(value, chain);
+                if !left.is_empty() {
+                    raw.push(format!("{}: t(\"{key}\") leaves {left:?}", file.display()));
+                }
+            }
+        }
+        assert!(seen > 100, "the scan found only {seen} t(\"…\") calls");
+        assert!(
+            raw.is_empty(),
+            "t() of a string with a placeholder (use tf): {raw:#?}"
+        );
+    }
+
+    /// Self-view review m3: the guard's `.replace(` escape hatch counts only placeholders the call site replaces. A
+    /// `.replace` of another name, or of only one of two placeholders, leaves the rest raw.
+    #[test]
+    fn a_replace_fills_only_the_placeholders_it_names() {
+        let left = |value: &str, after: &str| placeholders_left(value, after);
+        assert_eq!(
+            left("Rejoining {where}.", ".replace(\"{channel}\", x)"),
+            vec!["{where}"]
+        );
+        assert_eq!(left("{a} and {b}", ".replace(\"{a}\", &one)"), vec!["{b}"]);
+        assert!(
+            left(
+                "{a} and {b}",
+                ".replace(\"{a}\", &f(1)).replace(\"{b}\", \"x\")"
+            )
+            .is_empty()
+        );
+        assert!(
+            left(
+                "Message #{channel}",
+                "\n    .replace(\"#{channel}\", &name)"
+            )
+            .is_empty(),
+            "a literal around the placeholder"
+        );
+        // Call fix review m5: a replaced literal fills one occurrence of each placeholder it holds, not every one.
+        assert_eq!(
+            left("{n} items in #{n}", ".replace(\"#{n}\", &tag)"),
+            vec!["{n}"]
+        );
+        assert!(
+            left(
+                "{n} items in #{n}",
+                ".replace(\"#{n}\", &tag).replace(\"{n}\", &count)"
+            )
+            .is_empty()
+        );
+        assert!(left("plain", "").is_empty());
+        assert_eq!(left("{n} min", ""), vec!["{n}"]);
+    }
+
     /// KDE strips a trailing `.desktop` from the app id before it looks up the desktop entry, so the entry named
     /// `dev.dilla.desktop.desktop` was never found and Plasma drew a generic icon.
     #[test]

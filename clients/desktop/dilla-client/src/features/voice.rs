@@ -1006,12 +1006,7 @@ impl Voice {
                     let _ = release.await;
                 }
             }
-            let alone = own.is_some_and(|d| {
-                snap.voice
-                    .participants(live.channel)
-                    .iter()
-                    .all(|p| p.device_id == d)
-            });
+            let alone = leave_is_alone(&snap, live.channel, own);
             let left = self
                 .calls
                 .leave(live.group_id, live.call_id, alone)
@@ -1406,6 +1401,31 @@ fn epoch_fields(m: &MediaEpoch) -> (u64, String, Vec<(UserId, DeviceId, u16)>) {
     )
 }
 
+/// Whether a leave of `channel`'s call leaves it with no person in it, so the leave ends the call (`DELETE ?if_alone=1`):
+/// every other participant is a managed Bot. A Bot never commits another member's Remove (the gateway does not elect
+/// it), so a call left to it would keep the dropped person's leaf pending removal and refuse their rejoin
+/// `E_REMOVE_PENDING` (CT 144, 2026-11-25). The instance's `CloseIfAlone` checks the same over the group's leaves, so
+/// a wrong answer here only costs a refused end. A Bot is known only by its member row's `kind` in the channel's
+/// community, which the instance asserts from the account (`GET /v1/communities/{id}/members`): a participant with no
+/// such row, and every participant of a DM call (no community), counts as a person.
+fn leave_is_alone(s: &AppState, channel: ChannelId, own: Option<DeviceId>) -> bool {
+    let Some(own) = own else {
+        return false;
+    };
+    let members = s
+        .channels
+        .iter()
+        .find(|c| c.id == channel)
+        .and_then(|c| s.members.get(&c.community_id));
+    let bot = |user: UserId| {
+        members.is_some_and(|ms| ms.iter().any(|m| m.user_id == user && m.kind == 1))
+    };
+    s.voice
+        .participants(channel)
+        .iter()
+        .all(|p| p.device_id == own || bot(p.user_id))
+}
+
 /// The state a call whose own leaf is gone ends in (controller.ts `lost`: `phase: 'removed'`): idle, with the removal
 /// said in `call.error` (`E_REMOVED`, the code a takeover's lost room says too) in the same snapshot, so the stage never
 /// shows a silent idle; the own entry leaves the room, and the speaking set and the share go.
@@ -1504,6 +1524,71 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows[0].own && !rows[1].own);
         assert!(rows[1].muted());
+    }
+
+    /// The own device (user 1) and one more participant (user 2, of `kind`) in community [1; 16]'s channel [4; 16].
+    fn call_beside(kind: u8) -> AppState {
+        let mut s = state_with_channel([4; 16]);
+        apply_frame(&mut s, &frame(1, 1, [4; 16], 1), Some([1; 16]));
+        apply_frame(&mut s, &frame(2, 2, [4; 16], 1), Some([1; 16]));
+        s.members.insert(
+            CommunityId([1; 16]),
+            vec![crate::state::Member {
+                user_id: UserId([2; 16]),
+                username: "other".into(),
+                display: String::new(),
+                kind,
+                role_ids: Vec::new(),
+                status_msg: String::new(),
+                bio: String::new(),
+            }],
+        );
+        s
+    }
+
+    /// CT 144, 2026-11-25: a leave with only the managed Bot left is alone (`DELETE ?if_alone=1`, which the instance's
+    /// `CloseIfAlone` also answers ignoring bot leaves), so the call and its group end instead of leaving a Remove that
+    /// only the Bot could commit.
+    #[test]
+    fn a_leave_with_only_the_bot_left_ends_the_call() {
+        let s = call_beside(1);
+        assert!(leave_is_alone(
+            &s,
+            ChannelId([4; 16]),
+            Some(DeviceId([1; 16]))
+        ));
+    }
+
+    #[test]
+    fn a_leave_with_another_person_left_keeps_the_call() {
+        let s = call_beside(0);
+        assert!(!leave_is_alone(
+            &s,
+            ChannelId([4; 16]),
+            Some(DeviceId([1; 16]))
+        ));
+        // A participant whose account kind this device has not read is company: only a known Bot is left out.
+        let mut unknown = call_beside(1);
+        unknown.members.clear();
+        assert!(!leave_is_alone(
+            &unknown,
+            ChannelId([4; 16]),
+            Some(DeviceId([1; 16]))
+        ));
+        // No own device known: never alone.
+        assert!(!leave_is_alone(&call_beside(1), ChannelId([4; 16]), None));
+    }
+
+    /// A DM call has no community, so no member list says who is a Bot: everyone else stays company.
+    #[test]
+    fn a_dm_call_leave_counts_everyone_as_company() {
+        let mut s = call_beside(1);
+        s.channels.clear();
+        assert!(!leave_is_alone(
+            &s,
+            ChannelId([4; 16]),
+            Some(DeviceId([1; 16]))
+        ));
     }
 
     #[test]

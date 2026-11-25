@@ -23,7 +23,9 @@ use dilla_client::calls::CallPhase;
 use dilla_client::state::voice::SfuRemote;
 use dilla_client::state::voice::{STRANGER_USER, VoiceNotice, VoiceParticipant};
 use dilla_client::state::{AppState, Channel, ChannelId, DeviceId, UserId};
-use dilla_media::{ShareKind, ShareOptions, ShareResolution, StreamKey};
+use dilla_media::{
+    LocalVideos, RemoteFrame, RemoteVideos, ShareKind, ShareOptions, ShareResolution, StreamKey,
+};
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
     IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
@@ -276,6 +278,9 @@ pub struct VoiceUi {
     images: HashMap<StreamKey, (u64, Arc<RenderImage>)>,
     /// Each stream's frame rate, measured over the last second: `(at, frames then, fps)`.
     rates: HashMap<StreamKey, (std::time::Instant, u64, u32)>,
+    /// The frame height of each stream whose tile says its frames (every one but the own camera, whose tile says its
+    /// codec as the old client's did).
+    heights: HashMap<StreamKey, u32>,
     /// The stream-quality menu (the share button's split half, or the picker before a share) is open.
     pub share_menu: bool,
     /// The stream quality the next (or the running) screen share uses.
@@ -285,6 +290,8 @@ pub struct VoiceUi {
     /// Counts the shares that started (and ended): a window's sound that is found late is dropped when this moved.
     share_seq: u64,
     video_seq: u64,
+    /// A stage or DM call box drew video since the last repaint for a frame ([`video_tick`]).
+    video_drawn: bool,
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
     told_roster: Option<(ChannelId, Vec<UserId>)>,
@@ -314,10 +321,16 @@ pub struct VoiceUi {
     /// A test's remote frames, drawn while there is no media session (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_frames: HashMap<StreamKey, Arc<RenderImage>>,
+    /// A test's remote and sent frames, drawn as a media session's are while there is none (feature `test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    test_videos: (RemoteVideos, LocalVideos),
     /// What `voice-sim` made up over the state: devices whose media "is there" and who is heard speaking, applied on top
     /// of every state the shell syncs (feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     sim: Sim,
+    /// A test's own left room, open while it holds ([`put_test_room_open`], feature `test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    test_room_open: Option<Rc<std::cell::Cell<bool>>>,
 }
 
 /// A simulated call's media (the automation command `voice-sim`): the GPUI-only references of speaking, camera and screen
@@ -913,6 +926,30 @@ impl VoiceUi {
     pub fn put_test_frame(&mut self, stream: StreamKey, image: Arc<RenderImage>) {
         self.test_frames.insert(stream, image);
     }
+
+    /// Test hook: the remote streams' newest frames, drawn as a media session's are while this window has none.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_test_videos(&mut self, videos: RemoteVideos) {
+        self.test_videos.0 = videos;
+    }
+
+    /// Test hook: what this device sends ([`session::MediaSession::local_videos`]), while this window has no media session.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_test_local_videos(&mut self, videos: LocalVideos) {
+        self.test_videos.1 = videos;
+    }
+
+    /// Test hook: the image a stream's tile draws now, if any.
+    #[cfg(feature = "test-hooks")]
+    pub fn frame_image_for_tests(&self, stream: &StreamKey) -> Option<Arc<RenderImage>> {
+        self.images.get(stream).map(|(_, i)| i.clone())
+    }
+
+    /// Test hook: the frame height a stream's tile stat says, if any.
+    #[cfg(feature = "test-hooks")]
+    pub fn stat_height_for_tests(&self, stream: &StreamKey) -> Option<u32> {
+        self.heights.get(stream).copied()
+    }
 }
 
 /// The colour bars of `voice-sim`'s test pattern: eight vertical bars over a grey ramp, 320x180, as a frame gpui draws.
@@ -1215,8 +1252,20 @@ enum Tick {
     Repaint(u64),
 }
 
-/// Repaints `window` while new remote video frames arrive (at most 30 times a second), for as long as its call is live
-/// and the window is open; then the loop ends.
+/// A repaint loop's tick: the session's frame counter is at `seq`, the window last repainted for `seen`, and `drawn`
+/// says whether a stage or DM call box drew video since then. Only then does a new frame repaint the whole window (gpui
+/// has no narrower notify for the voice area: it is a global drawn inside the shell's view). A window showing a text
+/// channel is not repainted per frame (self-view review m1); its next draw of the stage takes the newest frame.
+fn video_tick(seq: u64, seen: u64, drawn: bool) -> Tick {
+    if seq == seen || !drawn {
+        Tick::Wait
+    } else {
+        Tick::Repaint(seq)
+    }
+}
+
+/// Repaints `window` while new video frames arrive (at most 30 times a second) and video is drawn ([`video_tick`]), for
+/// as long as its call is live and the window is open; then the loop ends.
 fn repaint_on_video(window: WindowId, cx: &mut App) {
     cx.default_global::<VoiceAreas>().loops += 1;
     cx.spawn(async move |cx| {
@@ -1234,14 +1283,11 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
                     return Tick::Stop;
                 }
                 match ui.session.as_ref() {
-                    Some(s) => {
-                        let seq = s.video_seq.load(Ordering::Relaxed);
-                        if seq == ui.video_seq {
-                            Tick::Wait
-                        } else {
-                            Tick::Repaint(seq)
-                        }
-                    }
+                    Some(s) => video_tick(
+                        s.video_seq.load(Ordering::Relaxed),
+                        ui.video_seq,
+                        ui.video_drawn,
+                    ),
                     None => Tick::Wait,
                 }
             });
@@ -1249,7 +1295,10 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
                 Tick::Stop => break,
                 Tick::Wait => {}
                 Tick::Repaint(seq) => cx.update(|cx| {
-                    ui_mut(window, cx).video_seq = seq;
+                    let ui = ui_mut(window, cx);
+                    ui.video_seq = seq;
+                    // The draw sets it again while it still shows video; a window that moved on stops repainting.
+                    ui.video_drawn = false;
                     if let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == window)
                     {
                         let _ = handle.update(cx, |_, window, _| window.refresh());
@@ -1484,21 +1533,24 @@ pub type VoiceAnswer = tokio::sync::oneshot::Receiver<Result<(), dilla_client::C
 /// started while another instance's leave is still committing races it in the call group (`E_COMMIT_INVALID`), so the
 /// join waits, for [`HANDOVER_WAIT`] at most. It also waits, within the same bound, for the other windows' call media
 /// to end ([`handover_after_media`]): this process routes one call's media at a time, and a join whose media starts
-/// while another window's is still live fails with `E_CALL_BUSY`. `start` starts the join (`Voice::join`,
-/// `Voice::join_dm`).
+/// while another window's is still live fails with `E_CALL_BUSY`. This window's own call elsewhere is left first too,
+/// and the join waits for its own left room to close ([`rooms_open_for_join`]). `start` starts the join of `channel`
+/// (`Voice::join`, `Voice::join_dm`).
 pub fn after_leaving_other_calls(
     window: WindowId,
     voice: dilla_client::features::voice::Voice,
+    channel: ChannelId,
     start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
     cx: &mut App,
 ) {
-    after_leaving_other_calls_then(window, voice, start, None, cx);
+    after_leaving_other_calls_then(window, voice, channel, start, None, cx);
 }
 
 /// [`after_leaving_other_calls`] that also tells `done` how the join ended ([`handover_then`]).
 fn after_leaving_other_calls_then(
     window: WindowId,
     voice: dilla_client::features::voice::Voice,
+    channel: ChannelId,
     start: impl FnOnce(&dilla_client::features::voice::Voice) -> VoiceAnswer + 'static,
     done: Option<JoinDone>,
     cx: &mut App,
@@ -1507,17 +1559,90 @@ fn after_leaving_other_calls_then(
         .into_iter()
         .map(|c| c.voice().leave())
         .collect();
-    let sessions = other_sessions(window, cx);
+    // This window's own call elsewhere is left here, not inside the join: the handover then waits for its room to
+    // close before the join's first read (call fix round B1). Its leave is outside the handover's bound (review I2):
+    // it may take a cancelled join's teardown and catch-ups, which the join inside `Voice::join` never bounded either.
+    let own = client_of(window, cx).map(|c| c.state().borrow().clone());
+    let own_leave = own
+        .is_some_and(|s| own_call_before_join(&s, channel) == OwnFirst::Leave)
+        .then(|| voice.leave());
+    let rooms = rooms_open_for_join(window, channel, cx);
     let undo = voice.clone();
     handover_then(
         window,
-        leaves,
-        Box::new(move || sessions.iter().any(|s| s.media_live())),
+        (own_leave, leaves),
+        Box::new(rooms),
         move || start(&voice),
         move || drop(undo.leave()),
         done,
         cx,
     );
+}
+
+/// What a join of `channel` does first about its own client's call (`state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnFirst {
+    /// No call: the join waits only for the last call's room to close.
+    Wait,
+    /// A call (or a join, or a rejoin waiting) elsewhere: it is left first, and its room's close waited for.
+    Leave,
+    /// Already in (or on the way into) `channel`'s call: the join is a no-op, and nothing is left or waited for.
+    Nothing,
+}
+
+/// [`OwnFirst`] for a join of `channel` by a client in `state`.
+pub fn own_call_before_join(state: &AppState, channel: ChannelId) -> OwnFirst {
+    if !state.voice.in_call() {
+        OwnFirst::Wait
+    } else if state.voice.call.channel == Some(channel) {
+        OwnFirst::Nothing
+    } else {
+        OwnFirst::Leave
+    }
+}
+
+/// What a join of `channel` in `window` waits for before its first read, within [`HANDOVER_WAIT`]: the other windows'
+/// call media ending ([`MediaSession::media_live`]), and this window's own left call's room closing
+/// ([`MediaSession::room_open`], itself bounded by [`session::ROOM_CLOSE_WAIT`]). A join of the call this window is
+/// already in waits for nothing of its own (it is a no-op). The sessions are held weakly: the handover outlives the
+/// wait, and a window that closes meanwhile must still drop its session (its own drop ends the media).
+pub fn rooms_open_for_join(
+    window: WindowId,
+    channel: ChannelId,
+    cx: &App,
+) -> impl Fn() -> bool + use<> {
+    let others: Vec<_> = other_sessions(window, cx)
+        .iter()
+        .map(Rc::downgrade)
+        .collect();
+    let same = client_of(window, cx)
+        .is_some_and(|c| own_call_before_join(&c.state().borrow(), channel) == OwnFirst::Nothing);
+    let own = session_of(window, cx)
+        .filter(|_| !same)
+        .map(|s| Rc::downgrade(&s));
+    #[cfg(feature = "test-hooks")]
+    let test_room = ui_of(window, cx)
+        .and_then(|u| u.test_room_open.clone())
+        .filter(|_| !same);
+    move || {
+        #[cfg(feature = "test-hooks")]
+        if test_room.as_ref().is_some_and(|r| r.get()) {
+            return true;
+        }
+        others
+            .iter()
+            .any(|s| s.upgrade().is_some_and(|s| s.media_live()))
+            || own
+                .as_ref()
+                .and_then(std::rc::Weak::upgrade)
+                .is_some_and(|s| s.room_open())
+    }
+}
+
+/// Test hook: `window`'s own left room reads as open while `open` holds (the window has no media session).
+#[cfg(feature = "test-hooks")]
+pub fn put_test_room_open(window: WindowId, open: Rc<std::cell::Cell<bool>>, cx: &mut App) {
+    ui_mut(window, cx).test_room_open = Some(open);
 }
 
 /// The media sessions of the other instance windows (not `window`'s, nor one of its client's): the process's media
@@ -1553,7 +1678,15 @@ pub fn handover(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
-    handover_then(window, leaves, Box::new(|| false), start, undo, None, cx);
+    handover_then(
+        window,
+        (None, leaves),
+        Box::new(|| false),
+        start,
+        undo,
+        None,
+        cx,
+    );
 }
 
 /// [`handover`] that also waits, within the same [`HANDOVER_WAIT`], until `media_live` answers false: the left calls'
@@ -1568,7 +1701,38 @@ pub fn handover_after_media(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
-    handover_then(window, leaves, Box::new(media_live), start, undo, None, cx);
+    handover_then(
+        window,
+        (None, leaves),
+        Box::new(media_live),
+        start,
+        undo,
+        None,
+        cx,
+    );
+}
+
+/// [`handover_after_media`] after this window's own leave (`own_leave`, a channel switch's): the join waits for it
+/// outside [`HANDOVER_WAIT`] (for [`JOIN_WAIT`] at most; past it the join starts and `Voice::join` orders itself after
+/// the leave still in flight). The bound starts once it answered.
+pub fn handover_after_own_leave(
+    window: WindowId,
+    own_leave: VoiceAnswer,
+    leaves: Vec<VoiceAnswer>,
+    media_live: impl Fn() -> bool + 'static,
+    start: impl FnOnce() -> VoiceAnswer + 'static,
+    undo: impl FnOnce() + 'static,
+    cx: &mut App,
+) {
+    handover_then(
+        window,
+        (Some(own_leave), leaves),
+        Box::new(media_live),
+        start,
+        undo,
+        None,
+        cx,
+    );
 }
 
 /// What a join's caller does with its end ([`join_then`]).
@@ -1577,10 +1741,11 @@ pub type JoinDone = Box<dyn FnOnce(Result<(), dilla_client::ClientError>, &mut A
 /// [`handover`] that tells `done`, once, how the join ended: its own answer (`Ok`, or the error its notice came from), a
 /// leave that never answered (`voice.failed`), or the join given up for a newer one or a closed window (`E_CANCELLED`,
 /// which says nothing, as a cancelled join does). A join whose answer never comes within [`JOIN_WAIT`] answers nothing:
-/// the caller's own wait ends it.
+/// the caller's own wait ends it. The leaves are this window's own (waited for outside [`HANDOVER_WAIT`], see
+/// [`handover_after_own_leave`]) and the other windows'.
 fn handover_then(
     window: WindowId,
-    mut leaves: Vec<VoiceAnswer>,
+    (mut own_leave, mut leaves): (Option<VoiceAnswer>, Vec<VoiceAnswer>),
     media_live: Box<dyn Fn() -> bool>,
     start: impl FnOnce() -> VoiceAnswer + 'static,
     undo: impl FnOnce() + 'static,
@@ -1602,7 +1767,23 @@ fn handover_then(
     let newest = move |cx: &App| cx.try_global::<VoiceAreas>().map(|a| a.handovers) == Some(ticket);
     cx.spawn(async move |cx| {
         let mut waited = Duration::ZERO;
+        let mut own_waited = Duration::ZERO;
         loop {
+            // The own leave: waited for outside the bound below, until it answered (or is dropped).
+            if own_leave.as_mut().is_some_and(|l| {
+                !matches!(
+                    l.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                )
+            }) {
+                own_leave = None;
+            }
+            if own_leave.is_some() && own_waited >= JOIN_WAIT {
+                log::warn!(
+                    "voice: this window's own leave did not answer; the join goes on after it"
+                );
+                own_leave = None;
+            }
             leaves.retain_mut(|l| {
                 matches!(
                     l.try_recv(),
@@ -1611,21 +1792,19 @@ fn handover_then(
             });
             // The left calls' media must have ended too, not only their leaves answered: the media router is the
             // process's, and the old call's media ends on its own session's runtime, after its link went.
-            if leaves.is_empty() && !media_live() {
+            if own_leave.is_none() && leaves.is_empty() && !media_live() {
                 break;
             }
             if !cx.update(|cx| newest(cx)) {
                 return cx.update(|cx| tell(cancelled(), cx));
             }
-            if waited >= HANDOVER_WAIT {
+            if own_leave.is_none() && waited >= HANDOVER_WAIT {
                 if leaves.is_empty() {
                     log::warn!(
-                        "voice: another instance's call media did not end; the join is dropped"
+                        "voice: a left call's media or room did not end; the join is dropped"
                     );
                 } else {
-                    log::warn!(
-                        "voice: another instance's call did not answer its leave; the join is dropped"
-                    );
+                    log::warn!("voice: a left call did not answer its leave; the join is dropped");
                 }
                 return cx.update(|cx| {
                     join_failed(window, cx);
@@ -1638,7 +1817,11 @@ fn handover_then(
                 });
             }
             cx.background_executor().timer(HANDOVER_POLL).await;
-            waited += HANDOVER_POLL;
+            if own_leave.is_some() {
+                own_waited += HANDOVER_POLL;
+            } else {
+                waited += HANDOVER_POLL;
+            }
         }
         // A newer join started meanwhile (in this window or another): it is the device's one call (review L m1).
         if !cx.update(|cx| area_open(window, cx) && newest(cx)) {
@@ -1804,7 +1987,7 @@ fn join_notice(window: WindowId, key: &'static str, cx: &mut App) {
 /// instance window is in has been left.
 pub fn join(channel: ChannelId, window: WindowId, cx: &mut App) {
     let Some(v) = voice(window, cx) else { return };
-    after_leaving_other_calls(window, v, move |v| v.join(channel), cx);
+    after_leaving_other_calls(window, v, channel, move |v| v.join(channel), cx);
 }
 
 /// [`join`] that tells `done` how it ended (`/join`, builtin.ts `waitForVoiceJoin`): `Ok` once the call is joined, the
@@ -1817,7 +2000,7 @@ pub fn join_then(channel: ChannelId, window: WindowId, done: JoinDone, cx: &mut 
             cx,
         );
     };
-    after_leaving_other_calls_then(window, v, move |v| v.join(channel), Some(done), cx);
+    after_leaving_other_calls_then(window, v, channel, move |v| v.join(channel), Some(done), cx);
 }
 
 /// Leaves `window`'s call; the focus goes back to the call's voice row (leave-reload.spec.ts).
@@ -2175,6 +2358,16 @@ pub fn ping_text(ms: Option<u32>) -> String {
     }
 }
 
+/// The dock's line under the place (VoiceView.tsx `callPhase`): the link once the call is in, else "connecting", a rejoin
+/// that waits for this device's earlier Remove included (useCall.tsx :1101-1102: "the dock says connecting"; its sentence,
+/// `voice.announce.rejoining`, is only spoken: the shell's call announcements).
+pub fn dock_line(call: &dilla_client::state::voice::OwnCall) -> String {
+    match call.phase {
+        CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
+        _ => t("voice.dock.connecting").to_owned(),
+    }
+}
+
 /// The voice dock over the user panel (`slots::dock`, first): the call's channel, its state and leave. Shown from the
 /// join's start to the leave.
 pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
@@ -2186,11 +2379,7 @@ pub fn dock(window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     }
     // VoiceView.tsx `Dock`'s `where`: the channel, or "the call with {name}" for a DM.
     let name = call_place(&state).unwrap_or_default();
-    let where_ = match call.phase {
-        CallPhase::In => link_text(call.ping_ms, call.rate_kbps),
-        CallPhase::WaitingForRemove => t("voice.announce.rejoining").to_owned(),
-        _ => t("voice.dock.connecting").to_owned(),
-    };
+    let where_ = dock_line(call);
     // VoiceDock.css:21-24: the line is `--fg-3`, `--warn` when poor and `--danger` when bad, once the call is in and both
     // the ping and the loss are read; then it also has its spoken text (never announced).
     let quality = match (call.phase, call.ping_ms, call.loss_pct) {
@@ -2641,10 +2830,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
     let images = refresh_images(window, cx);
     let stats: HashMap<StreamKey, (u32, u32)> = ui_of(w, cx)
         .map(|u| {
-            let videos = u.session.as_ref().map(|s| s.videos()).unwrap_or_default();
             u.rates
                 .iter()
-                .filter_map(|(k, (_, _, fps))| Some((k.clone(), (videos.get(k)?.height, *fps))))
+                .filter_map(|(k, (_, _, fps))| Some((k.clone(), (*u.heights.get(k)?, *fps))))
                 .collect()
         })
         .unwrap_or_default();
@@ -2975,34 +3163,120 @@ fn stage_key(key: &str, n: usize, window: WindowId, cx: &mut App) {
     }
 }
 
-/// The newest remote frames as images, rebuilt only for streams with a new frame.
-/// A replaced or ended stream's image leaves the GPU atlas (`drop_image`): without that every frame would stay there.
+/// This device's id on the stage: the room's own row when it lists one, else the account's (as [`tiles`] keys the own
+/// tiles).
+fn own_device(state: &AppState) -> Option<DeviceId> {
+    state
+        .voice
+        .call
+        .channel
+        .and_then(|c| {
+            state
+                .voice
+                .participants(c)
+                .iter()
+                .find(|p| p.own)
+                .map(|p| p.device_id)
+        })
+        .or(state.account.device_id)
+}
+
+/// The stage's frames: every remote stream's, and what this device sends under its own id, the own tiles' self-view
+/// (session.ts `localCamera` / `localScreen`: a local view, never a received stream). The own camera is the one stream
+/// drawn mirrored (VoiceView.tsx `mirrorCamera: true`); its key is returned with them.
+fn stage_videos(
+    state: &AppState,
+    remote: RemoteVideos,
+    local: LocalVideos,
+) -> (RemoteVideos, Option<StreamKey>) {
+    let Some(own) = own_device(state).map(|d| d.hex()) else {
+        return (remote, None);
+    };
+    let mut videos = remote;
+    for (kind, frame) in local {
+        videos.insert(
+            StreamKey {
+                device: own.clone(),
+                kind,
+            },
+            frame,
+        );
+    }
+    let mirrored = StreamKey {
+        device: own,
+        kind: ShareKind::Camera,
+    };
+    (videos, Some(mirrored))
+}
+
+/// One stream's frame rate `(since, frames then, fps)` at `now`, its counter at `frames`: measured over a second or
+/// more. A counter that went back (a quality change starts the share's sent counter again) is measured afresh from
+/// here, and the last rate is kept until then (self-view review m5).
+fn measure_rate(rate: &mut (std::time::Instant, u64, u32), frames: u64, now: std::time::Instant) {
+    if frames < rate.1 {
+        *rate = (now, frames, rate.2);
+        return;
+    }
+    let dt = now.duration_since(rate.0).as_secs_f32();
+    if dt >= 1.0 {
+        let fps = ((frames - rate.1) as f32 / dt).round() as u32;
+        *rate = (now, frames, fps);
+    }
+}
+
+/// `frame`'s RGBA rows as the BGRA gpui draws, mirrored left to right with `mirror` (the own camera's self-view only:
+/// what is sent is never mirrored).
+fn bgra_of(frame: &RemoteFrame, mirror: bool) -> Vec<u8> {
+    let mut bgra = frame.rgba.as_ref().clone();
+    let row = frame.width as usize * 4;
+    if row == 0 {
+        return bgra;
+    }
+    for line in bgra.chunks_exact_mut(row) {
+        let pixels = line.as_chunks_mut::<4>().0;
+        if mirror {
+            pixels.reverse();
+        }
+        for px in pixels {
+            px.swap(0, 2);
+        }
+    }
+    bgra
+}
+
+/// The newest frames as images (the remote streams' and this device's own, [`stage_videos`]), rebuilt only for streams
+/// with a new frame. A replaced or ended stream's image leaves the GPU atlas (`drop_image`): without that every frame
+/// would stay there. A share that stops takes its own tile's picture with it.
 fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<RenderImage>> {
     let w = wid(window);
-    let Some(videos) = ui_of(w, cx)
-        .and_then(|u| u.session.as_ref())
-        .map(|s| s.videos())
-    else {
-        // No media session: only a test's frames ([`VoiceUi::put_test_frame`]).
-        #[cfg(feature = "test-hooks")]
-        return ui_of(w, cx)
-            .map(|u| u.test_frames.clone())
-            .unwrap_or_default();
-        #[cfg(not(feature = "test-hooks"))]
+    let Some(ui) = ui_of(w, cx) else {
         return HashMap::new();
     };
+    let (remote, local) = match ui.session.as_ref() {
+        Some(s) => (s.videos(), s.local_videos()),
+        // No media session: a test's frames, else none.
+        #[cfg(feature = "test-hooks")]
+        None => ui.test_videos.clone(),
+        #[cfg(not(feature = "test-hooks"))]
+        None => Default::default(),
+    };
+    let (videos, mirrored) = stage_videos(&ui.state, remote, local);
     let mut stale: Vec<Arc<RenderImage>> = Vec::new();
     let ui = ui_mut(w, cx);
     let now = std::time::Instant::now();
+    // Video was drawn: the repaint loop goes on repainting for new frames ([`video_tick`]).
+    ui.video_drawn = true;
     ui.rates.retain(|k, _| videos.contains_key(k));
     for (k, f) in &videos {
         let rate = ui.rates.entry(k.clone()).or_insert((now, f.frames, 0));
-        let dt = now.duration_since(rate.0).as_secs_f32();
-        if dt >= 1.0 {
-            rate.2 = ((f.frames.saturating_sub(rate.1)) as f32 / dt).round() as u32;
-            *rate = (now, f.frames, rate.2);
-        }
+        measure_rate(rate, f.frames, now);
     }
+    ui.heights = videos
+        .iter()
+        .filter(|(k, _)| Some(*k) != mirrored.as_ref())
+        // The stream's own height: a self-view frame is scaled down, its stat says what is sent.
+        .map(|(k, f)| (k.clone(), f.stream_height))
+        .collect();
     ui.images.retain(|k, (_, image)| {
         let keep = videos.contains_key(k);
         if !keep {
@@ -3014,11 +3288,7 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
         if ui.images.get(k).is_some_and(|(n, _)| *n == f.frames) {
             continue;
         }
-        // gpui draws BGRA.
-        let mut bgra = f.rgba.as_ref().clone();
-        for px in bgra.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
+        let bgra = bgra_of(f, Some(k) == mirrored.as_ref());
         if let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, bgra) {
             let frame = image::Frame::new(buf);
             if let Some((_, old)) = ui.images.insert(
@@ -3029,11 +3299,15 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
             }
         }
     }
-    let out = ui
-        .images
-        .iter()
-        .map(|(k, (_, i))| (k.clone(), i.clone()))
-        .collect();
+    let images = ui.images.iter().map(|(k, (_, i))| (k.clone(), i.clone()));
+    // A test's prebuilt frames ([`VoiceUi::put_test_frame`]), drawn while there is no media session.
+    #[cfg(feature = "test-hooks")]
+    let images = images.chain(if ui.session.is_none() {
+        ui.test_frames.clone()
+    } else {
+        HashMap::new()
+    });
+    let out: HashMap<StreamKey, Arc<RenderImage>> = images.collect();
     for image in stale {
         cx.drop_image(image, Some(window));
     }
@@ -3191,10 +3465,22 @@ fn tile(
         AvatarSize::Stage
     };
     let media = match video {
-        Some(image) => img(ImageSource::Render(image))
-            .size_full()
-            .object_fit(gpui::ObjectFit::Contain)
-            .into_any_element(),
+        Some(image) => {
+            let selector = format!(
+                "voice-tile-{}{}-media",
+                k.device.hex(),
+                if k.screen { "-screen" } else { "" }
+            );
+            div()
+                .debug_selector(move || selector.clone())
+                .size_full()
+                .child(
+                    img(ImageSource::Render(image))
+                        .size_full()
+                        .object_fit(gpui::ObjectFit::Contain),
+                )
+                .into_any_element()
+        }
         None if k.screen => div()
             .size_full()
             .flex()
@@ -4949,6 +5235,67 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Self-view review m5: a stream's counter that starts again (a quality change gives the share a new sent counter)
+    /// keeps the last measured rate until a new one is measured, never "0 fps" for a second.
+    #[test]
+    fn a_rate_is_kept_while_its_counter_starts_again() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let s = Duration::from_secs(1);
+        let mut rate = (t0, 0, 0);
+        super::measure_rate(&mut rate, 15, t0 + s);
+        assert_eq!(rate.2, 15);
+        // The counter went back (a new share counter): the rate stays, measured afresh from here.
+        super::measure_rate(&mut rate, 2, t0 + s + Duration::from_millis(100));
+        assert_eq!(rate.2, 15, "kept while the new counter is measured");
+        super::measure_rate(&mut rate, 7, t0 + s + Duration::from_millis(600));
+        assert_eq!(rate.2, 15, "less than a second measured");
+        super::measure_rate(&mut rate, 17, t0 + s * 2 + Duration::from_millis(100));
+        assert_eq!(rate.2, 15, "the new counter's own rate");
+        super::measure_rate(&mut rate, 17, t0 + s * 3 + Duration::from_millis(100));
+        assert_eq!(rate.2, 0, "a stream that stopped sending reads 0");
+    }
+
+    /// Self-view review m1: a new frame repaints the window only while a stage or DM call box drew video since the
+    /// last repaint. A window that shows a text channel (the call's frames still arrive) is not repainted per frame;
+    /// the next draw of the stage picks up the newest frame.
+    #[test]
+    fn a_new_frame_repaints_only_while_video_is_drawn() {
+        assert!(matches!(super::video_tick(3, 3, true), super::Tick::Wait));
+        assert!(matches!(
+            super::video_tick(4, 3, true),
+            super::Tick::Repaint(4)
+        ));
+        assert!(matches!(super::video_tick(4, 3, false), super::Tick::Wait));
+    }
+
+    /// Jonas 2026-11-25 (a screenshot of "Rejoining {where}. This can take up…"): while a rejoin waits for this device's
+    /// earlier Remove, the dock's line says "connecting", as the old client's did (useCall.tsx :1101-1102: "the dock says
+    /// connecting"); the rejoining sentence is only spoken (useCall.tsx :1105). No line carries a raw placeholder.
+    #[test]
+    fn the_dock_says_connecting_while_a_rejoin_waits() {
+        use dilla_client::state::voice::OwnCall;
+        let at = |phase| OwnCall {
+            phase,
+            ..OwnCall::default()
+        };
+        assert_eq!(
+            super::dock_line(&at(super::CallPhase::WaitingForRemove)),
+            "connecting"
+        );
+        assert_eq!(
+            super::dock_line(&at(super::CallPhase::Joining)),
+            "connecting"
+        );
+        for phase in [
+            super::CallPhase::Joining,
+            super::CallPhase::WaitingForRemove,
+            super::CallPhase::In,
+        ] {
+            assert!(!super::dock_line(&at(phase)).contains('{'), "{phase:?}");
+        }
+    }
+
     /// VoiceView.tsx :283/:293: the paused notice's Compare opens Privacy when the window holds no trust record of the
     /// changed contact (its trust not read yet), instead of doing nothing.
     #[gpui::test]

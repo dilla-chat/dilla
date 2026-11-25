@@ -293,6 +293,71 @@ fn host_now(control: &str) -> u64 {
     v["now"].as_u64().unwrap()
 }
 
+/// `POST <control><path>` with a JSON body: the status and the JSON answer (`null` when there is none).
+pub fn control_post(control: &str, path: &str, body: &Value) -> (u16, Value) {
+    let addr = control.trim_start_matches("http://");
+    let body = body.to_string();
+    let mut s = TcpStream::connect(addr).unwrap();
+    write!(
+        s,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut answer = String::new();
+    s.read_to_string(&mut answer).unwrap();
+    let status = answer
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .expect("an HTTP status");
+    let rest = answer.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    let json = match (rest.find('{'), rest.rfind('}')) {
+        (Some(a), Some(b)) => serde_json::from_str(&rest[a..=b]).unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
+    (status, json)
+}
+
+/// Moves the host's fake clock forward `seconds` (`POST /debug/clock`, with the delivery service's sweep).
+pub fn advance_clock(control: &str, seconds: u64, sweep: bool) {
+    let (status, _) = control_post(
+        control,
+        "/debug/clock",
+        &json!({"seconds": seconds, "sweep": sweep}),
+    );
+    assert_eq!(status, 204, "advance the clock");
+}
+
+/// The LiveKit room a token admits to: its `video.room` grant. The token is only decoded, never verified.
+pub fn room_of(token: &str) -> String {
+    let payload = token.split('.').nth(1).expect("a JWT");
+    let mut bits = 0u32;
+    let mut n = 0;
+    let mut out = Vec::new();
+    for c in payload.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            _ => continue,
+        };
+        bits = (bits << 6) | u32::from(v);
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    let claims: Value = serde_json::from_slice(&out).expect("the JWT's claims");
+    claims["video"]["room"]
+        .as_str()
+        .expect("a room grant")
+        .to_owned()
+}
+
 fn totp_code(secret_b32: &str, counter: u64) -> String {
     use hmac::{Hmac, KeyInit, Mac};
     let mut key = Vec::new();
@@ -606,11 +671,24 @@ impl MediaPeer {
 
     /// [`MediaPeer::start`] with more `call-peer` arguments (`--muted 1`).
     pub fn start_with(url: &str, token: &str, tone: u32, extra: &[&str]) -> MediaPeer {
+        let tone = tone.to_string();
+        let mut args = vec!["--tone", tone.as_str()];
+        args.extend_from_slice(extra);
+        Self::spawn(url, token, &args)
+    }
+
+    /// A participant that publishes nothing (no `--tone`): in the room, listening only, as the managed Bot is between
+    /// tracks. With no track it has nothing the instance could strike (F11) without the call group's keys.
+    pub fn listen(url: &str, token: &str) -> MediaPeer {
+        Self::spawn(url, token, &[])
+    }
+
+    fn spawn(url: &str, token: &str, args: &[&str]) -> MediaPeer {
         Self::build();
         let bin = profile_dir().join("examples/call-peer");
         let mut child = Command::new(bin)
-            .args(["--url", url, "--token", token, "--tone", &tone.to_string()])
-            .args(extra)
+            .args(["--url", url, "--token", token])
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

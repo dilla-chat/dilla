@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -26,6 +27,9 @@ func (c *CallEvents) HandleReadLiveForTest(ctx context.Context, ev *livekit.Webh
 		c.trackPublished(ctx, row, p.GetIdentity(), ev.GetTrack())
 	}
 }
+
+// SetLogForTest replaces the calls' logger (a test reads what was logged, such as a call's end reason).
+func (h *Calls) SetLogForTest(l *slog.Logger) { h.log = l }
 
 // SetStartHookForTest makes start call f at its named points ("mint", "respond").
 func (h *Calls) SetStartHookForTest(f func(stage string)) { h.startHook = f }

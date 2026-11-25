@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,25 @@ type absentMemberRepo struct {
 	users                map[id.ID]store.UserRow
 	userErrors           map[id.ID]error
 	groupErr, membersErr error
+	proposals            []store.ProposalRow
+	proposalsErr         error
+}
+
+func (r *absentMemberRepo) ListProposals(_ context.Context, _ id.ID, epoch uint64, includeVoid bool) ([]store.ProposalRow, error) {
+	var out []store.ProposalRow
+	for _, p := range r.proposals {
+		if p.Epoch == epoch && (includeVoid || p.VoidAt == nil) {
+			out = append(out, p)
+		}
+	}
+	return out, r.proposalsErr
+}
+
+// pendRemove makes m the target of a non-void instance Remove at the group's epoch, issued at.
+func (r *absentMemberRepo) pendRemove(m store.MemberRow, at time.Time) {
+	leaf, dev := m.LeafIndex, m.DeviceID
+	r.proposals = append(r.proposals, store.ProposalRow{GroupID: r.group.GroupID, Epoch: r.group.Epoch, Kind: 3,
+		TargetLeaf: &leaf, TargetDevice: &dev, Origin: 0, IssuedAt: at.Unix(), TTL: 30})
 }
 
 func (r *absentMemberRepo) GetGroup(context.Context, id.ID) (store.GroupRow, error) {
@@ -143,5 +164,151 @@ func TestMemberLookupFailureDoesNotBlockOtherAbsentRemoves(t *testing.T) {
 				t.Fatalf("queued Removes = %+v, want only the known absent human", h.leafRemovals)
 			}
 		})
+	}
+}
+
+// Review focus 3: the dropped human comes back just as the sweep runs. Its /rtc admission after the
+// Remove was issued means its session is on its way into the room, whatever the room's listing
+// said a moment earlier, so it counts as active and the call is kept. Only the admission of the
+// session that dropped (before the Remove) no longer does.
+func TestBotsOnlyKeepsACallWhoseRemovedHumanWasAdmittedAgain(t *testing.T) {
+	h, repo, clk, row := absentMembersFixture(t)
+	h.dsvc = nil
+	human := repo.members[1]
+	key := admitKey{room: row.LivekitRoom, dev: human.DeviceID}
+	h.admissions = map[admitKey][]admission{key: {{at: clk.Now()}}}
+	clk.Advance(5 * time.Second)
+	repo.pendRemove(human, clk.Now())
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("first observation = %v, %v; want live", end, err)
+	}
+	clk.Advance(RoomSweepInterval)
+	h.admissions[key] = append(h.admissions[key], admission{at: clk.Now(), resume: true})
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("a sweep ended the call as the removed human was admitted again: %v, %v", end, err)
+	}
+	clk.Advance(RoomSweepInterval)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("the observation after the re-admission ended the call: %v, %v; want a fresh first", end, err)
+	}
+}
+
+// Review focus 4: an account kind that cannot be read never ends the call, also when the only
+// human is absent and pending removal; every sweep logs it, by ids only, so the lockout it leaves
+// in place is never silent.
+func TestBotsOnlyNeverEndsOnAnUnknownAccountKind(t *testing.T) {
+	for _, lookupErr := range []error{store.ErrNotFound, errors.New("store unavailable")} {
+		t.Run(lookupErr.Error(), func(t *testing.T) {
+			h, repo, clk, row := absentMembersFixture(t)
+			var logs bytes.Buffer
+			h.log = slog.New(slog.NewTextHandler(&logs, nil))
+			human := repo.members[1]
+			repo.pendRemove(human, clk.Now())
+			clk.Advance(time.Second)
+			repo.userErrors[human.UserID] = lookupErr
+			for i := range 3 {
+				if end, _ := h.trackAbsentLocked(t.Context(), row, nil, nil); end {
+					t.Fatalf("sweep %d ended a call whose member's account kind is unknown", i)
+				}
+				clk.Advance(RoomSweepInterval)
+			}
+			if n := strings.Count(logs.String(), "reading a call member's account kind failed"); n != 3 {
+				t.Fatalf("logged the lookup failure %d times over 3 sweeps, want 3:\n%s", n, logs.String())
+			}
+			if !strings.Contains(logs.String(), "user_id="+human.UserID.String()) {
+				t.Fatalf("the warning does not name the member by id:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// A failed read of the group's outstanding proposals is no proof of a Remove: it never ends the call
+// and it is logged. The human's admission is outside its join window from the first sweep on and the
+// sweeps are a sweep period and more apart, so the read failure is the only thing that keeps the call
+// (lockout review M3: without the error path, the second sweep ends it).
+func TestBotsOnlyNeverEndsWhenTheProposalsCannotBeRead(t *testing.T) {
+	h, repo, clk, row := absentMembersFixture(t)
+	h.dsvc = nil
+	var logs bytes.Buffer
+	h.log = slog.New(slog.NewTextHandler(&logs, nil))
+	human := repo.members[1]
+	h.admissions = map[admitKey][]admission{{room: row.LivekitRoom, dev: human.DeviceID}: {{at: clk.Now()}}}
+	clk.Advance(time.Second)
+	repo.pendRemove(human, clk.Now())
+	repo.proposalsErr = errors.New("store unavailable")
+	clk.Advance(admissionJoinWindow)
+	for i := range 3 {
+		if end, _ := h.trackAbsentLocked(t.Context(), row, nil, nil); end {
+			t.Fatalf("sweep %d ended the call on an unreadable proposal list", i)
+		}
+		clk.Advance(RoomSweepInterval + time.Second)
+	}
+	if n := strings.Count(logs.String(), "reading a call group's outstanding proposals for the sweep failed"); n != 3 {
+		t.Fatalf("logged the proposal read failure %d times over 3 sweeps, want 3:\n%s", n, logs.String())
+	}
+	// The same sweeps with the list readable end the call: the failure above is what kept it.
+	repo.proposalsErr = nil
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("first readable observation = %v, %v; want live", end, err)
+	}
+	clk.Advance(RoomSweepInterval + time.Second)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || !end {
+		t.Fatalf("second readable observation = %v, %v; want end", end, err)
+	}
+}
+
+// Lockout review M4: a re-admission after the Remove was issued keeps the call while it lasts, and a
+// TTL re-issue of that Remove (the first voided, a new one with a later IssuedAt) never postpones the
+// end: once the device is still absent at the re-issue, two observations a sweep period apart end
+// the call, as for any absent human pending removal.
+func TestBotsOnlyEndsAfterAReissueOfTheRemoveOfAHumanAdmittedAgain(t *testing.T) {
+	h, repo, clk, row := absentMembersFixture(t)
+	h.dsvc = nil
+	human := repo.members[1]
+	key := admitKey{room: row.LivekitRoom, dev: human.DeviceID}
+	h.admissions = map[admitKey][]admission{key: {{at: clk.Now()}}}
+	clk.Advance(5 * time.Second)
+	repo.pendRemove(human, clk.Now()) // Remove A
+	clk.Advance(5 * time.Second)
+	h.admissions[key] = append(h.admissions[key], admission{at: clk.Now(), resume: true})
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("the sweep right after the re-admission = %v, %v; want live", end, err)
+	}
+	// A's TTL runs out and it is re-issued as B, later than the re-admission; the device stays absent.
+	clk.Advance(25 * time.Second)
+	voided := clk.Now().Unix()
+	repo.proposals[0].VoidAt = &voided
+	repo.pendRemove(human, clk.Now()) // Remove B
+	clk.Advance(time.Second)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("the first observation after the re-issue = %v, %v; want live", end, err)
+	}
+	clk.Advance(RoomSweepInterval - time.Second)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("an observation less than a sweep period later = %v, %v; want live", end, err)
+	}
+	clk.Advance(time.Second)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || !end {
+		t.Fatalf("the observation a sweep period after the re-issue's = %v, %v; want end", end, err)
+	}
+}
+
+// Lockout review M4: an admission in the same second as the Remove's IssuedAt (whole seconds) is not
+// before it, so it counts as the device coming back and the call is kept. Were it taken for the
+// dropped session's, the first sweep would be a bots-only observation and the second would end the
+// call.
+func TestBotsOnlyKeepsACallWhoseHumanWasAdmittedInTheRemovesSecond(t *testing.T) {
+	h, repo, clk, row := absentMembersFixture(t)
+	h.dsvc = nil
+	human := repo.members[1]
+	h.admissions = map[admitKey][]admission{{room: row.LivekitRoom, dev: human.DeviceID}: {{at: clk.Now()}}}
+	clk.Advance(500 * time.Millisecond)
+	repo.pendRemove(human, clk.Now())
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("first observation = %v, %v; want live", end, err)
+	}
+	clk.Advance(RoomSweepInterval)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("a sweep period later = %v, %v; want live: the same-second admission kept the first sweep from counting", end, err)
 	}
 }

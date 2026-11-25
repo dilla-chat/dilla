@@ -24,8 +24,8 @@ use dilla_media::noise::NoiseMode;
 use dilla_media::sources::OpenError;
 use dilla_media::sources::desktop::{self, DesktopSource};
 use dilla_media::{
-    Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, MediaEvent, Mic,
-    RemoteVideos, ShareKind, ShareOptions,
+    Call, CallOptions, CaptureSource, EpochFeed, IceServer, LiveKitToken, LocalVideos, MediaEvent,
+    Mic, RemoteVideos, ShareKind, ShareOptions,
 };
 use tokio::sync::{mpsc, watch};
 use zeroize::Zeroizing;
@@ -217,7 +217,9 @@ pub struct MediaSession {
     /// the runtime shuts down.
     room_closes: dilla_media::RoomCloses,
     videos: Arc<Mutex<RemoteVideos>>,
-    /// Bumped on every new remote video frame: the view repaints when it moved.
+    /// What this device sends, for its own tiles ([`MediaSession::local_videos`]).
+    local_videos: Arc<Mutex<LocalVideos>>,
+    /// Bumped on every new remote or own video frame: the view repaints when it moved.
     pub video_seq: Arc<AtomicU64>,
     /// The devices (hex) whose screen share carries sound.
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
@@ -354,6 +356,7 @@ impl MediaSession {
         let room_closes = dilla_media::RoomCloses::default();
         let (closing, closed) = watch::channel(());
         let videos = Arc::new(Mutex::new(RemoteVideos::new()));
+        let local_videos = Arc::new(Mutex::new(LocalVideos::new()));
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
         let app_sound = Arc::new(Mutex::new(None));
@@ -362,6 +365,7 @@ impl MediaSession {
             states: client.state(),
             prefs: client.prefs(),
             videos: videos.clone(),
+            local_videos: local_videos.clone(),
             video_seq: video_seq.clone(),
             screen_sound: screen_sound.clone(),
             app_sound: app_sound.clone(),
@@ -379,6 +383,7 @@ impl MediaSession {
             live,
             room_closes,
             videos,
+            local_videos,
             video_seq,
             screen_sound,
             app_sound,
@@ -455,9 +460,25 @@ impl MediaSession {
         self.live.is_live()
     }
 
+    /// Whether this session's call media is live, or its left call's room is still closing (for [`ROOM_CLOSE_WAIT`] at
+    /// most). This window's own next join waits for it to clear ([`super::rooms_open_for_join`]), so a rejoin never
+    /// starts while its own old room is still connected.
+    pub fn room_open(&self) -> bool {
+        self.live.room_open()
+    }
+
     /// Every remote video stream's newest frame.
     pub fn videos(&self) -> RemoteVideos {
         self.videos
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// What this device sends now, for its own tiles' self-view (session.ts `localCamera` / `localScreen`): each running
+    /// share's newest sent frame ([`dilla_media::Call::local_videos`]), empty while nothing is sent.
+    pub fn local_videos(&self) -> LocalVideos {
+        self.local_videos
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
@@ -534,6 +555,7 @@ struct Ctx {
     states: watch::Receiver<Arc<AppState>>,
     prefs: dilla_client::prefs::Prefs,
     videos: Arc<Mutex<RemoteVideos>>,
+    local_videos: Arc<Mutex<LocalVideos>>,
     video_seq: Arc<AtomicU64>,
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     sources: SourceFactory,
@@ -549,14 +571,65 @@ struct Ctx {
 /// Whether a call's media is live in the session: from the start of a join until the call's media ended (or the join
 /// or the call's task went). A dropped session waits for it to clear, and only while it is set: a call that already ended (and is
 /// only closing its room) holds nothing up.
+///
+/// Call fix round B1: after the media ends, the call's room may still be closing ([`RoomClosing`]). This window's next
+/// join waits for that too ([`MediaLive::room_open`]), so a rejoin never starts beside its own old room; the dropped
+/// session's wait does not.
 #[derive(Default)]
 struct MediaLive {
     live: Mutex<bool>,
     cleared: std::sync::Condvar,
+    /// How many left calls' rooms are closing ([`close_room`]): a count, so one close that ends never clears another.
+    closing: std::sync::atomic::AtomicU32,
 }
 
 /// A live call's media; clears [`MediaLive`] when dropped, however the call's task ends.
 struct LiveGuard(Arc<MediaLive>);
+
+/// A left call's room that is still closing; counts in [`MediaLive::room_open`] until dropped.
+struct RoomClosing(Arc<MediaLive>);
+
+impl LiveGuard {
+    /// The media ended and the room's close begins: the room stays open (never a moment closed in between) while the
+    /// media is no longer live.
+    fn closing(self) -> RoomClosing {
+        self.0.closing.fetch_add(1, Ordering::SeqCst);
+        RoomClosing(self.0.clone())
+    }
+}
+
+impl Drop for RoomClosing {
+    fn drop(&mut self) {
+        self.0.closing.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// How long a left call's room close holds this window's next join and this session's next call ([`close_room`]):
+/// less than the join's own bound ([`super::HANDOVER_WAIT`]), so a close that hangs delays the join and the next call's
+/// media by this much at most, and fails neither.
+pub const ROOM_CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Closes a left call's room (`leave`: `Call::leave`) while `closing` holds it open for this window's next join, for
+/// [`ROOM_CLOSE_WAIT`] at most. Past it this returns, so the session's loop takes the next call's link and its media
+/// starts; the rest of the close is handed to the runtime (as `Drop for Call` hands a dropped call's close), registered
+/// in `closes` so the session's drop waits for it, and never cancelled: a room whose close is dropped stays connected.
+async fn close_room(
+    closing: RoomClosing,
+    closes: dilla_media::RoomCloses,
+    leave: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    let mut leave = Box::pin(leave);
+    if tokio::time::timeout(ROOM_CLOSE_WAIT, leave.as_mut())
+        .await
+        .is_err()
+    {
+        log::warn!(
+            "voice: the left call's room did not close within {ROOM_CLOSE_WAIT:?}; it closes on in the background"
+        );
+        drop(closing);
+        closes.add(tokio::spawn(leave));
+    }
+}
 
 impl MediaLive {
     fn begin(self: &Arc<Self>) -> LiveGuard {
@@ -566,6 +639,11 @@ impl MediaLive {
 
     fn is_live(&self) -> bool {
         *self.live.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether a call's media is live or its left room is still closing (bounded: [`close_room`]).
+    fn room_open(&self) -> bool {
+        self.closing.load(Ordering::SeqCst) > 0 || self.is_live()
     }
 
     /// Waits until no call's media is live, at most `bound`; true when none is.
@@ -803,6 +881,7 @@ async fn in_call(
     let mut states = ctx.states.clone();
     let mut levels = call.remote_audio_levels();
     let mut videos = call.remote_videos();
+    let mut local_videos = call.local_videos();
     let mut remotes = call.remote_participants();
     let mut events = call.events();
     let mut ended = call.shares_ended();
@@ -913,6 +992,13 @@ async fn in_call(
                         publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
                         *ctx.videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
                         *ctx.screen_sound.lock().unwrap_or_else(|p| p.into_inner()) = call.remote_screen_sound();
+                        ctx.video_seq.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                r = local_videos.changed() => {
+                    if r.is_ok() {
+                        let next = local_videos.borrow_and_update().clone();
+                        *ctx.local_videos.lock().unwrap_or_else(|p| p.into_inner()) = next;
                         ctx.video_seq.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -1036,16 +1122,21 @@ async fn in_call(
     drop(opened);
     drop(opens);
     ctx.videos.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    ctx.local_videos
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
     ctx.video_seq.fetch_add(1, Ordering::Relaxed);
     // The call's end stops every share and the application sound with them (`Call::end_media`): none is published.
     *ctx.app_sound.lock().unwrap_or_else(|p| p.into_inner()) = None;
     ctx.voice.set_speaking(BTreeSet::new());
     feeder.abort();
     drop(ping);
-    // The media ends at once (shares, keys, the router), then the room is left.
+    // The media ends at once (shares, keys, the router), then the room is left. The live guard becomes the room's
+    // closing one: a dropped session does not wait for the close, this window's next join and this session's next call
+    // do (bounded; a close that hangs goes on in the background).
     call.end_media();
-    drop(live);
-    call.leave().await;
+    close_room(live.closing(), ctx.room_closes.clone(), call.leave()).await;
 }
 
 /// Whether `call_id` is still the call this device's media should be in.
@@ -1894,6 +1985,93 @@ mod tests {
         assert!(live.wait_ended(Duration::from_secs(3)));
         assert!(at.elapsed() < Duration::from_secs(1), "{:?}", at.elapsed());
         ender.join().unwrap();
+    }
+
+    /// Call fix round B1: a left call's room is open until its close ends. The window's next join waits for that
+    /// ([`MediaLive::room_open`]), while a dropped session's wait stays on the media only (the close runs on after it).
+    #[tokio::test(start_paused = true)]
+    async fn a_left_call_s_room_stays_open_until_its_close_ends() {
+        let live = Arc::new(MediaLive::default());
+        assert!(!live.room_open(), "no call");
+        let guard = live.begin();
+        assert!(live.room_open(), "a live call's room is open");
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let close = tokio::spawn(close_room(
+            guard.closing(),
+            dilla_media::RoomCloses::default(),
+            async move {
+                let _ = held.await;
+            },
+        ));
+        tokio::task::yield_now().await;
+        assert!(
+            live.wait_ended(std::time::Duration::ZERO),
+            "the media ended: a dropped session does not wait for the close"
+        );
+        tokio::time::sleep(ROOM_CLOSE_WAIT / 2).await;
+        assert!(
+            live.room_open(),
+            "the close is held open: the next join waits"
+        );
+        release.send(()).unwrap();
+        close.await.unwrap();
+        assert!(!live.room_open(), "the close ended: the next join goes on");
+    }
+
+    /// Call fix round B1 (review focus 3) and review I1: a close that never ends holds the next join for
+    /// [`ROOM_CLOSE_WAIT`] only, which is less than the join's own bound ([`super::super::HANDOVER_WAIT`]). Then
+    /// `close_room` returns, so the session's loop takes the next call's link and its media starts; the close runs on
+    /// on the runtime, never cancelled, registered with the session's room closes (its drop waits for it).
+    #[tokio::test(start_paused = true)]
+    async fn a_room_close_that_hangs_does_not_hold_the_next_call() {
+        assert!(ROOM_CLOSE_WAIT < super::super::HANDOVER_WAIT);
+        let live = Arc::new(MediaLive::default());
+        let closes = dilla_media::RoomCloses::default();
+        let guard = live.begin();
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let close_ended = ended.clone();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let close = tokio::spawn(close_room(guard.closing(), closes.clone(), async move {
+            let _ = held.await;
+            close_ended.store(true, Ordering::SeqCst);
+        }));
+        tokio::time::sleep(ROOM_CLOSE_WAIT - std::time::Duration::from_millis(10)).await;
+        assert!(live.room_open());
+        assert!(!close.is_finished());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!live.room_open(), "past the bound the next join goes on");
+        assert!(
+            close.is_finished(),
+            "the session's loop is free for the next call's media"
+        );
+        close.await.unwrap();
+        // The next call's media starts while the old close still runs.
+        let next = live.begin();
+        assert!(live.room_open());
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        assert!(!ended.load(Ordering::SeqCst), "the close still runs");
+        // Released, the close is not polled before the registry's wait: that wait (the session drop's) covers it.
+        release.send(()).unwrap();
+        closes.closed().await;
+        assert!(
+            ended.load(Ordering::SeqCst),
+            "the session's room closes waited for the close, which ran to its end"
+        );
+        drop(next);
+    }
+
+    /// Call fix review m2: two rooms closing at once (an old close handed to the runtime, a newer call's close) keep the
+    /// room open until both ended; one ending never clears the other.
+    #[test]
+    fn overlapping_closes_do_not_clear_each_other() {
+        let live = Arc::new(MediaLive::default());
+        let a = live.begin().closing();
+        let b = live.begin().closing();
+        assert!(live.room_open());
+        drop(a);
+        assert!(live.room_open(), "b still closes");
+        drop(b);
+        assert!(!live.room_open());
     }
 
     fn epoch(n: u64, key: u8) -> dilla_client::calls::MediaEpoch {

@@ -128,6 +128,155 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
     cx.run_until_parked();
 }
 
+/// A synthetic sent frame (never a screen's content): its left half one colour, its right half another, so a mirrored
+/// image reads the right half first.
+fn sent_frame(w: u32, h: u32, frames: u64) -> dilla_media::RemoteFrame {
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..h {
+        for x in 0..w {
+            rgba.extend_from_slice(if x < w / 2 {
+                &[250, 10, 10, 255]
+            } else {
+                &[10, 10, 250, 255]
+            });
+        }
+    }
+    dilla_media::RemoteFrame {
+        width: w,
+        height: h,
+        rgba: Arc::new(rgba),
+        frames,
+        stream_height: h,
+    }
+}
+
+fn own_stream(kind: dilla_media::ShareKind) -> dilla_media::StreamKey {
+    dilla_media::StreamKey {
+        device: DeviceId([100; 16]).hex(),
+        kind,
+    }
+}
+
+/// The stage drawn again after its frames changed.
+fn redraw(cx: &mut VisualTestContext) {
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}
+
+/// Jonas 2026-11-25 (the old client's session.ts `localScreen`, VoiceView.tsx :210-222): while this device shares its
+/// screen, its own screen tile shows what it sends; once the share stops, the tile has no picture and its image is gone.
+#[gpui::test]
+fn the_own_screen_tile_shows_the_local_share(cx: &mut TestAppContext) {
+    let sharing = {
+        let mut s = (*state(2)).clone();
+        s.voice.share.screen = true;
+        Arc::new(s)
+    };
+    let cx = host(cx, sharing);
+    let own = DeviceId([100; 16]).hex();
+    let media = selector(format!("voice-tile-{own}-screen-media"));
+    let key = own_stream(dilla_media::ShareKind::Screen);
+    assert!(
+        area(cx, |ui| voice::tiles(&ui.state, VOICE)
+            .iter()
+            .any(|k| k.screen && k.device == DeviceId([100; 16]))),
+        "the own screen tile is on the stage"
+    );
+    assert!(cx.debug_bounds(media).is_none(), "no frame sent yet");
+
+    // A 1080p share's self-view frame, scaled down to the tile (self-view review m1).
+    let scaled = dilla_media::RemoteFrame {
+        stream_height: 1080,
+        ..sent_frame(64, 36, 1)
+    };
+    area(cx, |ui| {
+        ui.set_test_local_videos(
+            [(dilla_media::ShareKind::Screen, scaled)]
+                .into_iter()
+                .collect(),
+        );
+    });
+    redraw(cx);
+    assert!(
+        cx.debug_bounds(media).is_some(),
+        "the own share shows on its tile"
+    );
+    let shown =
+        area(cx, |ui| ui.frame_image_for_tests(&key)).and_then(|i| i.as_bytes(0).map(<[u8]>::len));
+    assert_eq!(
+        shown,
+        Some(64 * 36 * 4),
+        "the image is the self-view frame's size"
+    );
+    assert_eq!(
+        area(cx, |ui| ui.stat_height_for_tests(&key)),
+        Some(1080),
+        "the tile's stat says the height that is sent, not the scaled one"
+    );
+
+    // The share stops: the state no longer shares and the tap holds nothing.
+    cx.update(|window, cx| voice::sync(voice::wid(window), state(2), None, cx));
+    area(cx, |ui| ui.set_test_local_videos(Default::default()));
+    redraw(cx);
+    assert!(cx.debug_bounds(media).is_none(), "no stale picture");
+    assert!(
+        area(cx, |ui| ui.frame_image_for_tests(&key)).is_none(),
+        "the stopped share's image left the atlas"
+    );
+}
+
+/// The old client's own tile (VoiceView.tsx `mirrorCamera: true`): the own camera shows on the own person tile, mirrored;
+/// another person's camera is never mirrored.
+#[gpui::test]
+fn the_own_camera_tile_shows_the_local_camera_mirrored(cx: &mut TestAppContext) {
+    let cx = host(cx, state(2));
+    let own = DeviceId([100; 16]).hex();
+    let bob = DeviceId([101; 16]).hex();
+    let remote = dilla_media::StreamKey {
+        device: bob.clone(),
+        kind: dilla_media::ShareKind::Camera,
+    };
+    area(cx, |ui| {
+        ui.set_test_videos(
+            [(remote.clone(), sent_frame(8, 2, 1))]
+                .into_iter()
+                .collect(),
+        );
+        ui.set_test_local_videos(
+            [(dilla_media::ShareKind::Camera, sent_frame(8, 2, 1))]
+                .into_iter()
+                .collect(),
+        );
+    });
+    redraw(cx);
+    assert!(
+        cx.debug_bounds(selector(format!("voice-tile-{own}-media")))
+            .is_some(),
+        "the own camera shows on the own tile"
+    );
+    assert!(
+        cx.debug_bounds(selector(format!("voice-tile-{bob}-media")))
+            .is_some()
+    );
+    // gpui draws BGRA: the first pixel's blue byte says which half it came from.
+    let first_blue = |key: &dilla_media::StreamKey, cx: &mut VisualTestContext| {
+        area(cx, |ui| ui.frame_image_for_tests(key)).and_then(|i| i.as_bytes(0).map(|b| b[0]))
+    };
+    assert_eq!(
+        first_blue(&own_stream(dilla_media::ShareKind::Camera), cx),
+        Some(250),
+        "the own camera is mirrored"
+    );
+    assert_eq!(first_blue(&remote, cx), Some(10), "another's camera is not");
+    // The camera stops: the own tile goes back to its face.
+    area(cx, |ui| ui.set_test_local_videos(Default::default()));
+    redraw(cx);
+    assert!(
+        cx.debug_bounds(selector(format!("voice-tile-{own}-media")))
+            .is_none()
+    );
+}
+
 /// e2e/voice/stage.spec.ts (the view half): a tile per person and one per shared screen; Enter focuses the selected
 /// tile, the arrows move the selection, Escape leaves focus mode.
 #[gpui::test]
@@ -2003,6 +2152,221 @@ fn the_handover_waits_for_the_left_call_s_media_to_end(cx: &mut TestAppContext) 
     cx.run_until_parked();
     assert!(did.started.get(), "the join starts once that media ended");
     assert_eq!(toast_in(cx, id), None);
+}
+
+/// Call fix round B1: a join in a window whose own last call is still closing its room waits for that close: the
+/// join's first route is not called until the room has closed (a rejoin never starts beside its own old room).
+#[gpui::test]
+fn a_rejoin_waits_for_its_own_old_room_to_close(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    let room = Rc::new(std::cell::Cell::new(true));
+    cx.update(|cx| voice::put_test_room_open(id, room.clone(), cx));
+    let waits = cx.update(|cx| voice::rooms_open_for_join(id, VOICE, cx));
+    cx.update(|cx| voice::handover_after_media(id, Vec::new(), waits, start, undo, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(
+        !did.started.get(),
+        "the window's own old room is still closing: no join yet"
+    );
+    room.set(false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get(), "the join starts once that room closed");
+    assert_eq!(toast_in(cx, id), None);
+}
+
+/// Call fix review I2: the window's own leave (a channel switch) is outside [`voice::HANDOVER_WAIT`]: a leave that
+/// takes longer (a cancelled join's teardown, catch-ups, a slow link) still lets the join start once it answered,
+/// where it used to fail with "Could not join voice". The own room's close after it is still bounded.
+#[gpui::test]
+fn a_slow_own_leave_is_outside_the_handover_bound(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (own_tx, own_rx) = answer_pair();
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    cx.update(|cx| {
+        voice::handover_after_own_leave(id, own_rx, Vec::new(), || false, start, undo, cx)
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(voice::HANDOVER_WAIT * 2);
+    cx.run_until_parked();
+    assert!(!did.started.get(), "the join waits for its own leave");
+    assert_eq!(
+        toast_in(cx, id),
+        None,
+        "no failure while the own leave runs"
+    );
+    own_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(
+        did.started.get(),
+        "the join starts once its own leave answered"
+    );
+    assert_eq!(toast_in(cx, id), None);
+}
+
+/// Call fix review I2: after the own leave answered, the own room's close still holds the join for
+/// [`voice::HANDOVER_WAIT`] at most (the time the own leave took does not count against it).
+#[gpui::test]
+fn the_own_room_s_close_is_bounded_after_a_slow_own_leave(cx: &mut TestAppContext) {
+    let (_w, id) = handover_window(cx);
+    let did = Rc::new(Did::default());
+    let (own_tx, own_rx) = answer_pair();
+    let (_join_tx, join_rx) = answer_pair();
+    let (start, undo) = start_and_undo(&did, join_rx);
+    let room = Rc::new(std::cell::Cell::new(true));
+    let open = room.clone();
+    cx.update(|cx| {
+        voice::handover_after_own_leave(id, own_rx, Vec::new(), move || open.get(), start, undo, cx)
+    });
+    cx.executor().advance_clock(voice::HANDOVER_WAIT * 2);
+    cx.run_until_parked();
+    own_tx.send(Ok(())).unwrap();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    assert!(!did.started.get(), "the room still closes");
+    assert_eq!(toast_in(cx, id), None, "within the bound");
+    room.set(false);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+    assert!(did.started.get(), "the join starts once the room closed");
+}
+
+/// Call fix review I2 and m3, through the app's real wiring (a real instance, the window's media session): alice is in
+/// one voice channel and joins another while her own leave is held (slower than [`voice::HANDOVER_WAIT`]). The join is
+/// not dropped; once the leave goes on, she is in the new channel and its media comes up (the old room closed first).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn switching_channels_with_a_slow_own_leave_joins_the_new_channel(cx: &mut TestAppContext) {
+    let media = media_slot();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let tag = "cf-switch";
+    let (_host, alice, voice_a, voice_b) = rt.block_on(async {
+        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
+        let (host, alice, a, b) = tokio::task::spawn_blocking(move || {
+            let (c, a) = call_world::voice_community(&host, &alice, &[]);
+            let (b, _, _) = call_world::ds_of(&host, &alice)
+                .create_channel(&c, 1, "upstairs")
+                .unwrap();
+            call_world::clear_session(&alice);
+            (host, alice, ChannelId(a), ChannelId(b))
+        })
+        .await
+        .unwrap();
+        let client = call_world::start(&alice).await;
+        call_world::connected(&client).await;
+        client.voice().start();
+        until(&client, "both voice channels are listed", |s| {
+            s.channel(a).is_some() && s.channel(b).is_some()
+        })
+        .await;
+        (host, client, a, b)
+    });
+    let alice = Rc::new(alice);
+    cx.update(dilla_desktop::install);
+    let a = window_for(cx, &alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(voice_a, wa, cx));
+    cx.run_until_parked();
+    rt.block_on(until(
+        &alice,
+        "alice's media is up in the first room",
+        |s| {
+            s.voice.call.phase == CallPhase::In
+                && s.voice.call.channel == Some(voice_a)
+                && s.voice.call.ping_ms.is_some()
+        },
+    ));
+    let (_reached, release) = alice.voice().hold_next_leave();
+    cx.update(|cx| voice::join(voice_b, wa, cx));
+    // Longer than the handover's bound, in real time (the UI's clock follows it).
+    let held = std::time::Instant::now() + voice::HANDOVER_WAIT + std::time::Duration::from_secs(2);
+    let mut moved = std::time::Instant::now();
+    while std::time::Instant::now() < held {
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cx.executor().advance_clock(moved.elapsed());
+        moved = std::time::Instant::now();
+    }
+    assert_eq!(
+        toast_in(cx, wa),
+        None,
+        "the join is not dropped while its own leave runs"
+    );
+    assert_ne!(
+        alice.state().borrow().voice.call.channel,
+        Some(voice_b),
+        "the join waits for the own leave"
+    );
+    drop(release);
+    pump(cx, &rt, &alice, "alice is in the second room", |s| {
+        s.voice.call.phase == CallPhase::In && s.voice.call.channel == Some(voice_b)
+    });
+    let s = rt.block_on(until(
+        &alice,
+        "the second room's media is up (its ping is read)",
+        |s| s.voice.call.channel == Some(voice_b) && s.voice.call.ping_ms.is_some(),
+    ));
+    assert_ne!(
+        s.voice.notice,
+        Some(dilla_client::state::voice::VoiceNotice::MediaFailed)
+    );
+    assert_eq!(toast_in(cx, wa), None);
+    drop(alice);
+    drop(rt);
+    drop(media);
+}
+
+/// Call fix round B1: what a join does first about its own window's call. A call elsewhere is left before the join
+/// starts, so its room's close can be waited for; a join of the call it is already in leaves nothing (it is a no-op).
+#[test]
+fn a_join_leaves_its_own_window_s_other_call_first() {
+    let ch = VOICE;
+    let other = ChannelId([99; 16]);
+    let mut s = (*state(1)).clone();
+    s.voice.call = OwnCall::default();
+    assert_eq!(voice::own_call_before_join(&s, ch), voice::OwnFirst::Wait);
+    for phase in [
+        CallPhase::Joining,
+        CallPhase::WaitingForRemove,
+        CallPhase::In,
+    ] {
+        s.voice.call = OwnCall {
+            phase,
+            channel: Some(other),
+            ..OwnCall::default()
+        };
+        assert_eq!(
+            voice::own_call_before_join(&s, ch),
+            voice::OwnFirst::Leave,
+            "{phase:?}"
+        );
+        s.voice.call.channel = Some(ch);
+        assert_eq!(
+            voice::own_call_before_join(&s, ch),
+            voice::OwnFirst::Nothing,
+            "{phase:?}"
+        );
+    }
 }
 
 /// A left call's media that never ends holds the join for [`voice::HANDOVER_WAIT`] only, as a leave that never

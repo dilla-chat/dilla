@@ -169,6 +169,45 @@ func TestTheMarkRevokedRouteRevokesTheRowAndLeavesTheSession(t *testing.T) {
 	}
 }
 
+// POST /debug/mark-bot makes a device's account a managed-bot account (users.kind 1). A scenario whose call needs a Bot member (the bots-only end,
+// CT 144 2026-11-25) has its testkit peer join the call group as a person and then marks it, since
+// the testkit has no managed Bot runtime that joins a call group.
+func TestTheMarkBotRouteMakesTheAccountABot(t *testing.T) {
+	h := newHost(t)
+	control := httptest.NewServer(dilladtest.ControlHandler(h))
+	t.Cleanup(control.Close)
+	device, token := seedDevice(t, h, "botted")
+
+	if status := postJSON(t, control.URL+"/debug/mark-bot",
+		map[string]string{"device": device.String()}); status != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", status)
+	}
+	dev, err := h.Server().Repo().GetDevice(context.Background(), device)
+	if err != nil {
+		t.Fatalf("GetDevice: %v", err)
+	}
+	user, err := h.Server().Repo().GetUser(context.Background(), dev.UserID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if user.Kind != 1 {
+		t.Fatalf("users.kind = %d, want 1 (a managed bot)", user.Kind)
+	}
+	// A bot account with no Bot installation binding has no person's session: what the peer was
+	// signed in with stops resolving, so it never acts (or commits) as a member again.
+	if _, err := h.Server().Sessions().Resolve(context.Background(), token); err == nil {
+		t.Fatal("a person's session still resolves for an account that is now a bot")
+	}
+	if status := postJSON(t, control.URL+"/debug/mark-bot",
+		map[string]string{"device": "zz"}); status != http.StatusBadRequest {
+		t.Fatalf("a malformed device id: status = %d, want 400", status)
+	}
+	if status := postJSON(t, control.URL+"/debug/mark-bot",
+		map[string]string{"device": id.New().String()}); status != http.StatusNotFound {
+		t.Fatalf("an unknown device: status = %d, want 404", status)
+	}
+}
+
 // POST /debug/channel records a channel's visibility and mode under its target id, which is what
 // invariant 1's registration check reads (ds.Channels). A target the route never named is no
 // channel at all — a DM or a pairing group — exactly as ds.PermissiveChannels answers it.

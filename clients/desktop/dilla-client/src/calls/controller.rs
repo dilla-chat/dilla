@@ -30,14 +30,16 @@ pub struct Left {
     /// This device was alone and the instance ended the call.
     pub ended: bool,
     /// The instance acknowledged the self-Remove: it took it, or answered 409 `E_REMOVE_PENDING` (a Remove of this
-    /// leaf stands there already). False: refused otherwise, its answer lost, or nothing to post.
+    /// leaf stands there already). False: refused otherwise, its answer lost, nothing to post, or not posted because
+    /// `ended` (the group is closed).
     pub proposed: bool,
 }
 
 /// Leaves the call (controller.ts `leaveLive`): when `alone` (the last keyed roster held only this
 /// device and the room's snapshot shows no other) the call is ended conditionally first
-/// (`DELETE /v1/calls/{id}?if_alone=1`: a device that has just joined keeps it); then the
-/// self-Remove is proposed (another member commits it) and the group is forgotten. Never a rotation
+/// (`DELETE /v1/calls/{id}?if_alone=1`: a device that has just joined keeps it); a call that end
+/// ended is only forgotten (its group is closed). Otherwise the self-Remove is proposed (another
+/// member commits it) and the group is forgotten. Never a rotation
 /// after this: `call_rotate` would cancel the posted Remove. Failures of the routes are tolerated
 /// as the TypeScript controller tolerates them; the group is forgotten either way.
 pub async fn leave_call<C: CallCore, R: CallRoutes + ?Sized>(
@@ -83,19 +85,35 @@ pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
     if alone {
         ended = routes.end_call_if_alone(call).await.unwrap_or(false);
     }
+    // The end closed the call's group: a self-Remove into it would only be refused (as rule `epoch`), then spend up to
+    // LEAVE_CATCH_UP on a catch-up that cannot explain the refusal, delaying the next join. Nothing is left to remove
+    // from, so the group is forgotten at once. Deliberately unlike controller.ts, which posted it anyway. A leave whose
+    // end did not end the call (another person is in it, or the end failed) still sends its self-Remove below.
+    if ended {
+        let _ = lock(core).map(|mut c| c.call_group_forget(group));
+        return Left {
+            ended,
+            proposed: false,
+        };
+    }
     let mut rebuilds = 0;
     let proposed = loop {
         // The epoch the self-Remove is built on, read under the same lock: the sync engine applies commits under it.
         // An unreadable row only rules out a rebuild; the Remove still goes out.
-        let Ok((built, body)) = lock(core).and_then(|mut c| {
+        let built = lock(core).and_then(|mut c| {
             let epoch = c
                 .groups()
                 .ok()
                 .and_then(|rows| rows.into_iter().find(|r| r.group_id == *group))
                 .map(|r| r.epoch);
             Ok((epoch, c.call_leave_proposal(group)?))
-        }) else {
-            break false;
+        });
+        let (built, body) = match built {
+            Ok(built) => built,
+            Err(e) => {
+                log::warn!("calls: leave: the core refused the self-Remove: {}", e.code);
+                break false;
+            }
         };
         match routes.post_proposal(group, body).await {
             Ok(_) => break true,
@@ -139,7 +157,18 @@ pub async fn leave_call_caught_up<C: CallCore, R: CallRoutes + ?Sized>(
                     now.unwrap_or_default()
                 );
             }
-            Err(_) => break false,
+            Err(e) => {
+                // Visible, by the status, code and rule only: the self-Remove did not land, and the others see this
+                // device go only when the instance notices it gone.
+                log::warn!(
+                    "calls: leave: the self-Remove was refused: status {} code {} rule {}",
+                    e.status
+                        .map_or_else(|| "none".to_owned(), |s| s.to_string()),
+                    e.code.as_deref().unwrap_or("none"),
+                    e.rule.as_deref().unwrap_or("none")
+                );
+                break false;
+            }
         }
     };
     let _ = lock(core).map(|mut c| c.call_group_forget(group));
