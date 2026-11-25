@@ -25,3 +25,9 @@ seconds, printing the frame size; `ended` means the source closed.
 | `capture-probe apps` lists the applications playing sound, never Dilla itself | each playing application once (before 14.2: `not available on this system`) | each playing application once (before build 19041: `not available on this system`) | each playing application once |
 | In a call, the share menu shows the sound row ("Also share an application’s sound"); on, it lists the playing applications | shown on 14.2+, absent before | shown on build 19041+, absent before | shown |
 | `cargo test -p dilla-media --test app_audio -- --ignored` (two `pw-play` into a null sink; the listener hears only the chosen one) | n/a | n/a | passes with a PipeWire session |
+
+## Calls with the Bot
+
+| Check | Any OS |
+|---|---|
+| Two clients plus the Bot: both join a voice channel, start music (the Bot joins), one shares its screen; then the sharer's network drops (Wi-Fi off) and comes back, and it joins voice again. With the other person still in the call it is back in within seconds; with only the Bot left it is back within about a minute, in a fresh call (the music stopped) | |

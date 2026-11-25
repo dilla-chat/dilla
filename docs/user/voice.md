@@ -426,6 +426,9 @@ checks every device again.
 | "Voice ended for everyone." | The call was closed for everyone in it |
 | "reconnecting" in the call panel | The connection dropped; the call comes back by itself |
 
+If your connection drops while only the Bot is in the call with you, rejoining can take up to about a minute: the server
+ends that call first, then **join voice** starts a fresh one. Start the music again afterwards if you want it.
+
 ### You see people speaking but hear nothing
 
 If the call panel says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
