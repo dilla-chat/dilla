@@ -5046,23 +5046,9 @@ fn call_bar(
         .into_any_element()
 }
 
-/// The old client's VoiceToolbar popover gap (10px between the panel and its control) and window margin (12px).
-const SHARE_PANEL_GAP: f32 = 10.0;
-const SHARE_PANEL_EDGE: f32 = 12.0;
-
-/// Where the share panel's bottom-right corner goes (the old client's VoiceToolbar popover): [`SHARE_PANEL_GAP`] above
-/// the Share control (`control`), its right edge on the control's; moved right when a panel `panel_w` wide would pass
-/// the window's left [`SHARE_PANEL_EDGE`], and kept that far inside the right edge of a window `viewport_w` wide (the
-/// left edge wins in a window narrower than the panel).
-pub(crate) fn share_panel_corner(
-    control: gpui::Bounds<gpui::Pixels>,
-    viewport_w: gpui::Pixels,
-    panel_w: gpui::Pixels,
-) -> gpui::Point<gpui::Pixels> {
-    let edge = px(SHARE_PANEL_EDGE);
-    let right = control.right().min(viewport_w - edge).max(edge + panel_w);
-    gpui::point(right, control.top() - px(SHARE_PANEL_GAP))
-}
+use dilla_desktop_ui::popover::{
+    POPOVER_EDGE as SHARE_PANEL_EDGE, corner_above_right as share_panel_corner,
+};
 
 /// Whether the share panel opens by itself now: the share the system portal's dialog was opened for (`asked`, its
 /// share number) went live (`was` to `now`) and is still the current one (`seq`). Dilla's own picker asks nothing.
@@ -5325,34 +5311,6 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// KDE share picker plan, Task 2 (the old client's VoiceToolbar popover): the share panel's bottom right is 10px above
-    /// the Share control, on its right edge; moved right when the panel would pass the window's left 12px, and kept 12px
-    /// inside the right edge.
-    #[test]
-    fn the_share_panel_hangs_above_its_button() {
-        use gpui::{Bounds, point, px, size};
-        let button = Bounds::new(point(px(900.0), px(700.0)), size(px(120.0), px(36.0)));
-        let corner = super::share_panel_corner(button, px(1280.0), px(320.0));
-        assert_eq!(corner, point(px(1020.0), px(690.0)));
-        // Near the left edge: the panel stays 12px in.
-        let left = Bounds::new(point(px(20.0), px(500.0)), size(px(120.0), px(36.0)));
-        assert_eq!(
-            super::share_panel_corner(left, px(1280.0), px(320.0)),
-            point(px(332.0), px(490.0))
-        );
-        // Past the right edge (a narrow window): 12px in.
-        let right = Bounds::new(point(px(560.0), px(500.0)), size(px(120.0), px(36.0)));
-        assert_eq!(
-            super::share_panel_corner(right, px(600.0), px(320.0)),
-            point(px(588.0), px(490.0))
-        );
-        // A window narrower than the panel: its left edge wins.
-        assert_eq!(
-            super::share_panel_corner(right, px(300.0), px(320.0)).x,
-            px(332.0)
-        );
-    }
-
     /// The portal's order (KDE share picker plan, Task 2): the panel before a share asks no sound question; once the
     /// system dialog's pick is live, the panel opens by itself, once, for the share it was asked for only.
     #[test]
