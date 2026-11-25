@@ -283,8 +283,9 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 #[cfg(test)]
 mod tests {
     /// The `{name}` placeholders of `value` that the `.replace("…", …)` chain at the start of `chain` (the source right
-    /// after a `t("key")` call) does not replace. A replaced literal counts when it contains the placeholder (two sites
-    /// replace `#{channel}`). The chain ends at the first thing that is not a `.replace(`.
+    /// after a `t("key")` call) does not replace: the chain's literals are replaced in the string in order, as
+    /// `str::replace` does, so `.replace("#{n}", …)` fills only the `{n}` after a `#` (two sites replace `#{channel}`).
+    /// The chain ends at the first thing that is not a `.replace(`.
     fn placeholders_left(value: &str, chain: &str) -> Vec<String> {
         let mut replaced: Vec<&str> = Vec::new();
         let mut rest = chain.trim_start();
@@ -315,14 +316,22 @@ mod tests {
             let Some(close) = close else { break };
             rest = lit[close + 1..].trim_start();
         }
+        // The chain applied to the string as `str::replace` applies it, in order (each replaces every occurrence of its
+        // literal): what is left is drawn.
+        let mut drawn = value.to_owned();
+        for r in &replaced {
+            if !r.is_empty() {
+                drawn = drawn.replace(r, "\u{0}");
+            }
+        }
         let mut left = Vec::new();
-        let mut text = value;
+        let mut text = drawn.as_str();
         while let Some(open) = text.find('{') {
             let Some(len) = text[open..].find('}') else {
                 break;
             };
             let name = &text[open..open + len + 1];
-            if !replaced.iter().any(|r| r.contains(name)) && !left.iter().any(|l| l == name) {
+            if !left.iter().any(|l| l == name) {
                 left.push(name.to_owned());
             }
             text = &text[open + len + 1..];
@@ -410,6 +419,18 @@ mod tests {
             )
             .is_empty(),
             "a literal around the placeholder"
+        );
+        // Call fix review m5: a replaced literal fills one occurrence of each placeholder it holds, not every one.
+        assert_eq!(
+            left("{n} items in #{n}", ".replace(\"#{n}\", &tag)"),
+            vec!["{n}"]
+        );
+        assert!(
+            left(
+                "{n} items in #{n}",
+                ".replace(\"#{n}\", &tag).replace(\"{n}\", &count)"
+            )
+            .is_empty()
         );
         assert!(left("plain", "").is_empty());
         assert_eq!(left("{n} min", ""), vec!["{n}"]);

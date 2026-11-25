@@ -1555,21 +1555,22 @@ fn after_leaving_other_calls_then(
     done: Option<JoinDone>,
     cx: &mut App,
 ) {
-    let mut leaves: Vec<_> = other_calls(window, cx)
+    let leaves: Vec<_> = other_calls(window, cx)
         .into_iter()
         .map(|c| c.voice().leave())
         .collect();
     // This window's own call elsewhere is left here, not inside the join: the handover then waits for its room to
-    // close before the join's first read (call fix round B1).
+    // close before the join's first read (call fix round B1). Its leave is outside the handover's bound (review I2):
+    // it may take a cancelled join's teardown and catch-ups, which the join inside `Voice::join` never bounded either.
     let own = client_of(window, cx).map(|c| c.state().borrow().clone());
-    if own.is_some_and(|s| own_call_before_join(&s, channel) == OwnFirst::Leave) {
-        leaves.push(voice.leave());
-    }
+    let own_leave = own
+        .is_some_and(|s| own_call_before_join(&s, channel) == OwnFirst::Leave)
+        .then(|| voice.leave());
     let rooms = rooms_open_for_join(window, channel, cx);
     let undo = voice.clone();
     handover_then(
         window,
-        leaves,
+        (own_leave, leaves),
         Box::new(rooms),
         move || start(&voice),
         move || drop(undo.leave()),
@@ -1677,7 +1678,15 @@ pub fn handover(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
-    handover_then(window, leaves, Box::new(|| false), start, undo, None, cx);
+    handover_then(
+        window,
+        (None, leaves),
+        Box::new(|| false),
+        start,
+        undo,
+        None,
+        cx,
+    );
 }
 
 /// [`handover`] that also waits, within the same [`HANDOVER_WAIT`], until `media_live` answers false: the left calls'
@@ -1692,7 +1701,38 @@ pub fn handover_after_media(
     undo: impl FnOnce() + 'static,
     cx: &mut App,
 ) {
-    handover_then(window, leaves, Box::new(media_live), start, undo, None, cx);
+    handover_then(
+        window,
+        (None, leaves),
+        Box::new(media_live),
+        start,
+        undo,
+        None,
+        cx,
+    );
+}
+
+/// [`handover_after_media`] after this window's own leave (`own_leave`, a channel switch's): the join waits for it
+/// outside [`HANDOVER_WAIT`] (for [`JOIN_WAIT`] at most; past it the join starts and `Voice::join` orders itself after
+/// the leave still in flight). The bound starts once it answered.
+pub fn handover_after_own_leave(
+    window: WindowId,
+    own_leave: VoiceAnswer,
+    leaves: Vec<VoiceAnswer>,
+    media_live: impl Fn() -> bool + 'static,
+    start: impl FnOnce() -> VoiceAnswer + 'static,
+    undo: impl FnOnce() + 'static,
+    cx: &mut App,
+) {
+    handover_then(
+        window,
+        (Some(own_leave), leaves),
+        Box::new(media_live),
+        start,
+        undo,
+        None,
+        cx,
+    );
 }
 
 /// What a join's caller does with its end ([`join_then`]).
@@ -1701,10 +1741,11 @@ pub type JoinDone = Box<dyn FnOnce(Result<(), dilla_client::ClientError>, &mut A
 /// [`handover`] that tells `done`, once, how the join ended: its own answer (`Ok`, or the error its notice came from), a
 /// leave that never answered (`voice.failed`), or the join given up for a newer one or a closed window (`E_CANCELLED`,
 /// which says nothing, as a cancelled join does). A join whose answer never comes within [`JOIN_WAIT`] answers nothing:
-/// the caller's own wait ends it.
+/// the caller's own wait ends it. The leaves are this window's own (waited for outside [`HANDOVER_WAIT`], see
+/// [`handover_after_own_leave`]) and the other windows'.
 fn handover_then(
     window: WindowId,
-    mut leaves: Vec<VoiceAnswer>,
+    (mut own_leave, mut leaves): (Option<VoiceAnswer>, Vec<VoiceAnswer>),
     media_live: Box<dyn Fn() -> bool>,
     start: impl FnOnce() -> VoiceAnswer + 'static,
     undo: impl FnOnce() + 'static,
@@ -1726,7 +1767,23 @@ fn handover_then(
     let newest = move |cx: &App| cx.try_global::<VoiceAreas>().map(|a| a.handovers) == Some(ticket);
     cx.spawn(async move |cx| {
         let mut waited = Duration::ZERO;
+        let mut own_waited = Duration::ZERO;
         loop {
+            // The own leave: waited for outside the bound below, until it answered (or is dropped).
+            if own_leave.as_mut().is_some_and(|l| {
+                !matches!(
+                    l.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                )
+            }) {
+                own_leave = None;
+            }
+            if own_leave.is_some() && own_waited >= JOIN_WAIT {
+                log::warn!(
+                    "voice: this window's own leave did not answer; the join goes on after it"
+                );
+                own_leave = None;
+            }
             leaves.retain_mut(|l| {
                 matches!(
                     l.try_recv(),
@@ -1735,13 +1792,13 @@ fn handover_then(
             });
             // The left calls' media must have ended too, not only their leaves answered: the media router is the
             // process's, and the old call's media ends on its own session's runtime, after its link went.
-            if leaves.is_empty() && !media_live() {
+            if own_leave.is_none() && leaves.is_empty() && !media_live() {
                 break;
             }
             if !cx.update(|cx| newest(cx)) {
                 return cx.update(|cx| tell(cancelled(), cx));
             }
-            if waited >= HANDOVER_WAIT {
+            if own_leave.is_none() && waited >= HANDOVER_WAIT {
                 if leaves.is_empty() {
                     log::warn!(
                         "voice: a left call's media or room did not end; the join is dropped"
@@ -1760,7 +1817,11 @@ fn handover_then(
                 });
             }
             cx.background_executor().timer(HANDOVER_POLL).await;
-            waited += HANDOVER_POLL;
+            if own_leave.is_some() {
+                own_waited += HANDOVER_POLL;
+            } else {
+                waited += HANDOVER_POLL;
+            }
         }
         // A newer join started meanwhile (in this window or another): it is the device's one call (review L m1).
         if !cx.update(|cx| area_open(window, cx) && newest(cx)) {

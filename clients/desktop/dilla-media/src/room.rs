@@ -121,7 +121,9 @@ pub struct CallOptions {
 pub struct RoomCloses(Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>);
 
 impl RoomCloses {
-    fn add(&self, close: tokio::task::JoinHandle<()>) {
+    /// Registers a room close running on this registry's runtime (a dropped call's, or a close its owner stopped waiting
+    /// for), so the runtime's shutdown waits for it ([`closed`](RoomCloses::closed)).
+    pub fn add(&self, close: tokio::task::JoinHandle<()>) {
         let mut closes = self.0.lock().unwrap_or_else(|p| p.into_inner());
         closes.retain(|c| !c.is_finished());
         closes.push(close);

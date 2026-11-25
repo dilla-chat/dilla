@@ -28,8 +28,9 @@ pub enum PixelFormat {
     I420,
 }
 
-/// One captured frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One captured frame (this device's own screen or camera). Its `Debug` says its size, format, stride and byte count
+/// only, and it has no `PartialEq`: pixels never reach a log or a test's output.
+#[derive(Clone)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,
@@ -37,6 +38,18 @@ pub struct Frame {
     /// Bytes per row of the first plane.
     pub stride: u32,
     pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Frame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .field("stride", &self.stride)
+            .field("bytes", &self.data.len())
+            .finish()
+    }
 }
 
 impl Frame {
@@ -351,6 +364,18 @@ impl ShareOptions {
 mod tests {
     use super::*;
 
+    /// Call fix review m1 (finishing self-view m2): a captured frame (this device's own screen or camera) says its size,
+    /// format, stride and byte count in `Debug`, never its pixels.
+    #[test]
+    fn a_captured_frame_s_debug_carries_no_pixels() {
+        let f = Frame::rgba(2, 1, vec![173u8; 8]);
+        let shown = format!("{f:?}");
+        assert!(!shown.contains("173"), "pixels in Debug");
+        for part in ["width: 2", "height: 1", "Rgba", "stride: 8", "bytes: 8"] {
+            assert!(shown.contains(part), "{part} missing from Debug");
+        }
+    }
+
     #[test]
     fn the_pattern_has_eight_bars_and_a_moving_square() {
         let mut p = TestPattern::new(ShareKind::Screen, 160, 96, 15);
@@ -365,7 +390,8 @@ mod tests {
                 i as usize
             );
         }
-        assert_ne!(a, b, "the square moves");
+        // Compared without printing (a synthetic pattern, but no frame's bytes reach a test's output).
+        assert!(a.data != b.data, "the square moves");
     }
 
     #[test]
