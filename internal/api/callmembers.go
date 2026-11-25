@@ -11,6 +11,7 @@ import (
 	botaccess "github.com/dilla-chat/dilla/internal/bot/access"
 	"github.com/dilla-chat/dilla/internal/ds"
 	"github.com/dilla-chat/dilla/internal/id"
+	"github.com/dilla-chat/dilla/internal/mlswasi"
 	"github.com/dilla-chat/dilla/internal/store"
 )
 
@@ -245,7 +246,10 @@ func (h *Calls) resetBotOnly(call id.ID) {
 // epoch-unknown group, nothing is tracked: the end of the call or a heal decides those leaves.
 // It reports a bot-only call after two consecutive whole-room observations at least sweepEvery
 // apart: no human leaf is present or inside its admission window, and at least one managed-bot leaf
-// remains. While waiting it queues no Removes: bots cannot commit the human's Remove, so the caller
+// remains. A human leaf that is absent and the target of an outstanding instance Remove is outside
+// its window unless it was admitted again at or after the Remove was issued: the Bot cannot commit
+// that Remove, and until the call ends its device's every rejoin is refused E_REMOVE_PENDING. An
+// account kind or proposal list that cannot be read is logged and keeps the call live. While waiting it queues no Removes: bots cannot commit the human's Remove, so the caller
 // must end the call under its existing call lock instead. Uncertain observations reset the wait.
 func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow, parts []*livekit.ParticipantInfo, cut map[string]bool) (bool, error) {
 	if row.GroupID == nil {
@@ -287,6 +291,11 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 			present[p.GetIdentity()] = true
 		}
 	}
+	removing, err := h.removesOfAbsentHumans(ctx, g, members, bots, unknown, present)
+	if err != nil {
+		lookupErr = errors.Join(lookupErr, err)
+		h.log.WarnContext(ctx, "reading a call group's outstanding proposals for the sweep failed; keeping the call live", "group_id", g.GroupID.String(), "err", err)
+	}
 	now := h.clk.Now()
 	h.memMu.Lock()
 	defer h.memMu.Unlock()
@@ -299,10 +308,27 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 			hasBot = true
 			continue
 		}
-		list := h.admissions[admitKey{room: row.LivekitRoom, dev: m.DeviceID}]
-		if present[m.DeviceID.String()] || (len(list) > 0 && now.Sub(list[len(list)-1].at) < admissionJoinWindow) {
+		if present[m.DeviceID.String()] {
 			humanActive = true
+			continue
 		}
+		list := h.admissions[admitKey{room: row.LivekitRoom, dev: m.DeviceID}]
+		if len(list) == 0 {
+			continue
+		}
+		latest := list[len(list)-1].at
+		if now.Sub(latest) >= admissionJoinWindow {
+			continue
+		}
+		// An absent leaf the instance is removing is no active human by its old session's admission:
+		// that session dropped, and only a member's commit (never the Bot's) clears the Remove. An
+		// admission at or after the Remove was issued is the device coming back (a reconnect through
+		// /rtc as the sweep runs), so it still counts and the call is kept on a listing that may be
+		// stale.
+		if issued, ok := removing[m.LeafIndex]; ok && latest.Unix() < issued {
+			continue
+		}
+		humanActive = true
 	}
 	if hasBot && !humanActive && lookupErr == nil {
 		if h.botOnlySince == nil {
@@ -361,6 +387,50 @@ func (h *Calls) trackAbsentLocked(ctx context.Context, row store.VoiceSessionRow
 		}
 	}
 	return false, lookupErr
+}
+
+// removesOfAbsentHumans is, by leaf, when the outstanding instance Remove of each human leaf absent
+// from the room was issued (instance clock, Unix seconds; the earliest when several stand): the leaves
+// whose device the resync guard (ds guardResyncTarget) keeps out until a member commits. It reads
+// the group's proposals only when the bots-only end could apply (a managed-bot leaf and an absent
+// human leaf whose account kind is known), so a call without a Bot costs no read. A Remove whose
+// recorded device is another device than the leaf's holder is not this device's: it is left out,
+// which only ever keeps a call live. members, bots and unknown are trackAbsentLocked's.
+func (h *Calls) removesOfAbsentHumans(ctx context.Context, g store.GroupRow, members []store.MemberRow,
+	bots, unknown map[id.ID]bool, present map[string]bool) (map[uint32]int64, error) {
+	hasBot := false
+	absent := map[uint32]id.ID{}
+	for _, m := range members {
+		if m.RemovedEpoch != nil || m.AddedEpoch > g.Epoch || unknown[m.UserID] {
+			continue
+		}
+		if bots[m.UserID] {
+			hasBot = true
+		} else if !present[m.DeviceID.String()] {
+			absent[m.LeafIndex] = m.DeviceID
+		}
+	}
+	if !hasBot || len(absent) == 0 {
+		return nil, nil
+	}
+	rows, err := h.repo.ListProposals(ctx, g.GroupID, g.Epoch, false)
+	if err != nil {
+		return nil, err
+	}
+	removing := map[uint32]int64{}
+	for _, p := range rows {
+		if p.Origin != 0 || p.VoidAt != nil || p.Kind != uint8(mlswasi.ProposalRemove) || p.TargetLeaf == nil {
+			continue
+		}
+		dev, ok := absent[*p.TargetLeaf]
+		if !ok || (p.TargetDevice != nil && *p.TargetDevice != dev) {
+			continue
+		}
+		if at, seen := removing[*p.TargetLeaf]; !seen || p.IssuedAt < at {
+			removing[*p.TargetLeaf] = p.IssuedAt
+		}
+	}
+	return removing, nil
 }
 
 // flushLeafRemovals proposes the Removes trackAbsentLocked queued, each bound to its membership

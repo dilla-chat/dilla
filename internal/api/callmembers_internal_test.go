@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,25 @@ type absentMemberRepo struct {
 	users                map[id.ID]store.UserRow
 	userErrors           map[id.ID]error
 	groupErr, membersErr error
+	proposals            []store.ProposalRow
+	proposalsErr         error
+}
+
+func (r *absentMemberRepo) ListProposals(_ context.Context, _ id.ID, epoch uint64, includeVoid bool) ([]store.ProposalRow, error) {
+	var out []store.ProposalRow
+	for _, p := range r.proposals {
+		if p.Epoch == epoch && (includeVoid || p.VoidAt == nil) {
+			out = append(out, p)
+		}
+	}
+	return out, r.proposalsErr
+}
+
+// pendRemove makes m the target of a non-void instance Remove at the group's epoch, issued at.
+func (r *absentMemberRepo) pendRemove(m store.MemberRow, at time.Time) {
+	leaf, dev := m.LeafIndex, m.DeviceID
+	r.proposals = append(r.proposals, store.ProposalRow{GroupID: r.group.GroupID, Epoch: r.group.Epoch, Kind: 3,
+		TargetLeaf: &leaf, TargetDevice: &dev, Origin: 0, IssuedAt: at.Unix(), TTL: 30})
 }
 
 func (r *absentMemberRepo) GetGroup(context.Context, id.ID) (store.GroupRow, error) {
@@ -143,5 +164,83 @@ func TestMemberLookupFailureDoesNotBlockOtherAbsentRemoves(t *testing.T) {
 				t.Fatalf("queued Removes = %+v, want only the known absent human", h.leafRemovals)
 			}
 		})
+	}
+}
+
+// Review focus 3: the dropped human comes back just as the sweep runs. Its /rtc admission after the
+// Remove was issued means its session is on its way into the room, whatever the room's listing
+// said a moment earlier, so it counts as active and the call is kept. Only the admission of the
+// session that dropped (before the Remove) no longer does.
+func TestBotsOnlyKeepsACallWhoseRemovedHumanWasAdmittedAgain(t *testing.T) {
+	h, repo, clk, row := absentMembersFixture(t)
+	h.dsvc = nil
+	human := repo.members[1]
+	key := admitKey{room: row.LivekitRoom, dev: human.DeviceID}
+	h.admissions = map[admitKey][]admission{key: {{at: clk.Now()}}}
+	clk.Advance(5 * time.Second)
+	repo.pendRemove(human, clk.Now())
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("first observation = %v, %v; want live", end, err)
+	}
+	clk.Advance(RoomSweepInterval)
+	h.admissions[key] = append(h.admissions[key], admission{at: clk.Now(), resume: true})
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("a sweep ended the call as the removed human was admitted again: %v, %v", end, err)
+	}
+	clk.Advance(RoomSweepInterval)
+	if end, err := h.trackAbsentLocked(t.Context(), row, nil, nil); err != nil || end {
+		t.Fatalf("the observation after the re-admission ended the call: %v, %v; want a fresh first", end, err)
+	}
+}
+
+// Review focus 4: an account kind that cannot be read never ends the call, also when the only
+// human is absent and pending removal; every sweep logs it, by ids only, so the lockout it leaves
+// in place is never silent.
+func TestBotsOnlyNeverEndsOnAnUnknownAccountKind(t *testing.T) {
+	for _, lookupErr := range []error{store.ErrNotFound, errors.New("store unavailable")} {
+		t.Run(lookupErr.Error(), func(t *testing.T) {
+			h, repo, clk, row := absentMembersFixture(t)
+			var logs bytes.Buffer
+			h.log = slog.New(slog.NewTextHandler(&logs, nil))
+			human := repo.members[1]
+			repo.pendRemove(human, clk.Now())
+			clk.Advance(time.Second)
+			repo.userErrors[human.UserID] = lookupErr
+			for i := range 3 {
+				if end, _ := h.trackAbsentLocked(t.Context(), row, nil, nil); end {
+					t.Fatalf("sweep %d ended a call whose member's account kind is unknown", i)
+				}
+				clk.Advance(RoomSweepInterval)
+			}
+			if n := strings.Count(logs.String(), "reading a call member's account kind failed"); n != 3 {
+				t.Fatalf("logged the lookup failure %d times over 3 sweeps, want 3:\n%s", n, logs.String())
+			}
+			if !strings.Contains(logs.String(), "user_id="+human.UserID.String()) {
+				t.Fatalf("the warning does not name the member by id:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// A failed read of the group's outstanding proposals is no proof of a Remove: it never ends the call
+// and it is logged.
+func TestBotsOnlyNeverEndsWhenTheProposalsCannotBeRead(t *testing.T) {
+	h, repo, clk, row := absentMembersFixture(t)
+	h.dsvc = nil
+	var logs bytes.Buffer
+	h.log = slog.New(slog.NewTextHandler(&logs, nil))
+	human := repo.members[1]
+	h.admissions = map[admitKey][]admission{{room: row.LivekitRoom, dev: human.DeviceID}: {{at: clk.Now()}}}
+	clk.Advance(time.Second)
+	repo.pendRemove(human, clk.Now())
+	repo.proposalsErr = errors.New("store unavailable")
+	for i := range 2 {
+		if end, _ := h.trackAbsentLocked(t.Context(), row, nil, nil); end {
+			t.Fatalf("sweep %d ended the call on an unreadable proposal list", i)
+		}
+		clk.Advance(RoomSweepInterval / 3)
+	}
+	if !strings.Contains(logs.String(), "reading a call group's outstanding proposals for the sweep failed") {
+		t.Fatalf("the proposal read failure was not logged:\n%s", logs.String())
 	}
 }

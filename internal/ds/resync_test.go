@@ -83,6 +83,30 @@ func TestAResyncByTheTargetOfAnOutstandingRemoveIsForbidden(t *testing.T) {
 	}
 }
 
+// A closed group answers a resync E_GROUP_CLOSED, also for the target of a Remove that was still
+// outstanding when it closed (the bots-only end of a call whose dropped human only the Bot could
+// commit out, CT 144 2026-11-25): the call is over, and the client registers a fresh group instead
+// of waiting on a Remove nobody will ever commit. The refusal is no less strict than guard 1's.
+func TestAResyncByARemoveTargetOfAClosedGroupIsGroupClosed(t *testing.T) {
+	h := newDSHarness(t)
+	g := h.groupWithMembers(t, 2)
+	h.repo.markCall(g.id)
+	if err := h.ds.ProposeRemove(context.Background(), g.id, g.leafOf(1), id.New()); err != nil {
+		t.Fatalf("ProposeRemove: %v", err)
+	}
+	if err := h.ds.Close(context.Background(), g.id); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, err := h.ds.Resync(context.Background(), g.sessionOf(1), g.id, ds.ResyncRequest{
+		ExternalCommit: []byte{0x00},
+		GroupInfo:      []byte{0x01},
+	})
+	var dsErr *ds.Error
+	if !errors.As(err, &dsErr) || dsErr.Code != "E_GROUP_CLOSED" || dsErr.Status != http.StatusConflict {
+		t.Fatalf("got %v, want 409 E_GROUP_CLOSED", err)
+	}
+}
+
 // Guard 1 holds in a call group too, also when the device's own leave preceded the instance's
 // Remove and its user is eligible (web-3 task 10, concern 2; the security review of e619526 and
 // dd88a47): a member Remove of the leaf proves nothing about why the instance removes it — any

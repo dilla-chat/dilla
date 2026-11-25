@@ -71,11 +71,19 @@ func (d *DS) resyncLocked(ctx context.Context, s Session, groupID id.ID, r Resyn
 			return CommitResult{}, errNotFound("group")
 		}
 	}
-	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
-		return CommitResult{}, err
-	}
 	row, err := d.opts.Store.GetGroup(ctx, groupID)
 	if err != nil {
+		return CommitResult{}, err
+	}
+	// A closed group takes no commit at all (commit step 1b); it says so before guard 1, so the target
+	// of a Remove that stood when the group closed (a call ended bots_only because only a Bot was
+	// left to commit it) is told the call is over and registers a fresh group, instead of waiting on
+	// E_REMOVE_PENDING for a Remove no commit can ever clear. Nothing more gets through: a closed
+	// group refuses every commit. After the ACL's answer above, so a stranger learns nothing more.
+	if row.ClosedAt != nil {
+		return CommitResult{}, errGroupClosed()
+	}
+	if err := d.guardResyncTarget(ctx, s, groupID, epoch); err != nil {
 		return CommitResult{}, err
 	}
 	if err := d.requireGroupCapability(ctx, s, row); err != nil {
