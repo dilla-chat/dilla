@@ -299,13 +299,13 @@ what the client still does not do.
   of one application (the share menu's sound section) on Linux, on Windows 10 version 2004 (build 19041) or newer, and
   on macOS 14.2 or newer. On an older Windows or macOS the share has no application sound. Sharing a window brings that
   window's application's sound by itself, and the sound section then reads "Sound from {app}". You can switch it off
-  there or choose another application. Sharing a whole screen brings no application's sound unless you choose one.
-  Nothing is chosen for you where the system's dialog picks the window (Wayland outside KDE Plasma), when the window's
-  application isn't playing, or for Windows Store apps. The sound row is in the panel while you share, not before.
-  Dilla's own sound is never shared. macOS may ask for permission to record system audio the first time. The camera
-  works on Linux, Windows and macOS (the built-in camera, an external one, and Continuity Camera on macOS 14 or newer).
-  Your own tiles show what you send: your share, and your camera mirrored as a mirror shows you (the others see it the
-  right way round).
+  there or choose another application, for that share only: every new share starts again from what it shares. Sharing a
+  whole screen brings no application's sound unless you choose one. Nothing is chosen for you where the system's dialog
+  picks the window (Wayland outside KDE Plasma), when the window's application isn't playing, or for Windows Store apps.
+  The sound row is in the panel while you share, not before. Dilla's own sound is never shared. macOS may ask for
+  permission to record system audio the first time. The camera works on Linux, Windows and macOS (the built-in camera,
+  an external one, and Continuity Camera on macOS 14 or newer). Your own tiles show what you send: your share, and your
+  camera mirrored as a mirror shows you (the others see it the right way round).
 - **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
   Decline), and a click opens the conversation. A ring raises its notification and sound with every window closed to
   the tray; Answer opens the window. On Linux an ended ring's notification is withdrawn, and a newer message in the

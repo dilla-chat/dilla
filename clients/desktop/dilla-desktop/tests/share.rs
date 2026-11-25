@@ -33,6 +33,8 @@ struct Recorder {
     alive: Arc<AtomicUsize>,
     /// How many times the picker listed the sources.
     listed: Arc<AtomicUsize>,
+    /// The cancel flag the picker handed its latest listing (review I2).
+    cancel: Arc<std::sync::Mutex<Option<share_picker::Cancel>>>,
 }
 
 /// A moving test pattern that tells its [`Recorder`] when it goes.
@@ -66,11 +68,13 @@ impl Recorder {
     fn install(self: &Arc<Self>, cx: &mut TestAppContext) {
         let rec = self.clone();
         let listed = self.listed.clone();
+        let cancel = self.cancel.clone();
         cx.update(|cx| {
             // The picker offers one screen and one window (no thumbnails: no display here).
             share_picker::set_lister(
-                Arc::new(move || {
+                Arc::new(move |flag: share_picker::Cancel| {
                     listed.fetch_add(1, Ordering::SeqCst);
+                    *cancel.lock().unwrap() = Some(flag);
                     vec![
                         Found {
                             source: DesktopSource {
@@ -116,6 +120,16 @@ impl Recorder {
 
     fn listed(&self) -> usize {
         self.listed.load(Ordering::SeqCst)
+    }
+
+    /// Whether the latest listing was told to stop (its picker closed).
+    fn listing_cancelled(&self) -> bool {
+        self.cancel
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("a listing ran")
+            .load(Ordering::SeqCst)
     }
 }
 
@@ -503,10 +517,35 @@ fn cancelling_the_picker_creates_no_capture(cx: &mut TestAppContext) {
     // A source the enumeration never offered is refused, and the picker stays.
     assert!(!cx.update(|cx| share_picker::share(id, &"screen:99".into(), cx)));
     assert!(cx.read(|cx| share_picker::is_open(id, cx)));
+    assert!(
+        !rec.listing_cancelled(),
+        "the open picker's listing goes on"
+    );
     cx.update(|cx| share_picker::cancel(id, cx));
+    // Review I2: the listing in progress is told at once, so it opens no further thumbnail stream.
+    assert!(rec.listing_cancelled(), "Cancel stops the listing");
     cx.run_until_parked();
     assert!(!cx.read(|cx| share_picker::is_open(id, cx)));
     assert_eq!(rec.opened(), 0, "no capture was created");
+}
+
+/// Review I2: a pick stops the picker's listing too (only the chosen source is captured from then on).
+#[gpui::test]
+fn a_pick_stops_the_picker_s_listing(cx: &mut TestAppContext) {
+    let (w, id, _, _) = sound_world(cx);
+    assert!(
+        w.update(cx, |_, window, cx| {
+            share_picker::open(ShareOptions::default(), window, cx)
+        })
+        .unwrap()
+    );
+    wait_listed(cx, id);
+    let rec = cx
+        .read(|cx| share_picker::listing_cancel(id, cx))
+        .expect("a listing ran");
+    assert!(!rec.load(Ordering::SeqCst));
+    assert!(cx.update(|cx| share_picker::share(id, &"screen:1".into(), cx)));
+    assert!(rec.load(Ordering::SeqCst), "the pick stops the listing");
 }
 
 /// permissions.spec.ts "screen capture without a real user gesture is refused without opening a picker": a window that
@@ -674,8 +713,59 @@ fn sharing_a_screen_brings_no_application_sound(cx: &mut TestAppContext) {
     assert_eq!(asked.load(Ordering::SeqCst), 0, "no window, no lookup");
 }
 
+/// Review I4 (Jonas 2026-11-25): every share takes the sound of what it shares. A choice in the live panel holds for
+/// that share only: when it ends, and when the call ends, it is dropped, so the next window share brings its own
+/// application's sound and the next screen share none.
 #[gpui::test]
-fn the_person_s_choice_wins_over_the_window_s(cx: &mut TestAppContext) {
+fn each_share_starts_from_its_own_sound(cx: &mut TestAppContext) {
+    use dilla_media::app_audio::AppSource;
+    let (w, id, music, _) = sound_world(cx);
+    let other = AppSource {
+        serial: 41,
+        pid: 4100,
+        label: "Radio".to_owned(),
+    };
+    pick(cx, &w, "window:7");
+    cx.run_until_parked();
+    cx.update(|cx| voice::sync(id, call_state(true), None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Window(music.clone()));
+    // The live panel's change holds for this share.
+    cx.update(|cx| voice::set_share_app(id, Some(other.clone()), cx));
+    assert_eq!(
+        sound(cx, id),
+        voice::ShareSound::Person(Some(other.clone()))
+    );
+    // The share ends: nothing is remembered.
+    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+    // The next window share brings its own application's sound again.
+    pick(cx, &w, "window:7");
+    cx.run_until_parked();
+    cx.update(|cx| voice::sync(id, call_state(true), None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Window(music));
+    // Switched off in the live panel, then the call ends (with the share on): dropped as well.
+    cx.update(|cx| voice::set_share_app(id, None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Person(None));
+    cx.update(|cx| voice::sync(id, Arc::new(AppState::default()), None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+    // A choice left with no share running goes when the call ends.
+    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
+    cx.update(|cx| voice::set_share_app(id, Some(other.clone()), cx));
+    cx.update(|cx| voice::sync(id, Arc::new(AppState::default()), None, cx));
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset, "the call ended");
+    // A screen share after a choice brings none.
+    cx.update(|cx| voice::sync(id, call_state(true), None, cx));
+    cx.update(|cx| voice::set_share_app(id, Some(other), cx));
+    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
+    pick(cx, &w, "screen:1");
+    cx.run_until_parked();
+    assert_eq!(sound(cx, id), voice::ShareSound::Unset);
+}
+
+/// A choice made in the live panel before the window's own sound was found is kept for that share: the late lookup
+/// never replaces the person's choice.
+#[gpui::test]
+fn the_person_s_live_choice_wins_over_a_late_window_sound(cx: &mut TestAppContext) {
     use dilla_media::app_audio::AppSource;
     let (w, id, _, _) = sound_world(cx);
     let other = AppSource {
@@ -683,22 +773,11 @@ fn the_person_s_choice_wins_over_the_window_s(cx: &mut TestAppContext) {
         pid: 4100,
         label: "Radio".to_owned(),
     };
+    pick(cx, &w, "window:7");
+    // Before the lookup lands (it runs off the UI thread), the person chooses in the live panel.
     cx.update(|cx| voice::set_share_app(id, Some(other.clone()), cx));
-    pick(cx, &w, "window:7");
     cx.run_until_parked();
-    assert_eq!(
-        sound(cx, id),
-        voice::ShareSound::Person(Some(other.clone()))
-    );
-    // That share ends: the remembered choice stays for the next one.
-    cx.update(|cx| voice::sync(id, call_state(true), None, cx));
-    cx.update(|cx| voice::sync(id, call_state(false), None, cx));
     assert_eq!(sound(cx, id), voice::ShareSound::Person(Some(other)));
-    // Switched off, it stays off for that share.
-    cx.update(|cx| voice::set_share_app(id, None, cx));
-    pick(cx, &w, "window:7");
-    cx.run_until_parked();
-    assert_eq!(sound(cx, id), voice::ShareSound::Person(None));
 }
 
 #[gpui::test]
@@ -739,7 +818,7 @@ fn a_denied_listing_shows_how_to_allow_screen_recording(cx: &mut TestAppContext)
     rec.install(cx);
     cx.update(|cx| {
         share_picker::set_lister(
-            Arc::new(|| Listing {
+            Arc::new(|_: share_picker::Cancel| Listing {
                 found: vec![],
                 denied: true,
             }),
@@ -766,7 +845,12 @@ fn a_denied_listing_shows_how_to_allow_screen_recording(cx: &mut TestAppContext)
     });
     vcx.update(|_, cx| share_picker::cancel(id, cx));
 
-    cx.update(|cx| share_picker::set_lister(Arc::new(|| Vec::<Found>::new().into()), cx));
+    cx.update(|cx| {
+        share_picker::set_lister(
+            Arc::new(|_: share_picker::Cancel| Vec::<Found>::new().into()),
+            cx,
+        )
+    });
     let (_, vcx) = cx.add_window_view(|_, _| Host);
     vcx.update(|window, _| window.activate_window());
     vcx.run_until_parked();
@@ -786,7 +870,7 @@ fn the_listed_owner_reaches_the_window_sound(cx: &mut TestAppContext) {
     let (w, id, _, _) = sound_world(cx);
     cx.update(|cx| {
         share_picker::set_lister(
-            Arc::new(|| {
+            Arc::new(|_: share_picker::Cancel| {
                 vec![Found {
                     source: DesktopSource {
                         kind: SourceKind::Window,

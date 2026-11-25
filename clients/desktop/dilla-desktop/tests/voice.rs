@@ -1049,11 +1049,25 @@ fn the_share_panel_opens_at_its_button_without_a_sound_question_first(cx: &mut T
         s.voice.share.screen = true;
         Arc::new(s)
     };
-    cx.update(|window, cx| voice::sync(voice::wid(window), sharing, None, cx));
-    area(cx, |ui| ui.share_menu = true);
-    redraw(cx);
-    redraw(cx);
-    assert!(cx.debug_bounds("voice-share-menu").is_some());
+    // Review m2: the share goes live and the panel opens in the same frame (the portal's pick): the quality chevron
+    // widens the Share control then, and the panel hangs from the new edge after one draw, not one frame late.
+    cx.update(|window, cx| {
+        let w = voice::wid(window);
+        voice::sync(w, sharing, None, cx);
+        voice::ui_mut(w, cx).share_menu = true;
+        window.refresh();
+    });
+    cx.run_until_parked();
+    let panel = cx.debug_bounds("voice-share-menu").expect("the live panel");
+    let button = cx
+        .debug_bounds("voice-share-anchor")
+        .expect("the Share control with its chevron");
+    assert!(
+        (panel.right() - button.right()).abs() < gpui::px(1.0),
+        "after one draw: panel {:?}, control {:?}",
+        panel.right(),
+        button.right()
+    );
     assert_eq!(
         cx.debug_bounds("voice-share-sound").is_some(),
         dilla_media::app_audio::supported(),

@@ -17,6 +17,7 @@ seconds, printing the frame size; `ended` means the source closed.
 | In a call: Share, then pick a screen; the other side sees it, and your own tile shows your share; Stop ends it (your own tile's picture goes with it), and closing the window ends it | | | | |
 | In a call: Share opens Dilla's picker; without Screen Recording it shows the permission line, and after allowing and relaunching it lists the tiles | | n/a | n/a | n/a |
 | KDE Plasma (KWin 6.8+, or 6.0-6.7 with the deb, rpm or AUR installed): Go live opens Dilla's picker (screens and windows with thumbnails), never the system's dialog; sharing a window brings its application's sound with no question before (the live panel's sound row says which); a still window keeps its picture for the others; closing the shared window ends the share; `cargo test -p dilla-media --test capture -- --ignored kde_picker_lists_captures_and_lets_go` passes | n/a | n/a | n/a | |
+| KDE Plasma: with the picker open for 10 s (it takes a thumbnail of every source every 2 s), and again while sharing, note whether Plasma's own "screen is being recorded" indicator (the system tray's camera or screencast icon) flashes or stays; it must be gone a few seconds after the picker closes or the share stops | n/a | n/a | n/a | |
 | The system's dialog (GNOME, a Flatpak or Snap, KWin 6.0-6.7 with the AppImage or tar.gz): the panel before a share has no sound row; Go live opens the dialog, which asks every time (no "remember"); after the pick the share panel opens by itself with the sound row | n/a | n/a | n/a | |
 | The share panel (Share, or the chevron while sharing) opens above the Share button, its right edge on the button's, and stays inside a narrow window | | | | |
 | In a call: the camera button starts the camera; the other side sees it, and your own tile shows it mirrored (the other side sees it the right way round) | n/a | | | |
@@ -26,7 +27,7 @@ seconds, printing the frame size; `ended` means the source closed.
 | Check | macOS 14.2+ | Windows 10/11 | Linux (PipeWire) |
 |---|---|---|---|
 | `capture-probe apps` lists the applications playing sound, never Dilla itself | each playing application once (before 14.2: `not available on this system`) | each playing application once (before build 19041: `not available on this system`) | each playing application once |
-| In a call, while sharing, the share menu shows the sound row ("Also share an application’s sound"); on, it lists the playing applications (the panel before a share has none) | shown on 14.2+, absent before | shown on build 19041+, absent before | shown |
+| In a call, while sharing, the share menu shows the sound row ("Also share an application’s sound"); on, it lists the playing applications (the panel before a share has none). A choice there holds for that share only: the next window share brings its own application's sound, the next screen share none | shown on 14.2+, absent before | shown on build 19041+, absent before | shown |
 | `cargo test -p dilla-media --test app_audio -- --ignored` (two `pw-play` into a null sink; the listener hears only the chosen one) | n/a | n/a | passes with a PipeWire session |
 
 ## Calls with the Bot

@@ -206,13 +206,16 @@ mod m {
     pub const DIVIDER_INSET_X: f32 = 4.0;
 }
 
-/// What the screen share's sound is, and who chose it (Task 44, D21).
+/// What the screen share's sound is, and who chose it (Task 44, D21). It belongs to one share (Jonas 2026-11-25): every
+/// share starts `Unset`, so a window brings its own application's sound and a screen none, and a choice in the live
+/// panel holds until that share (or the call) ends.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ShareSound {
     /// Nothing chosen: a shared window brings its application's sound.
     #[default]
     Unset,
-    /// The person's choice in the sound section: an application, or switched off (`None`). A window never replaces it.
+    /// The person's choice in the live panel's sound row for this share: an application, or switched off (`None`). The
+    /// window's lookup landing late never replaces it.
     Person(Option<dilla_media::app_audio::AppSource>),
     /// The shared window's application. It goes when that share ends or another share starts.
     Window(dilla_media::app_audio::AppSource),
@@ -227,12 +230,9 @@ impl ShareSound {
         }
     }
 
-    /// A share starts: `Window(_)` becomes `Unset`; everything else is kept.
+    /// A share starts: from nothing, whatever the last one carried.
     pub fn on_share(self) -> ShareSound {
-        match self {
-            ShareSound::Window(_) => ShareSound::Unset,
-            other => other,
-        }
+        ShareSound::Unset
     }
 
     /// The window's application was looked up for the current share: `Unset` and `Some(a)` become `Window(a)`;
@@ -244,13 +244,9 @@ impl ShareSound {
         }
     }
 
-    /// The share ended: `Window(_)` and `Person(None)` become `Unset`. `Person(Some(_))` is kept, the remembered
-    /// choice for the next share.
+    /// The share (or the call) ended: nothing is remembered for the next share.
     pub fn ended(self) -> ShareSound {
-        match self {
-            ShareSound::Window(_) | ShareSound::Person(None) => ShareSound::Unset,
-            other => other,
-        }
+        ShareSound::Unset
     }
 }
 
@@ -1221,6 +1217,8 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
         ui.focused = None;
         ui.selected = 0;
+        // Review I4: no sound choice outlives the call.
+        ui.share_sound = std::mem::take(&mut ui.share_sound).ended();
     }
     let live = state.voice.call.phase != CallPhase::Idle;
     if panel_after_pick(
@@ -4882,11 +4880,20 @@ fn call_bar(
         .flex()
         .items_center()
         .child(
-            gpui::canvas(move |b, _, _| share_anchor.set(Some(b)), |_, (), _, _| {})
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
+            gpui::canvas(
+                move |b, window, _| {
+                    // Review m2: the control changed (the chevron came with a share going live in the same frame as the
+                    // panel opening): the next frame hangs the panel from where the control is now.
+                    if share_anchor.replace(Some(b)) != Some(b) {
+                        window.request_animation_frame();
+                    }
+                },
+                |_, (), _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
         )
         .child(bar_control(
             "voice-share",
@@ -5456,16 +5463,19 @@ mod tests {
         let (a, m) = (app(1, "a"), app(2, "m"));
         assert_eq!(Unset.on_share().found(Some(a.clone())), Window(a.clone()));
         assert_eq!(
-            Person(Some(m.clone())).on_share().found(Some(a.clone())),
+            Person(Some(m.clone())).found(Some(a.clone())),
             Person(Some(m.clone()))
         );
-        // Off stays off.
-        assert_eq!(Person(None).on_share().found(Some(a.clone())), Person(None));
-        assert_eq!(Window(a.clone()).on_share(), Unset);
+        // A choice made during the share is not replaced by the window's lookup landing late.
+        assert_eq!(Person(None).found(Some(a.clone())), Person(None));
         assert_eq!(Unset.found(None), Unset);
+        // Review I4: every share starts fresh; nothing is remembered past a share.
+        assert_eq!(Window(a.clone()).on_share(), Unset);
+        assert_eq!(Person(Some(m.clone())).on_share(), Unset);
+        assert_eq!(Person(None).on_share(), Unset);
         assert_eq!(Window(a).ended(), Unset);
         assert_eq!(Person(None).ended(), Unset);
-        assert_eq!(Person(Some(m.clone())).ended(), Person(Some(m)));
+        assert_eq!(Person(Some(m)).ended(), Unset);
     }
 
     /// Wave 2 review I-G1, useCall.tsx `outgoingText` (VoiceView.wb2.test.tsx's cases): the ring's line before and after
