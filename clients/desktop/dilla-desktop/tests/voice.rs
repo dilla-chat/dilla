@@ -146,6 +146,7 @@ fn sent_frame(w: u32, h: u32, frames: u64) -> dilla_media::RemoteFrame {
         height: h,
         rgba: Arc::new(rgba),
         frames,
+        stream_height: h,
     }
 }
 
@@ -183,9 +184,14 @@ fn the_own_screen_tile_shows_the_local_share(cx: &mut TestAppContext) {
     );
     assert!(cx.debug_bounds(media).is_none(), "no frame sent yet");
 
+    // A 1080p share's self-view frame, scaled down to the tile (self-view review m1).
+    let scaled = dilla_media::RemoteFrame {
+        stream_height: 1080,
+        ..sent_frame(64, 36, 1)
+    };
     area(cx, |ui| {
         ui.set_test_local_videos(
-            [(dilla_media::ShareKind::Screen, sent_frame(64, 36, 1))]
+            [(dilla_media::ShareKind::Screen, scaled)]
                 .into_iter()
                 .collect(),
         );
@@ -200,7 +206,12 @@ fn the_own_screen_tile_shows_the_local_share(cx: &mut TestAppContext) {
     assert_eq!(
         shown,
         Some(64 * 36 * 4),
-        "the image is the sent frame's size"
+        "the image is the self-view frame's size"
+    );
+    assert_eq!(
+        area(cx, |ui| ui.stat_height_for_tests(&key)),
+        Some(1080),
+        "the tile's stat says the height that is sent, not the scaled one"
     );
 
     // The share stops: the state no longer shares and the tap holds nothing.

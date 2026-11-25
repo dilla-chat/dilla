@@ -30,4 +30,4 @@ seconds, printing the frame size; `ended` means the source closed.
 
 | Check | Any OS |
 |---|---|
-| Two clients plus the Bot: both join a voice channel, start music (the Bot joins), one shares its screen; then the sharer's network drops (Wi-Fi off) and comes back, and it joins voice again. With the other person still in the call it is back in within seconds; with only the Bot left it is back within about a minute, in a fresh call (the music stopped) | |
+| Two clients plus the Bot: both join a voice channel, start music (the Bot joins), one shares its screen; then the sharer's network drops (Wi-Fi off) and comes back, and it joins voice again. With the other person still in the call it is back in within seconds; with only the Bot left it is back in a fresh call (the music stopped) once the server ended the old one: usually about a minute, up to about three minutes when the old connection keeps trying to come back. Meanwhile **join voice** waits about 30 seconds, then says "Could not join voice. Try again."; press **join voice** again | |

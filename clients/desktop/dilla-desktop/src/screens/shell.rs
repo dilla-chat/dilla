@@ -2332,12 +2332,15 @@ fn in_room_name(state: &AppState) -> Option<String> {
 /// the microphone (`muted` / `unmuted`).
 fn call_announcement(before: &CallHeard, now: &CallHeard) -> Option<String> {
     // useCall.tsx :1105: a rejoin's wait (up to 30 s) is said once as it starts, so a reader knows why nothing happens.
-    if let Some(place) = &now.rejoining
+    // A place not known yet (empty) is waited for: the wait is said once, with the place (self-view review m4).
+    if let Some(place) = now.rejoining.as_ref().filter(|p| !p.is_empty())
         && before.rejoining.as_ref() != Some(place)
     {
         return Some(tf("voice.announce.rejoining", &[("where", place)]));
     }
+    // While a rejoin waits the call is not left: no "You left …", whether its place is known yet or not.
     match (&before.room, &now.room) {
+        _ if now.rejoining.is_some() => {}
         (_, Some(room)) if before.room.as_ref() != Some(room) => {
             return Some(tf("voice.announce.joined", &[("where", room)]));
         }
@@ -2424,6 +2427,36 @@ mod tests {
         assert_eq!(
             call_announcement(&at(None, Some("lounge")), &at(Some("lounge"), None)).as_deref(),
             Some("You joined lounge.")
+        );
+    }
+
+    /// Self-view review m4: a rejoin whose place is not known yet says nothing; it is said once, with the place, when
+    /// the place resolves.
+    #[test]
+    fn a_rejoin_is_not_announced_with_an_empty_place() {
+        let at = |rejoining: Option<&str>| CallHeard {
+            room: None,
+            rejoining: rejoining.map(str::to_owned),
+            muted: false,
+            deafened: false,
+        };
+        assert_eq!(call_announcement(&at(None), &at(Some(""))), None);
+        let was_in = CallHeard {
+            room: Some("lounge".into()),
+            ..at(None)
+        };
+        assert_eq!(
+            call_announcement(&was_in, &at(Some(""))),
+            None,
+            "a rejoin is not a leave"
+        );
+        assert_eq!(
+            call_announcement(&at(Some("")), &at(Some("lounge"))).as_deref(),
+            Some("Rejoining lounge. This can take up to 30 seconds.")
+        );
+        assert_eq!(
+            call_announcement(&at(Some("lounge")), &at(Some("lounge"))),
+            None
         );
     }
 

@@ -290,6 +290,8 @@ pub struct VoiceUi {
     /// Counts the shares that started (and ended): a window's sound that is found late is dropped when this moved.
     share_seq: u64,
     video_seq: u64,
+    /// A stage or DM call box drew video since the last repaint for a frame ([`video_tick`]).
+    video_drawn: bool,
     /// What the ring area (18) was last told: where this device's call is, and the roster of the outgoing ring's call.
     told_in_call: Option<Option<String>>,
     told_roster: Option<(ChannelId, Vec<UserId>)>,
@@ -942,6 +944,12 @@ impl VoiceUi {
     pub fn frame_image_for_tests(&self, stream: &StreamKey) -> Option<Arc<RenderImage>> {
         self.images.get(stream).map(|(_, i)| i.clone())
     }
+
+    /// Test hook: the frame height a stream's tile stat says, if any.
+    #[cfg(feature = "test-hooks")]
+    pub fn stat_height_for_tests(&self, stream: &StreamKey) -> Option<u32> {
+        self.heights.get(stream).copied()
+    }
 }
 
 /// The colour bars of `voice-sim`'s test pattern: eight vertical bars over a grey ramp, 320x180, as a frame gpui draws.
@@ -1244,8 +1252,20 @@ enum Tick {
     Repaint(u64),
 }
 
-/// Repaints `window` while new remote video frames arrive (at most 30 times a second), for as long as its call is live
-/// and the window is open; then the loop ends.
+/// A repaint loop's tick: the session's frame counter is at `seq`, the window last repainted for `seen`, and `drawn`
+/// says whether a stage or DM call box drew video since then. Only then does a new frame repaint the whole window (gpui
+/// has no narrower notify for the voice area: it is a global drawn inside the shell's view). A window showing a text
+/// channel is not repainted per frame (self-view review m1); its next draw of the stage takes the newest frame.
+fn video_tick(seq: u64, seen: u64, drawn: bool) -> Tick {
+    if seq == seen || !drawn {
+        Tick::Wait
+    } else {
+        Tick::Repaint(seq)
+    }
+}
+
+/// Repaints `window` while new video frames arrive (at most 30 times a second) and video is drawn ([`video_tick`]), for
+/// as long as its call is live and the window is open; then the loop ends.
 fn repaint_on_video(window: WindowId, cx: &mut App) {
     cx.default_global::<VoiceAreas>().loops += 1;
     cx.spawn(async move |cx| {
@@ -1263,14 +1283,11 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
                     return Tick::Stop;
                 }
                 match ui.session.as_ref() {
-                    Some(s) => {
-                        let seq = s.video_seq.load(Ordering::Relaxed);
-                        if seq == ui.video_seq {
-                            Tick::Wait
-                        } else {
-                            Tick::Repaint(seq)
-                        }
-                    }
+                    Some(s) => video_tick(
+                        s.video_seq.load(Ordering::Relaxed),
+                        ui.video_seq,
+                        ui.video_drawn,
+                    ),
                     None => Tick::Wait,
                 }
             });
@@ -1278,7 +1295,10 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
                 Tick::Stop => break,
                 Tick::Wait => {}
                 Tick::Repaint(seq) => cx.update(|cx| {
-                    ui_mut(window, cx).video_seq = seq;
+                    let ui = ui_mut(window, cx);
+                    ui.video_seq = seq;
+                    // The draw sets it again while it still shows video; a window that moved on stops repainting.
+                    ui.video_drawn = false;
                     if let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == window)
                     {
                         let _ = handle.update(cx, |_, window, _| window.refresh());
@@ -3128,6 +3148,21 @@ fn stage_videos(
     (videos, Some(mirrored))
 }
 
+/// One stream's frame rate `(since, frames then, fps)` at `now`, its counter at `frames`: measured over a second or
+/// more. A counter that went back (a quality change starts the share's sent counter again) is measured afresh from
+/// here, and the last rate is kept until then (self-view review m5).
+fn measure_rate(rate: &mut (std::time::Instant, u64, u32), frames: u64, now: std::time::Instant) {
+    if frames < rate.1 {
+        *rate = (now, frames, rate.2);
+        return;
+    }
+    let dt = now.duration_since(rate.0).as_secs_f32();
+    if dt >= 1.0 {
+        let fps = ((frames - rate.1) as f32 / dt).round() as u32;
+        *rate = (now, frames, fps);
+    }
+}
+
 /// `frame`'s RGBA rows as the BGRA gpui draws, mirrored left to right with `mirror` (the own camera's self-view only:
 /// what is sent is never mirrored).
 fn bgra_of(frame: &RemoteFrame, mirror: bool) -> Vec<u8> {
@@ -3168,19 +3203,18 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
     let mut stale: Vec<Arc<RenderImage>> = Vec::new();
     let ui = ui_mut(w, cx);
     let now = std::time::Instant::now();
+    // Video was drawn: the repaint loop goes on repainting for new frames ([`video_tick`]).
+    ui.video_drawn = true;
     ui.rates.retain(|k, _| videos.contains_key(k));
     for (k, f) in &videos {
         let rate = ui.rates.entry(k.clone()).or_insert((now, f.frames, 0));
-        let dt = now.duration_since(rate.0).as_secs_f32();
-        if dt >= 1.0 {
-            rate.2 = ((f.frames.saturating_sub(rate.1)) as f32 / dt).round() as u32;
-            *rate = (now, f.frames, rate.2);
-        }
+        measure_rate(rate, f.frames, now);
     }
     ui.heights = videos
         .iter()
         .filter(|(k, _)| Some(*k) != mirrored.as_ref())
-        .map(|(k, f)| (k.clone(), f.height))
+        // The stream's own height: a self-view frame is scaled down, its stat says what is sent.
+        .map(|(k, f)| (k.clone(), f.stream_height))
         .collect();
     ui.images.retain(|k, (_, image)| {
         let keep = videos.contains_key(k);
@@ -5140,6 +5174,40 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Self-view review m5: a stream's counter that starts again (a quality change gives the share a new sent counter)
+    /// keeps the last measured rate until a new one is measured, never "0 fps" for a second.
+    #[test]
+    fn a_rate_is_kept_while_its_counter_starts_again() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let s = Duration::from_secs(1);
+        let mut rate = (t0, 0, 0);
+        super::measure_rate(&mut rate, 15, t0 + s);
+        assert_eq!(rate.2, 15);
+        // The counter went back (a new share counter): the rate stays, measured afresh from here.
+        super::measure_rate(&mut rate, 2, t0 + s + Duration::from_millis(100));
+        assert_eq!(rate.2, 15, "kept while the new counter is measured");
+        super::measure_rate(&mut rate, 7, t0 + s + Duration::from_millis(600));
+        assert_eq!(rate.2, 15, "less than a second measured");
+        super::measure_rate(&mut rate, 17, t0 + s * 2 + Duration::from_millis(100));
+        assert_eq!(rate.2, 15, "the new counter's own rate");
+        super::measure_rate(&mut rate, 17, t0 + s * 3 + Duration::from_millis(100));
+        assert_eq!(rate.2, 0, "a stream that stopped sending reads 0");
+    }
+
+    /// Self-view review m1: a new frame repaints the window only while a stage or DM call box drew video since the
+    /// last repaint. A window that shows a text channel (the call's frames still arrive) is not repainted per frame;
+    /// the next draw of the stage picks up the newest frame.
+    #[test]
+    fn a_new_frame_repaints_only_while_video_is_drawn() {
+        assert!(matches!(super::video_tick(3, 3, true), super::Tick::Wait));
+        assert!(matches!(
+            super::video_tick(4, 3, true),
+            super::Tick::Repaint(4)
+        ));
+        assert!(matches!(super::video_tick(4, 3, false), super::Tick::Wait));
+    }
+
     /// Jonas 2026-11-25 (a screenshot of "Rejoining {where}. This can take up…"): while a rejoin waits for this device's
     /// earlier Remove, the dock's line says "connecting", as the old client's did (useCall.tsx :1101-1102: "the dock says
     /// connecting"); the rejoining sentence is only spoken (useCall.tsx :1105). No line carries a raw placeholder.

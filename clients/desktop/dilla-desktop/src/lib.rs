@@ -282,6 +282,54 @@ pub fn main_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
 
 #[cfg(test)]
 mod tests {
+    /// The `{name}` placeholders of `value` that the `.replace("…", …)` chain at the start of `chain` (the source right
+    /// after a `t("key")` call) does not replace. A replaced literal counts when it contains the placeholder (two sites
+    /// replace `#{channel}`). The chain ends at the first thing that is not a `.replace(`.
+    fn placeholders_left(value: &str, chain: &str) -> Vec<String> {
+        let mut replaced: Vec<&str> = Vec::new();
+        let mut rest = chain.trim_start();
+        while let Some(args) = rest.strip_prefix(".replace(") {
+            let Some(lit) = args.trim_start().strip_prefix('"') else {
+                break;
+            };
+            let Some(end) = lit.find('"') else { break };
+            replaced.push(&lit[..end]);
+            // Past the call's closing parenthesis (its value may hold calls and string literals of its own).
+            let mut depth = 1usize;
+            let mut quoted = false;
+            let mut close = None;
+            for (i, c) in lit[end + 1..].char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '(' if !quoted => depth += 1,
+                    ')' if !quoted => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(end + 1 + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { break };
+            rest = lit[close + 1..].trim_start();
+        }
+        let mut left = Vec::new();
+        let mut text = value;
+        while let Some(open) = text.find('{') {
+            let Some(len) = text[open..].find('}') else {
+                break;
+            };
+            let name = &text[open..open + len + 1];
+            if !replaced.iter().any(|r| r.contains(name)) && !left.iter().any(|l| l == name) {
+                left.push(name.to_owned());
+            }
+            text = &text[open + len + 1..];
+        }
+        left
+    }
+
     /// Every `t("key")` in the app's source names a string without a `{placeholder}`: `t` draws a placeholder as it is
     /// written ("Rejoining {where}. …" in the voice dock, Jonas 2026-11-25), so a string with one goes through `tf` with
     /// its values, or fills it by hand (`.replace`). The scan reads `t(` followed by a string literal (a key chosen at run
@@ -321,13 +369,13 @@ mod tests {
                     continue;
                 };
                 seen += 1;
-                // A call that fills its placeholder by hand (`t("…").replace("{n}", …)`) draws none.
+                // A call that fills its placeholders by hand (`t("…").replace("{n}", …)`) draws none: every `{name}`
+                // of the string must be in a `.replace("…"` of this call site's chain.
                 let after = lit[key.len() + 1..].trim_start();
-                let filled = after
-                    .strip_prefix(')')
-                    .is_some_and(|a| a.trim_start().starts_with(".replace("));
-                if value.contains('{') && !filled {
-                    raw.push(format!("{}: t(\"{key}\")", file.display()));
+                let chain = after.strip_prefix(')').unwrap_or("");
+                let left = placeholders_left(value, chain);
+                if !left.is_empty() {
+                    raw.push(format!("{}: t(\"{key}\") leaves {left:?}", file.display()));
                 }
             }
         }
@@ -336,6 +384,35 @@ mod tests {
             raw.is_empty(),
             "t() of a string with a placeholder (use tf): {raw:#?}"
         );
+    }
+
+    /// Self-view review m3: the guard's `.replace(` escape hatch counts only placeholders the call site replaces. A
+    /// `.replace` of another name, or of only one of two placeholders, leaves the rest raw.
+    #[test]
+    fn a_replace_fills_only_the_placeholders_it_names() {
+        let left = |value: &str, after: &str| placeholders_left(value, after);
+        assert_eq!(
+            left("Rejoining {where}.", ".replace(\"{channel}\", x)"),
+            vec!["{where}"]
+        );
+        assert_eq!(left("{a} and {b}", ".replace(\"{a}\", &one)"), vec!["{b}"]);
+        assert!(
+            left(
+                "{a} and {b}",
+                ".replace(\"{a}\", &f(1)).replace(\"{b}\", \"x\")"
+            )
+            .is_empty()
+        );
+        assert!(
+            left(
+                "Message #{channel}",
+                "\n    .replace(\"#{channel}\", &name)"
+            )
+            .is_empty(),
+            "a literal around the placeholder"
+        );
+        assert!(left("plain", "").is_empty());
+        assert_eq!(left("{n} min", ""), vec!["{n}"]);
     }
 
     /// KDE strips a trailing `.desktop` from the app id before it looks up the desktop entry, so the entry named
