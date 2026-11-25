@@ -893,6 +893,8 @@ impl Engine {
                 let mut st = self.st();
                 let held = st.held.entry(g).or_default();
                 held.push(f);
+                #[cfg(feature = "testing")]
+                probes::frame_held(g, r.state);
                 if held.len() > HELD_MAX {
                     held.remove(0);
                 }
@@ -3020,6 +3022,30 @@ pub mod probes {
         refused()
             .as_ref()
             .and_then(|m| m.get(&group).copied())
+            .unwrap_or(0)
+    }
+
+    type HeldCounts = HashMap<([u8; 16], u8), u32>;
+    static HELD: Mutex<Option<HeldCounts>> = Mutex::new(None);
+
+    fn held() -> std::sync::MutexGuard<'static, Option<HeldCounts>> {
+        HELD.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn frame_held(group: [u8; 16], state: u8) {
+        *held()
+            .get_or_insert_with(HashMap::new)
+            .entry((group, state))
+            .or_default() += 1;
+    }
+
+    /// How many frames of `group` an engine held so far, in this process, while its row was in `state` (0:
+    /// registering, 1: joining).
+    pub fn frames_held(group: [u8; 16], state: u8) -> u32 {
+        held()
+            .as_ref()
+            .and_then(|m| m.get(&(group, state)).copied())
             .unwrap_or(0)
     }
 }

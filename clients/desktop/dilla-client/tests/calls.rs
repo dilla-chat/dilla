@@ -2496,9 +2496,19 @@ impl CallRoutes for JoinDuringRegistration {
                 .await
                 .expect("bob's client")
                 .expect("bob joins the registered group");
+            let group = joined.group_id;
             *self.joined.lock().unwrap() = Some(joined);
-            // Long enough for the commit's frame to reach alice's client over the gateway.
-            tokio::time::sleep(Duration::from_millis(1_000)).await;
+            // Ordered on state, not on time: the registration's answer is handed back only once alice's engine has
+            // held bob's commit frame while her row was still registering (state 0; bob's own engine holds its copy
+            // at state 1). Without that the test could pass on a client that never replays a held frame.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while dilla_client::sync::probes::frames_held(group, 0) == 0 {
+                assert!(
+                    Instant::now() < deadline,
+                    "alice's engine never held bob's commit frame while registering"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
         answer
     }
