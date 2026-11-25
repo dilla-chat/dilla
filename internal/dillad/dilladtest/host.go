@@ -702,6 +702,35 @@ func (h *Host) MarkRevoked(ctx context.Context, device id.ID) error {
 	return s.Repo().RevokeDevice(ctx, device, h.clk.Now().Unix())
 }
 
+// MarkBot makes device's account a managed-bot account (users.kind 1, what botaccess.IsBotUser
+// reads) and writes nothing else: its devices, leaves and memberships stay. Its sessions stop
+// resolving (a bot account with no Bot installation binding has none), so the account never acts as
+// a member again, as a managed Bot is never elected to commit. The store has
+// no write for an account's kind (only the Bot's enrolment creates a kind-1 account), so this
+// opens its own write connection to the host's database, as bootstrap does. It is how a scenario
+// gives a call a Bot member: the testkit peer joins the call group as a person, then is marked. The
+// account's Bot installation is not modelled, so the /rtc gate refuses it; a scenario puts it in
+// the room with a raw SFU token (POST /debug/sfu/token).
+func (h *Host) MarkBot(ctx context.Context, device id.ID) error {
+	dev, err := h.Server().Repo().GetDevice(ctx, device)
+	if err != nil {
+		return fmt.Errorf("dilladtest: mark %s a bot: %w", device, err)
+	}
+	write, err := sqlite.OpenWrite(h.cfg.DB.Path)
+	if err != nil {
+		return fmt.Errorf("dilladtest: %w", err)
+	}
+	defer func() { _ = write.Close() }()
+	res, err := write.ExecContext(ctx, `UPDATE users SET kind = 1 WHERE id = ?`, dev.UserID)
+	if err != nil {
+		return fmt.Errorf("dilladtest: mark %s a bot: %w", device, err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("dilladtest: mark %s a bot: %d rows, %w", device, n, err)
+	}
+	return nil
+}
+
 // WebhookURL is where the in-process LiveKit posts its webhooks: the host's own loopback receiver,
 // which hands each verified event to the current instance's call events. "" without an SFU.
 func (h *Host) WebhookURL() string { return h.webhookURL }

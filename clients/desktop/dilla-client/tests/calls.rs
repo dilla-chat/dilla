@@ -1925,6 +1925,245 @@ async fn rejoin_waits_for_pending_remove() {
     drop(host);
 }
 
+/// CT 144, 2026-11-25 (Casa Bonita): `rejoin_waits_for_pending_remove` with the managed Bot as the only other member.
+/// Alice drops out of a call whose only other member is a Bot that stays in the room; the instance proposes the Remove
+/// of her leaf, and nobody can commit it: the gateway never elects a managed Bot. Her rejoins are refused
+/// `E_REMOVE_PENDING` until the room sweep's bots-only end closes the call and its group (two sweeps after she is
+/// absent and pending removal); the join that is waiting then registers a fresh call group and she is `In`, the only
+/// leaf of it.
+///
+/// The test host has no managed Bot that joins a call group, so the Bot is modelled: the testkit peer registers the
+/// call group as a person, sits in the room as a listen-only participant on a raw SFU token (`POST /debug/sfu/token`:
+/// an account of kind 1 with no Bot installation would be refused by the `/rtc` gate), and is then made a Bot account
+/// (`POST /debug/mark-bot`), which also ends its sessions, so it never commits. The host's clock is a fake one, moved
+/// here as fast as the room sweep's real cadence (the instance's RoomSweepInterval, 30 s) runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+async fn a_dropped_person_rejoins_a_call_whose_only_other_member_is_the_bot() {
+    use dilla_client::calls::{CallTarget, MediaEpoch};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use world::{Driver, MediaPeer, hex};
+
+    tokio::task::spawn_blocking(MediaPeer::build).await.unwrap();
+    let host = tokio::task::spawn_blocking(|| world::start_host("botrejoin"))
+        .await
+        .unwrap();
+    let (host, mut peer, setup) = tokio::task::spawn_blocking(move || {
+        let mut peer = Driver::start(&host);
+        let setup = peer.request(
+            "setup",
+            json!({"community": "c", "channel": "general", "voice": true}),
+        );
+        (host, peer, setup)
+    })
+    .await
+    .unwrap();
+    let community = world::unhex16(setup["community_id"].as_str().unwrap());
+    let voice_hex = setup["voice_channel_id"].as_str().unwrap().to_owned();
+    let voice = world::unhex16(&voice_hex);
+    let bot_device = setup["device_id"].as_str().unwrap().to_owned();
+    let code = setup["invite_code"].as_str().unwrap().to_owned();
+
+    let invite = host.invites.last().unwrap().clone();
+    let alice = world::sign_up(&host, &invite, "alice", "botrejoin").await;
+    let (host, alice) = tokio::task::spawn_blocking(move || {
+        world::ds_of(&host, &alice)
+            .join_community(&community, &code)
+            .unwrap();
+        world::clear_session(&alice);
+        (host, alice)
+    })
+    .await
+    .unwrap();
+    let a_dev = hex(&alice.device_id);
+    let client = world::start(&alice).await;
+    world::connected(&client).await;
+    let calls = client.calls();
+    let target = CallTarget {
+        channel: voice,
+        community: Some(community),
+        vdec: String::new(),
+    };
+
+    // The Bot-to-be registers the call group; alice joins it and enters the room with her tone.
+    let (mut peer, joined_peer) = tokio::task::spawn_blocking({
+        let voice_hex = voice_hex.clone();
+        move || {
+            let j = peer.request("call_join", json!({"actor": "peer", "channel": voice_hex}));
+            (peer, j)
+        }
+    })
+    .await
+    .unwrap();
+    let group_hex = joined_peer["group"].as_str().unwrap().to_owned();
+    let joined = calls
+        .join(target.clone())
+        .outcome()
+        .await
+        .unwrap()
+        .expect("alice joins");
+    assert_eq!(hex(&joined.group_id), group_hex);
+    let room = world::room_of(&joined.started.token);
+    let mut media = MediaPeer::start(
+        &host.rtc_url(&joined.started.livekit_url),
+        &joined.started.token,
+        440,
+    );
+    media.epoch(&joined.media);
+    media.next("connected", Duration::from_secs(30));
+
+    // The Bot enters the room too, listening only, as the music Bot sits in it between tracks.
+    let control = host.control.clone();
+    let (status, raw) = world::control_post(
+        &control,
+        "/debug/sfu/token",
+        &json!({"room": room, "identity": bot_device}),
+    );
+    assert_eq!(status, 200, "a raw SFU token for the Bot");
+    let mut bot_media =
+        MediaPeer::listen(raw["url"].as_str().unwrap(), raw["token"].as_str().unwrap());
+    // A member's keys for the epoch alice joined at: the same epoch secret, at the Bot's own leaf.
+    let bot_leaf = joined
+        .media
+        .roster
+        .iter()
+        .find(|(_, d, _)| hex(d) == bot_device)
+        .expect("the Bot holds a leaf of the call group")
+        .0;
+    bot_media.epoch(&MediaEpoch {
+        epoch: joined.media.epoch,
+        base_key: joined.media.base_key.clone(),
+        own_leaf: bot_leaf,
+        roster: joined.media.roster.clone(),
+        code: joined.media.code.clone(),
+    });
+    bot_media.next("connected", Duration::from_secs(30));
+
+    let read_channel = voice_hex.clone();
+    let read = move |peer: &mut Driver| {
+        peer.request(
+            "call_read",
+            json!({"actor": "peer", "channel": read_channel}),
+        )
+    };
+    let in_room = |r: &serde_json::Value, dev: &str| {
+        r["participants"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p["device"] == dev))
+    };
+    let bot_for_read = bot_device.clone();
+    let peer = tokio::task::spawn_blocking(move || {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let r = read(&mut peer);
+            if in_room(&r, &a_dev) && in_room(&r, &bot_for_read) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "alice and the Bot never were both in the room"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        // The clock moves on a little: alice's admission is from before the drop, as it is in any real call.
+        world::advance_clock(&control, 5, false);
+        // Alice drops out: her media leaves the room, so the instance proposes the Remove of her leaf.
+        media.quit();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let r = read(&mut peer);
+            if !in_room(&r, &a_dev) && in_room(&r, &bot_for_read) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "alice never left the room, or the Bot left with her"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        // Only now is the peer the Bot: a person in the room could have committed her Remove.
+        let (status, _) = world::control_post(
+            &control,
+            "/debug/mark-bot",
+            &json!({"device": bot_for_read}),
+        );
+        assert_eq!(status, 204, "mark the peer a Bot");
+        peer
+    })
+    .await
+    .unwrap();
+    let dropped = Instant::now();
+
+    // The reloaded page's sweep: her own Remove (refused while the instance's stands) and the group forgotten.
+    let left = calls
+        .leave(joined.group_id, joined.started.call_id, false)
+        .await
+        .unwrap()
+        .expect("client");
+    assert!(!left.ended);
+
+    // The host's clock keeps pace with the real one while she tries to get back in.
+    let pacing = std::sync::Arc::new(AtomicBool::new(true));
+    let clock = {
+        let pacing = pacing.clone();
+        let control = host.control.clone();
+        std::thread::spawn(move || {
+            while pacing.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_secs(5));
+                world::advance_clock(&control, 5, true);
+            }
+        })
+    };
+
+    // She rejoins as a person does, again each time a rejoin gives up waiting. The lockout ends within two sweeps of
+    // the room sweep (60 s) after she is absent and pending removal, plus a sweep's tick (5 s) and one rejoin step.
+    let bound = Duration::from_secs(2 * 30 + 5) + REJOIN_STEP + Duration::from_secs(20);
+    let mut refusals = 0;
+    let rejoined = loop {
+        let rejoin = calls.join(target.clone());
+        let phase = rejoin.phase();
+        match rejoin.outcome().await.unwrap() {
+            Ok(j) => {
+                assert_eq!(*phase.borrow(), CallPhase::In);
+                break j;
+            }
+            Err(refused) => {
+                assert_eq!(refused.code, "E_REMOVE_PENDING", "{refused:?}");
+                refusals += 1;
+                assert!(
+                    dropped.elapsed() < bound,
+                    "alice is still locked out {:?} after she dropped beside only the Bot ({refusals} refusals)",
+                    dropped.elapsed()
+                );
+            }
+        }
+    };
+    pacing.store(false, Ordering::SeqCst);
+    clock.join().unwrap();
+    let took = dropped.elapsed();
+    assert!(
+        took < bound,
+        "alice got back in {took:?} after she dropped, past the bound {bound:?}"
+    );
+    assert_ne!(
+        hex(&rejoined.group_id),
+        group_hex,
+        "a fresh call group: the old one closed with the call"
+    );
+    assert_eq!(
+        rejoined.media.roster.len(),
+        1,
+        "alice is the fresh group's only leaf"
+    );
+    assert_eq!(rejoined.media.roster[0].1, alice.device_id);
+    eprintln!("rejoined {took:?} after the drop, after {refusals} refused rejoins");
+    drop(bot_media);
+    drop(peer);
+    drop(client);
+    drop(host);
+}
+
 /// Alice's calls, her group and her call: the end [`EndBeforeResync`] makes.
 type AliceEnds = (dilla_client::calls::Calls, [u8; 16], [u8; 16]);
 

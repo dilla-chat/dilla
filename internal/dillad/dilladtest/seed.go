@@ -236,6 +236,28 @@ func ControlHandler(h *Host) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// POST /debug/mark-bot {"device": hex} makes the device's account a managed-bot account (Host.MarkBot).
+	mux.HandleFunc("POST /debug/mark-bot", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Device string `json:"device"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		device, err := id.Parse(body.Device)
+		if err != nil {
+			http.Error(w, "device: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := h.MarkBot(r.Context(), device); errors.Is(err, store.ErrNotFound) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /debug/channel", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Target     string   `json:"target"`
