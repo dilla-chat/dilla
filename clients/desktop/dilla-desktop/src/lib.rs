@@ -137,6 +137,10 @@ pub fn install(cx: &mut App) {
 /// - `muted_foreground`: `--fg-faint`, the web's `::placeholder` colour (the input paints an empty field's placeholder in it).
 ///
 /// `selection` is read too but the web sets no `::selection` colour, so it is left on the library's default.
+///
+/// It runs once, at install. gpui-component's `Theme::change` and `Theme::sync_system_appearance` load the Light or Dark
+/// theme config again over the colours and would drop these fields: dilla calls neither today, so whoever adds a call to
+/// either must run this again right after it (else the caret goes back to Light's #0A0A0A, invisible on the fields).
 fn signal_theme(cx: &mut App) {
     use dilla_desktop_ui::tokens::color;
     gpui_component::Theme::update(cx, |theme| {

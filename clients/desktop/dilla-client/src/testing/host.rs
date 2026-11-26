@@ -1,8 +1,8 @@
 //! A real dillad (dilla-testhost) with accounts made the way the app makes them (feature `testing-host`). The sign-up
 //! recipe is signup.ts `submit` from the client core's own identity (the bootstrap invite), the device list published, an
 //! authenticator app enrolled over the real `/v1/auth/totp/*` routes and the sealed backups uploaded. Each person also
-//! keeps the recovery key their sign-up showed, so a new device can sign in. Taken out of `tests/sync.rs`,
-//! `examples/peer.rs` and the desktop's `tests/support/world.rs`, which now all use this one.
+//! keeps the recovery key their sign-up showed, so a new device can sign in. Taken out of `tests/sync.rs` and the
+//! desktop's `tests/support/world.rs`, which now both use this one.
 //!
 //! Needs `target/dilla-testhost` (`go build -o target/dilla-testhost ./cmd/dilla-testhost`, or `DILLA_TESTHOST`) and the
 //! WASI core (`DILLA_CORE_WASI`, else `target/wasm32-wasip1/release/dilla_core_wasi.wasm`).
