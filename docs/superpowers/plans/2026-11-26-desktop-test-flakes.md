@@ -178,5 +178,44 @@ server-sdk-go.
 - [ ] Update `docs/user/` where Bot music or screen sharing is described, if a statement there changes.
   `npm run check:docs` must be green. Commit: `docs: note the Bot track-tail and share-press fixes`.
 
-**Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 3 follows Task 2, because both touch the G3 tests and
+### Task 5: your own speaking indicator lights (review: opus)
+
+Jonas, 2026-11-26: "speaking indicator for myself is not visible?" He added it to this PR ("Into the flake PR").
+
+**The bug:**
+- The desktop builds `voice.speaking` only from remote levels, and drops its own device
+  (`clients/desktop/dilla-desktop/src/screens/voice/session.rs` ~1189-1195, `set.retain(|d| Some(*d) != own)`).
+- `dilla-media` exposes no level for the local microphone.
+- So the own stage tile, the own sidebar entry and the user panel avatar never show speaking. The panel ring lights
+  only while push to talk is held.
+
+**Spec (web parity):** `packages/web/src/call/session.ts` ~704-760:
+- Own speaking comes from the local mic level, through the same `SpeakingDetector` thresholds as remote devices
+  (`dilla_client::features::voice_prefs::speaking`).
+- It counts only while the mic is sending: not muted, deafened or paused, and with push to talk only while the key is
+  held.
+
+**Files:**
+- Modify: `clients/desktop/dilla-media/src` (the mic/capture pipeline): publish the local input RMS on a `watch`,
+  `Call::local_audio_level()`. The level is measured after the noise suppressor and gain, on what would be sent.
+- Modify: `clients/desktop/dilla-desktop/src/screens/voice/session.rs`: an own `SpeakingDetector` fed from that
+  level. The own device is added to the speaking set only while the gate holds.
+- Modify: `clients/desktop/dilla-desktop/src/screens/user_panel.rs`: the avatar ring lights when the own device is
+  speaking, as well as while push to talk is held.
+- Test: unit tests in `session.rs`, and a dilla-media test for the level.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `own_device_speaks_from_the_local_level`: a level over `SPEAK_RMS` for over `SPEAK_ON_MS` puts the own device in
+    the set.
+  - `own_device_never_speaks_while_muted_deafened_paused_or_ptt_up`: one case for each.
+  - `own_speaking_holds_for_the_hangover`.
+  - A dilla-media test: a call fed a tone through the test mic reports a local level over `SPEAK_RMS`, and silence
+    reports one under it. A muted mic reports 0.
+  - Run them and verify they fail.
+- [ ] **Step 2: Implement the level and the own detector.** The ring and the tile use the existing speaking styles.
+- [ ] **Step 3: Run** the crates' unit tests, the `--ignored` live call tests that touch speaking, and
+  `cargo clippy -D warnings`. Commit: `desktop: your own tile and avatar light while you speak`.
+
+**Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
+and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
