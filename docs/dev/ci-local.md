@@ -1,6 +1,6 @@
 # ci-local: the CI workflows on your machine
 
-`npm run ci:local` runs the two CI workflows, `.github/workflows/server.yml` (check `server-ok`),
+`npm run ci:local` runs the two CI workflows, `.github/workflows/server.yml` (check `server-ok`) and
 `.github/workflows/desktop-ci.yml` (check `desktop-ok`), locally, so a failure shows up before the push instead of on
 the runner. Run it before every push.
 

@@ -4,8 +4,11 @@ name: release
 # and SHA256SUMS over all assets. The two installers handle dillad and dillabot independently. No container image is built or pushed here.
 #
 # The release is created in one step, after every asset and SHA256SUMS exist: releases in this repository are
-# immutable once published (no asset can be added), so nothing is attached later. This workflow has no environment
-# and reads no secret.
+# immutable once published (no asset can be added), so nothing is attached later. `gh release create` with assets
+# creates a draft, uploads every asset and publishes only after the last upload, so a failed upload never publishes an
+# incomplete release; keep every asset on that one command. A run that fails or is cancelled during the upload can
+# leave an unpublished draft, which must be deleted (`gh release delete TAG --yes`) before a rerun. This workflow has
+# no environment and reads no secret.
 #
 # Each attached installer has the tag stamped into its release tag variable, so it installs this release by
 # default: there is no "latest" (GitHub never serves a prerelease as latest, and every hyphenated tag
@@ -295,7 +298,10 @@ jobs:
           TAG: ${{ needs.tag.outputs.tag }}
           PRERELEASE: ${{ needs.tag.outputs.prerelease }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG already exists"; exit 1; fi
+          if d=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$d" = true ]; then echo "::error::a draft of $TAG exists (left by a cancelled run); delete it with gh release delete $TAG --yes and rerun"; else echo "::error::release $TAG is already published (immutable)"; fi
+            exit 1
+          fi
           flags=""
           if [ "$PRERELEASE" = true ]; then flags="--prerelease"; fi
           notes=(--generate-notes)

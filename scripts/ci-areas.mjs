@@ -62,8 +62,8 @@ export const PATH_RULES = [
 ];
 
 /**
- * What an area drags in with it: the WASI core is used by the Go tests, the desktop suites run the web client, and the
- * desktop suites run the wasm core. A server-only (go) change does not drag in the desktop lane (e2e):
+ * What an area drags in with it: the WASI core is used by the Go tests, the desktop suites run the web client and the
+ * wasm core. A server-only (go) change does not drag in the desktop lane (e2e):
  * its acceptance of a server change is its nightly run's, so a server change is never blocked on desktop
  * e2e (plan 2026-11-05, Task 6).
  */

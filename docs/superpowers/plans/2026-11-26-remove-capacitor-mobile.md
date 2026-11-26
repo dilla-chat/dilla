@@ -83,7 +83,7 @@ releases publish without the APK step. Native mobile apps come later as a separa
 - [ ] README: remove the mobile row and lines, and say that native phone apps are planned.
 - [ ] Update CONTRIBUTING, `docs/deploy/README.md` (`http.mobile_origins` section), `docs/dev/testing.md` and
   `docs/dev/ci-local.md`.
-- [ ] Write the next server release's note at `docs/deploy/releases/UNRELEASED-remove-mobile.md`. It must contain,
+- [ ] Write the next server release's note in `docs/deploy/releases/unreleased.md` (merged there after the final review). It must contain,
   in bold: **before upgrading, delete the `mobile_origins` line under `[http]` in dilla.toml, or dillad refuses to
   start (exit 78)**. It also says the release no longer carries an APK.
 - [ ] `npm run check:docs` is green. Commit: `docs: the Capacitor mobile app is gone; native apps come later`.

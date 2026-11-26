@@ -2253,7 +2253,7 @@ export function checkLocalMirror(root) {
 }
 
 /**
- * CI speed plan, Task 3: sccache on every Rust job of the four CI workflows, and no `target/` cache anywhere. A cold
+ * CI speed plan, Task 3: sccache on every Rust job of the three CI workflows, and no `target/` cache anywhere. A cold
  * macOS `cargo build` took 13 minutes and a Windows `target/` cache save 10; a compiler cache keyed per crate and flags
  * restores what a whole-directory cache never could. The release builds start clean (checkDesktopGpuiReleaseWorkflow,
  * checkDesktopGpuiSignWorkflow, checkReleaseWorkflow): none of them may mention sccache.

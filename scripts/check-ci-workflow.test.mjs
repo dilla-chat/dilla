@@ -2017,7 +2017,7 @@ test('a release that does not check the stamp landed is reported', () => {
 });
 
 test('a release that does not refuse an existing release by name is reported', () => {
-  assertReported(releaseProblems((t) => t.replace(/ {10}if gh release view "\$TAG".*\n/, '')), 'gh release view');
+  assertReported(releaseProblems((t) => t.replace(/ {10}if d=\$\(gh release view "\$TAG".*\n/, '')), 'gh release view');
 });
 
 test('a tag job that releases a commit off main is reported', () => {
@@ -2960,7 +2960,7 @@ const mustChange = (text, from, to) => { const out = text.replace(from, to); ass
 
 test('every Rust CI job uses sccache, and no release build does', () => {
   assert.deepEqual(checkSccache(REPO_ROOT), []);
-  // The pin is the action, by full commit SHA, in each of the four CI workflows.
+  // The pin is the action, by full commit SHA, in each of the three CI workflows.
   for (const file of SCCACHE_FILES) assert.match(readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8'), /uses: mozilla-actions\/sccache-action@[0-9a-f]{40} # v\d+\.\d+\.\d+\n/, file);
   for (const file of RELEASE_BUILD_FILES) assert.doesNotMatch(readFileSync(join(REPO_ROOT, '.github', 'workflows', file), 'utf8'), /sccache|RUSTC_WRAPPER/, file);
   // Removing the action from a job, or adding sccache to a release build, is reported.

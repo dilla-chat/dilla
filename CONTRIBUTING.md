@@ -67,7 +67,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, 
 
 ## Continuous integration
 
-CI is two workflows, all run on every pull request and every push to main: `server` (`.github/workflows/server.yml`:
+CI is two workflows, both run on every pull request and every push to main: `server` (`.github/workflows/server.yml`:
 the docs gates, the installer and Bot operation scripts that a release ships, the Go jobs, the Rust core checks and the
 release build), `desktop` (`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the
 integration suites; the native client has its own workflow, `desktop-gpui.yml`). Each reports one check, `server-ok` and `desktop-ok`,
