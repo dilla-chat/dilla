@@ -542,6 +542,7 @@ fn the_user_panel_tags_push_to_talk(cx: &mut TestAppContext) {
                     muted: false,
                     deafened: false,
                     ptt: self.0,
+                    speaking: false,
                 },
                 &handlers,
             ))
@@ -601,6 +602,7 @@ fn the_user_panel_opens_the_status_menu_and_picks_a_status(cx: &mut TestAppConte
                         muted: false,
                         deafened: false,
                         ptt: None,
+                        speaking: false,
                     },
                     &handlers,
                 ))

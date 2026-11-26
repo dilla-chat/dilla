@@ -943,6 +943,8 @@ pub struct Call {
     videos: watch::Receiver<RemoteVideos>,
     /// What this device sends, for its own tile ([`Call::local_videos`]).
     local_videos: watch::Sender<LocalVideos>,
+    /// The level of what the microphone sends ([`Call::local_audio_level`]).
+    local_level: watch::Sender<f32>,
     shares: Shares,
     app_audio: Arc<Mutex<Option<LocalAppAudio>>>,
     app_audio_ended: mpsc::UnboundedSender<()>,
@@ -1189,6 +1191,7 @@ impl Call {
             muted,
             videos,
             local_videos: watch::Sender::new(LocalVideos::new()),
+            local_level: watch::Sender::new(0.0),
             shares: Shares::default(),
             app_audio: Arc::default(),
             app_audio_ended,
@@ -1296,7 +1299,7 @@ impl Call {
                 frames,
                 processor,
                 source,
-                self.muted.clone(),
+                (self.muted.clone(), self.local_level.clone()),
             )));
         }
         self.local = Some(track);
@@ -1380,6 +1383,13 @@ impl Call {
     /// The speaking level of each verified remote device.
     pub fn remote_audio_levels(&self) -> watch::Receiver<RemoteLevels> {
         self.levels.clone()
+    }
+
+    /// The level of what this device's microphone sends (RMS of the last 100 ms, 0 to 1, as [`RemoteLevels`]): measured
+    /// after the noise suppressor and gain, so a suppressed noise reads low, and 0 while muted. It stays 0 for a call
+    /// without a microphone. A number only: no audio leaves through it.
+    pub fn local_audio_level(&self) -> watch::Receiver<f32> {
+        self.local_level.subscribe()
     }
 
     /// The last second of decoded audio from `device` (hex), once it is verified.
@@ -1970,13 +1980,43 @@ pub(crate) fn retry_safe(e: MediaError, sealed: bool) -> MediaError {
     }
 }
 
-/// Feeds the application's 10 ms frames through the noise processor into the published source.
+/// The level of what the microphone sends (Task 5, session.ts `ownMeter`): the RMS (0 to 1) of each 100 ms, the window
+/// the remote levels are read over ([`read_audio`]).
+#[derive(Default)]
+pub(crate) struct LevelWindow {
+    sum: f32,
+    samples: usize,
+}
+
+impl LevelWindow {
+    /// Adds one frame; answers the window's RMS once it holds 100 ms, and starts the next.
+    pub(crate) fn push(&mut self, frame: &[i16]) -> Option<f32> {
+        self.sum += frame
+            .iter()
+            .map(|s| {
+                let x = f32::from(*s) / 32768.0;
+                x * x
+            })
+            .sum::<f32>();
+        self.samples += frame.len();
+        if self.samples < RATE as usize / 10 {
+            return None;
+        }
+        let rms = (self.sum / self.samples as f32).sqrt();
+        *self = Self::default();
+        Some(rms)
+    }
+}
+
+/// Feeds the application's 10 ms frames through the noise processor into the published source. The level of each
+/// 100 ms sent (after the device chain's or this processor's noise suppression and gain, and the mute) goes to `level`.
 async fn feed_pcm(
     mut frames: mpsc::Receiver<Vec<i16>>,
     mut processor: NoiseProcessor,
     source: NativeAudioSource,
-    muted: Arc<AtomicBool>,
+    (muted, level): (Arc<AtomicBool>, watch::Sender<f32>),
 ) {
+    let mut window = LevelWindow::default();
     while let Some(mut samples) = frames.recv().await {
         if samples.len() != FRAME_SAMPLES {
             log::warn!(
@@ -1990,6 +2030,9 @@ async fn feed_pcm(
         } else if let Err(e) = processor.process(&mut samples) {
             // The processor silenced the frame: never the unprocessed samples.
             log::warn!("dilla-media: noise processor: {e}");
+        }
+        if let Some(rms) = window.push(&samples) {
+            level.send_replace(rms);
         }
         let frame = AudioFrame {
             data: samples.into(),
@@ -2655,6 +2698,23 @@ mod edge_tests {
                 ((std::f32::consts::TAU * 440.0 * t).sin() * amplitude * 32767.0) as i16
             })
             .collect()
+    }
+
+    /// Task 5: the microphone's level is the RMS of each 100 ms it sends (the remote levels' window), none in between.
+    #[test]
+    fn the_mic_level_is_the_rms_of_each_100_ms_sent() {
+        let mut window = LevelWindow::default();
+        let loud = tone(0.5);
+        for _ in 0..9 {
+            assert_eq!(window.push(&loud), None);
+        }
+        let rms = window.push(&loud).expect("100 ms");
+        assert!((rms - 0.5 / 2f32.sqrt()).abs() < 0.01, "{rms}");
+        let silent = vec![0i16; 480];
+        for _ in 0..9 {
+            assert_eq!(window.push(&silent), None);
+        }
+        assert_eq!(window.push(&silent), Some(0.0));
     }
 
     /// The receive-side first-audio measurement: an edge at each change between quiet and audible frames, none while a

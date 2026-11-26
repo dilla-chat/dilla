@@ -268,3 +268,100 @@ fn sfu_offers_av1_client_sends_vp8() {
     );
     assert_eq!(failed(&sb), 0, "{sb}");
 }
+
+/// Task 5 (session.ts `ownMeter`): the call's own microphone level is measured on what it sends. Alice joins in this
+/// process with a PCM microphone: a tone reads over the speaking threshold (dilla_client's `SPEAK_RMS`), silence under
+/// it, and a muted microphone 0.
+#[test]
+#[ignore = "needs dilla-testhost (Go) and the WASI core"]
+fn the_local_level_follows_what_the_microphone_sends() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dilla_client::features::voice_prefs::speaking::SPEAK_RMS;
+    use dilla_media::noise::{FRAME_SAMPLES, NoiseMode, RATE};
+    use tokio::sync::watch;
+
+    let host = start_host();
+    let (_group, alice, _bob, _) = call_raw_bob();
+    let a_dev = hex(&alice.device);
+    let (url, a_token) = token(&host.control, &hex(&CALL), &a_dev);
+    let e = alice_epoch(&alice);
+    let feed = dilla_media::EpochFeed::new();
+    feed.publish(dilla_media::MediaEpoch {
+        epoch: e.epoch,
+        base_key: zeroize::Zeroizing::new(e.key),
+        roster: e
+            .roster
+            .iter()
+            .map(|(l, d)| (u16::try_from(*l).unwrap(), *d))
+            .collect(),
+        own_leaf: u16::try_from(e.own_leaf).unwrap(),
+    });
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let loud = Arc::new(AtomicBool::new(true));
+    let call = rt.block_on(async {
+        let (tx, frames) = tokio::sync::mpsc::channel::<Vec<i16>>(50);
+        let loud = loud.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            let mut n = 0usize;
+            loop {
+                tick.tick().await;
+                let on = loud.load(Ordering::SeqCst);
+                let frame = (0..FRAME_SAMPLES)
+                    .map(|i| {
+                        let t = (n + i) as f32 / RATE as f32;
+                        let x = (std::f32::consts::TAU * 440.0 * t).sin() * 0.3;
+                        if on { (x * 32767.0) as i16 } else { 0 }
+                    })
+                    .collect();
+                n += FRAME_SAMPLES;
+                if tx.send(frame).await.is_err() {
+                    break;
+                }
+            }
+        });
+        dilla_media::Call::join_with(
+            dilla_media::LiveKitToken {
+                url,
+                token: zeroize::Zeroizing::new(a_token),
+                ice_servers: Vec::new(),
+            },
+            feed as Arc<dyn dilla_media::EpochKeys>,
+            dilla_media::CallOptions {
+                mic: dilla_media::Mic::Pcm {
+                    frames,
+                    noise: NoiseMode::Off,
+                },
+                playout: false,
+                key_timeout: Duration::from_secs(30),
+                ..dilla_media::CallOptions::default()
+            },
+        )
+        .await
+        .expect("Alice joins")
+    });
+    let mut level = call.local_audio_level();
+    let wait = |level: &mut watch::Receiver<f32>, what: &str, f: fn(f32) -> bool| {
+        rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), level.wait_for(|l| f(*l)))
+                .await
+                .unwrap_or_else(|_| panic!("the local level never read {what}"))
+                .expect("the call is live");
+        });
+    };
+    wait(&mut level, "a tone", |l| l > SPEAK_RMS);
+    loud.store(false, Ordering::SeqCst);
+    wait(&mut level, "silence", |l| l < SPEAK_RMS);
+    loud.store(true, Ordering::SeqCst);
+    wait(&mut level, "a tone again", |l| l > SPEAK_RMS);
+    // A mute tells the SFU from the call's runtime.
+    rt.block_on(async { call.set_muted(true) });
+    wait(&mut level, "0 while muted", |l| l == 0.0);
+    rt.block_on(call.leave());
+}

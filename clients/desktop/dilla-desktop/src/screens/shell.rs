@@ -1677,6 +1677,11 @@ impl Render for ShellView {
                     (VoiceValues::read(&c.prefs()).mode == InputMode::Ptt)
                         .then_some(state.voice.ptt_held)
                 }),
+                // Task 5: this device is in the speaking set while it speaks (voice/session.rs `OwnSpeaking`).
+                speaking: state
+                    .account
+                    .device_id
+                    .is_some_and(|d| state.voice.speaking.contains(&d)),
             },
             &user_panel::PanelHandlers {
                 on_mute: Rc::new(move |_, cx| {

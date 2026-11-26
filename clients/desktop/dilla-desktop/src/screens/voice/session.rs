@@ -65,6 +65,56 @@ impl Speaking {
     }
 }
 
+/// This device's own speaking (session.ts `ownSpeaking`, Task 5): the level of what its microphone sends
+/// ([`dilla_media::Call::local_audio_level`]) through the same `SpeakingDetector` as a remote device's, counted only while
+/// the microphone sends ([`own_gate`]).
+pub struct OwnSpeaking {
+    since: Instant,
+    detector: SpeakingDetector,
+}
+
+impl Default for OwnSpeaking {
+    fn default() -> Self {
+        Self {
+            since: Instant::now(),
+            detector: SpeakingDetector::default(),
+        }
+    }
+}
+
+impl OwnSpeaking {
+    /// Whether this device speaks at `now`, from its newest level; `sending` is [`own_gate`]. The detector follows the
+    /// level either way (a muted microphone reads 0), as the web's runs on its meter whatever the gate says.
+    pub fn update(&mut self, rms: f32, sending: bool, now: Instant) -> bool {
+        let ms = now.saturating_duration_since(self.since).as_secs_f64() * 1000.0;
+        let on = self.detector.update(rms, ms);
+        sending && on
+    }
+}
+
+/// session.ts `ownGate`: the microphone sends (not muted, deafened or with push to talk up) and the call is not paused.
+pub fn own_gate(s: &AppState, ptt_mode: bool) -> bool {
+    mic_open(s, ptt_mode) && !s.voice.call.paused()
+}
+
+/// The devices drawn speaking: the remote ones heard speaking (`remote`, hex; this device's own entry, should the SFU
+/// ever send one back, is left out) and this device while [`OwnSpeaking`] says so.
+pub fn speaking_set(
+    remote: &BTreeSet<String>,
+    own: Option<DeviceId>,
+    own_on: bool,
+) -> BTreeSet<DeviceId> {
+    let mut set: BTreeSet<DeviceId> = remote
+        .iter()
+        .filter_map(|h| unhex(h).map(DeviceId))
+        .collect();
+    set.retain(|d| Some(*d) != own);
+    if let (Some(own), true) = (own, own_on) {
+        set.insert(own);
+    }
+    set
+}
+
 /// The call's microphone from Task 19's voice values: the chosen input, its noise choice (Automatic is the enhanced
 /// suppressor where it runs, Lightweight libwebrtc's), and echo cancellation and gain control as set.
 pub fn call_options(v: VoiceValues) -> CallOptions {
@@ -1121,6 +1171,12 @@ async fn in_call(
     let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
+    // The remote devices (hex) heard speaking, and this device's own speaking from its microphone's level (Task 5).
+    let mut remote_speaking: BTreeSet<String> = BTreeSet::new();
+    let mut local_level = call.local_audio_level();
+    let mut own_speaking = OwnSpeaking::default();
+    let mut own_on = false;
+    let mut own_sending = false;
     // The remote devices with a verified audio track, and those with a video stream: the media peers the stage's tiles are.
     let mut sfu_peers: Vec<SfuRemote> = Vec::new();
     let mut audio_peers: BTreeSet<DeviceId> = BTreeSet::new();
@@ -1154,6 +1210,14 @@ async fn in_call(
                 call.set_muted(want.0);
                 call.set_deafened(want.1);
                 applied = Some(want);
+            }
+            // Task 5: this device speaks only while its microphone sends; a mute, deafen, pause or released key takes
+            // its speaking away at once, not at the next level.
+            own_sending = own_gate(&s, ctx.ptt_mode());
+            if !own_sending && own_on {
+                own_on = false;
+                ctx.voice
+                    .set_speaking(speaking_set(&remote_speaking, own, own_on));
             }
             // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
             let now = gains(&ctx.values(), &s);
@@ -1189,10 +1253,20 @@ async fn in_call(
                         audio_peers = heard.keys().filter_map(|h| unhex(h).map(DeviceId)).collect();
                         audio_peers.retain(|d| Some(*d) != own);
                         publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
-                        let now = speaking.update(&heard, Instant::now());
-                        let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
-                        set.retain(|d| Some(*d) != own);
-                        ctx.voice.set_speaking(set);
+                        remote_speaking = speaking.update(&heard, Instant::now());
+                        ctx.voice.set_speaking(speaking_set(&remote_speaking, own, own_on));
+                    }
+                }
+                // Task 5: this device's own level, at the remote levels' cadence (one per 100 ms sent). The set is
+                // published only when this device's speaking changes; the remote arm republishes it with every level.
+                r = local_level.changed() => {
+                    if r.is_ok() {
+                        let rms = *local_level.borrow_and_update();
+                        let on = own_speaking.update(rms, own_sending, Instant::now());
+                        if on != own_on {
+                            own_on = on;
+                            ctx.voice.set_speaking(speaking_set(&remote_speaking, own, own_on));
+                        }
                     }
                 }
                 r = remotes.changed() => {
@@ -2619,6 +2693,91 @@ mod tests {
         assert!(s.update(&levels, at(760)).contains("aa"));
         levels.remove("aa");
         assert!(s.update(&levels, at(780)).is_empty(), "no longer heard");
+    }
+
+    const OWN: DeviceId = DeviceId([7; 16]);
+
+    /// Task 5 (session.ts `ownSpeaking`): the local level over `SPEAK_RMS` for over `SPEAK_ON_MS` puts this device in
+    /// the speaking set, beside the remote devices heard; the remotes' own entry for this device never does.
+    #[test]
+    fn own_device_speaks_from_the_local_level() {
+        use dilla_client::features::voice_prefs::speaking::{SPEAK_ON_MS, SPEAK_RMS};
+        let mut own = OwnSpeaking::default();
+        let t0 = own.since;
+        let t1 = t0 + std::time::Duration::from_secs_f64((SPEAK_ON_MS + 10.0) / 1000.0);
+        let loud = SPEAK_RMS * 2.0;
+        let remote = BTreeSet::from([hex(&[2; 16]), hex(&OWN.0)]);
+        assert!(!own.update(loud, true, t0), "not yet: the onset");
+        assert_eq!(
+            speaking_set(&remote, Some(OWN), false),
+            BTreeSet::from([DeviceId([2; 16])]),
+            "the own device is never taken from the remote levels"
+        );
+        assert!(own.update(loud, true, t1));
+        assert_eq!(
+            speaking_set(&remote, Some(OWN), true),
+            BTreeSet::from([DeviceId([2; 16]), OWN])
+        );
+        assert!(!OwnSpeaking::default().update(SPEAK_RMS / 2.0, true, t1));
+    }
+
+    /// The own device counts only while the mic sends (session.ts `ownGate`): never muted, deafened, paused, or with
+    /// push to talk up.
+    #[test]
+    fn own_device_never_speaks_while_muted_deafened_paused_or_ptt_up() {
+        use dilla_client::features::voice_prefs::speaking::SPEAK_RMS;
+        let open = AppState::default();
+        assert!(own_gate(&open, false));
+        let mut muted = AppState::default();
+        muted.voice.self_mute = true;
+        let mut deafened = AppState::default();
+        deafened.voice.self_deaf = true;
+        let mut paused = AppState::default();
+        paused.voice.call.phase = dilla_client::calls::CallPhase::In;
+        paused.voice.call.error = Some("E_EPOCH_REFUSED".into());
+        assert!(paused.voice.call.paused());
+        let ptt_up = AppState::default();
+        let mut ptt_held = AppState::default();
+        ptt_held.voice.ptt_held = true;
+        assert!(own_gate(&ptt_held, true));
+        for (what, s, ptt) in [
+            ("muted", &muted, false),
+            ("deafened", &deafened, false),
+            ("paused", &paused, false),
+            ("push to talk up", &ptt_up, true),
+        ] {
+            assert!(!own_gate(s, ptt), "{what}");
+            let mut own = OwnSpeaking::default();
+            let t0 = own.since;
+            for ms in (0..1_000).step_by(100) {
+                let lit = own.update(
+                    SPEAK_RMS * 4.0,
+                    own_gate(s, ptt),
+                    t0 + std::time::Duration::from_millis(ms),
+                );
+                assert!(!lit, "{what}: lit at {ms} ms");
+            }
+        }
+    }
+
+    /// The own device stays lit `SPEAK_HOLD_MS` after the voice stops, as a remote device does.
+    #[test]
+    fn own_speaking_holds_for_the_hangover() {
+        use dilla_client::features::voice_prefs::speaking::{SPEAK_HOLD_MS, SPEAK_RMS};
+        let mut own = OwnSpeaking::default();
+        let t0 = own.since;
+        let at = |ms: f64| t0 + std::time::Duration::from_secs_f64(ms / 1000.0);
+        let _ = own.update(SPEAK_RMS * 2.0, true, at(0.0));
+        assert!(own.update(SPEAK_RMS * 2.0, true, at(100.0)));
+        assert!(own.update(0.0, true, at(200.0)), "held");
+        assert!(
+            own.update(0.0, true, at(200.0 + SPEAK_HOLD_MS - 10.0)),
+            "held"
+        );
+        assert!(
+            !own.update(0.0, true, at(200.0 + SPEAK_HOLD_MS + 10.0)),
+            "off"
+        );
     }
 
     /// Integration 3: what Settings -> Voice wrote (Task 19's values) is the call's microphone: its device, its noise
