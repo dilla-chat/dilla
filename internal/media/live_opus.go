@@ -162,11 +162,28 @@ func (p *LiveOpusProvider) drainedLocked() {
 }
 
 // HoldFirstSample keeps the first sample back until gate closes, so a track published while the one before it still
-// drains starts right after that one's last sample and never overlaps it. Call it before the provider is published.
+// drains starts right after that one's last sample and never overlaps it. Call it before the provider is published:
+// PublishLiveOpus then starts LiveKit's writer only once the gate opened (startGate), because the writer paces from
+// its first call and would send audio it waited for in a burst the receiver's jitter buffer throws away.
 func (p *LiveOpusProvider) HoldFirstSample(gate <-chan struct{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.hold = gate
+}
+
+// startGate is the gate HoldFirstSample set and that is still closed, or nil.
+func (p *LiveOpusProvider) startGate() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.hold == nil {
+		return nil
+	}
+	select {
+	case <-p.hold:
+		return nil
+	default:
+		return p.hold
+	}
 }
 
 func (p *LiveOpusProvider) waitHold(ctx context.Context) error {

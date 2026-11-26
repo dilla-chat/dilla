@@ -290,3 +290,25 @@ func TestLiveOpusHeldFirstSampleWaitsForGate(t *testing.T) {
 		t.Fatal("first sample stayed held after its gate opened")
 	}
 }
+
+// A held provider's writer must start only once its gate opened (publishWithCompletion reads startGate): LiveKit's
+// writer paces from its first call, so one that waited inside NextSample would send the held audio in a burst.
+func TestLiveOpusStartGateIsOpenOnlyWhileHeld(t *testing.T) {
+	p, err := NewLiveOpusProvider(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if p.startGate() != nil {
+		t.Fatal("an unheld provider has a start gate")
+	}
+	gate := make(chan struct{})
+	p.HoldFirstSample(gate)
+	if p.startGate() == nil {
+		t.Fatal("a held provider has no start gate")
+	}
+	close(gate)
+	if p.startGate() != nil {
+		t.Fatal("a released provider still has a start gate")
+	}
+}

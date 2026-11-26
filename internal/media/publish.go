@@ -81,6 +81,17 @@ func publishWithCompletion(room *lksdk.Room, p lksdk.SampleProvider, codec webrt
 		return nil, err
 	}
 	track.OnBind(func() {
+		// A held live provider (HoldFirstSample) starts its writer only once its gate opened: LiveKit's writer paces
+		// samples from its first call, so a writer that waited inside NextSample would burst the held audio.
+		if held, ok := p.(interface{ startGate() <-chan struct{} }); ok {
+			if gate := held.startGate(); gate != nil {
+				go func() {
+					<-gate
+					_ = track.StartWrite(p, onWriteComplete)
+				}()
+				return
+			}
+		}
 		// StartWrite fails only for a provider whose OnBind fails, which these never do.
 		_ = track.StartWrite(p, onWriteComplete)
 	})
