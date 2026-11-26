@@ -2,7 +2,6 @@
 // requestPermission(), and only Settings → Notifications calls it, from the click of its button (Q30: Firefox
 // refuses a request made without a gesture, and nothing asks on load).
 
-
 export type PermissionState = NotificationPermission | 'unsupported';
 
 export interface NotificationApi {

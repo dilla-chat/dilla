@@ -42,8 +42,7 @@ function entryChunks(html) {
   return chunks;
 }
 
-/** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single.
- */
+/** @returns {string[]} One line per problem, or [] when the build keeps the call code lazy and the core wasm single. */
 export function checkEntryChunk(dir) {
   const problems = [];
   const html = existsSync(join(dir, 'index.html')) ? readFileSync(join(dir, 'index.html'), 'utf8') : '';

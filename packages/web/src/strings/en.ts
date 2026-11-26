@@ -170,6 +170,8 @@ export const en = {
   'boot.error.status': 'dilla could not start',
   'boot.error.detail': 'Error {code}. Reload the page to try again.',
   'boot.error.action': 'Reload',
+  // The desktop's fatal boot splash reads this key (clients/desktop boot.rs secondary_key); strings.rs is generated from here.
+  'mobile.switchInstance': 'Switch instance',
   'dialog.close': 'Close',
   'onboarding.step': 'New account · step {n} of {total}',
   'onboarding.back': 'Back',

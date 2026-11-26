@@ -41,8 +41,7 @@ export const PATH_RULES = [
   { areas: ['ci'], patterns: ['.github/**', 'scripts/**'] },
   { areas: ['go'], patterns: ['internal/**', 'cmd/**', 'go.mod', 'go.sum', 'sqlc*', 'deploy/**', '.golangci.yml'] },
   { areas: ['core'], patterns: ['core/**', 'testkit/**', 'Cargo.*', 'rust-toolchain.toml', 'deny.toml', '.cargo/**', 'protocol/vectors/**'] },
-  // patches/: patch-package fixes the root postinstall applies to node_modules (every JS job installs them).
-  { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js', 'patches/**'] },
+  { areas: ['web'], patterns: ['packages/**', 'package*.json', '.nvmrc', 'eslint.config.js'] },
   { areas: ['e2e'], patterns: ['e2e/**'] },
   // The generator, the tables it writes and the Go and TS rules that read them: `node`'s "profile-text tables are current" step.
   { areas: ['text'], patterns: [
