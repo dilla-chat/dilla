@@ -380,7 +380,7 @@ dense on every device of its audience; `group_id` is null.
 | 53 | `call_ring` | S→C | `[call_id(bstr 16), channel_id(bstr 16), user_id(bstr 16), state(uint 0..2), expires_ts(uint)]` |
 | 54 | `community_changed` | S→C | `[community_id(bstr 16)]` |
 | 55 | `afk_away` | S→C | `[community_id(bstr 16), user_id(bstr 16), since_ts(uint)]` |
-| 56 | `app_build` | S→C, wire ≥5 | `[entry(tstr)]` |
+| 56 | `app_build` | S→C, wire ≥5, **retired** (`dillad` no longer sends it) | `[entry(tstr)]` |
 | 57 | `presence_activity` | C→S, wire ≥5 | `[]` |
 | 58 | `call_stats` | C→S, wire ≥5 | `[call_id(bstr 16), report(array)]` |
 | 59 | `request` | C→S, wire 6 | `[id(uint), method(tstr), route(tstr), body(bstr), idem(bstr 1..64 \| null)]` |
@@ -450,8 +450,7 @@ factor, Bot and rate checks pass for the retry itself, an `idem` reused for a di
 60 s), and an answer that asks the client to come back is not recorded, so the retry runs: `401`, `426`,
 `429` (a route's rate refusal, or `E_BUSY`) and every `5xx`.
 
-**Retired (2026-11-26).** `app_build` was the web build entry of a served browser client. `dillad` serves no browser client any more, so it sends no `app_build` in `ready`/`resumed`; a client that receives one ignores it (`09` § Web client and content manifest).
-Malformed hints are ignored. Frames
+**Retired (2026-11-26).** `app_build` was the web build entry of a served browser client. `dillad` serves no browser client any more, so it sends no `app_build` in `ready`/`resumed`; a client that receives one, well-formed or not, ignores it (`09` § Web client and content manifest). Frames
 56–58 never consume replay numbers or appear in the replay ring.
 
 `presence_activity` contains no client identity, input details or timestamp. It is accepted only

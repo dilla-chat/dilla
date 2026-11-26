@@ -582,10 +582,7 @@ There are three ways back, in this order of ease:
 ## 1. Open the invite
 
 An invite is a code or a link. A link to an instance looks like `https://chat.example.org/i/<code>`.
-Opening it shows a page from the instance, in the light or dark scheme your device asks for:
-
-(The screenshots of the old invite page, with its "Open dilla in this browser" button, are retired with the browser client; the page is shown here in words.)
-
+Opening it shows a page from the instance, in the light or dark scheme your device asks for.
 It names the server the invite is for (the page calls it a community) and the instance, and shows the code, when the
 invite expires and how many more times it can be used ("Expires on {date} (UTC) · {n} uses left"). The page has no
 form and no script; it never asks for a password ("This page never asks for a password."). Opening the page does not
@@ -690,10 +687,11 @@ If the invite was for the instance only, the app shows "You are not in a server 
 ## 3. What "this device holds your key" means
 
 Each device you add is a device of your account. When you sign up, the app makes a key for itself (a
-"device" key) and keeps it in its storage for the instance's address. The messages of a text channel are
+"device" key) and keeps it in its own store for that instance, whose database key is in the operating system's
+keychain (one per instance; see [Dilla desktop](desktop.md)). The messages of a text channel are
 encrypted end to end with MLS (RFC 9420) between the members' devices, and the instance stores and forwards
-them encrypted. This device decrypts them and keeps a copy in that same storage, itself encrypted with a key
-that only this device can unwrap. The next time you open the instance's address, the app signs in with
+them encrypted. This device decrypts them and keeps a copy in that same store, itself encrypted with a key
+that only this device can unwrap. The next time you open the instance in the app, it signs in with
 its device key, without a password. (Nothing here has had an independent security review yet. Each device of
 a contact is checked against that person's signed device list, but the first key this device sees for a person
 is only "first seen", not verified, until you compare safety numbers; see [section 10](#10-privacy-search-and-settings).)

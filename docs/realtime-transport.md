@@ -1,7 +1,7 @@
 # Realtime transport and retained requests
 
-Wire 5 uses the existing authenticated gateway connection for build notices (56), genuine
-presence input (57), and coarse call reports (58). Production HTTPS pages use WSS. HTTP
+Wire 5 uses the existing authenticated gateway connection for genuine presence input (57) and
+coarse call reports (58); its build notices (56) are retired with the browser client (2026-11-26). Production HTTPS pages use WSS. HTTP
 continues to serve initial state, authorization-bearing commands and uploads.
 There is no second socket, broker, durable telemetry queue or change to MLS/media encryption.
 Jonas explicitly removed web compatibility fallbacks: unavailable telemetry is dropped, and versions
@@ -11,7 +11,7 @@ are never polled periodically. Native wire-3 Bots continue to work.
 
 | Purpose | Current trigger and transport | Retained HTTP purpose |
 | --- | --- | --- |
-| Web build | Verified entry on gateway ready/resume; startup, foreground, online and reconnect reconcile against `/app-version.json`. Versions are never polled periodically. | No periodic polling, including before login, on older wires or during an outage. Startup, foreground, online and reconnect still verify the manifest. One check in flight and at most one queued reconciliation. An unresolved new hint retries after one second with exponential backoff capped at five minutes (thirty seconds during a call); successful verification stops those retries. |
+| Web build (retired 2026-11-26) | None: `dillad` serves no browser client, sends no build notice (56) and has no `/app-version.json`. The desktop app updates through its own updater. | None. |
 | Presence | Visible pointer/key input, at most once per five seconds, sends 57. Mount, foreground and heartbeats do not manufacture input. | The web app drops unavailable input, with no HTTP fallback or replay. Existing server HTTP and WSS adapters retain their shared five-second device allowance. |
 | Coarse call report | Current six-field report every ten seconds through 58; one page stats read/request in flight, missed ticks discarded. | The web app drops unavailable samples with no HTTP fallback. Existing server adapters still share authorization and a five-second device reservation. Congested or ambiguously sent WSS samples are never resent. |
 | Call stage RTT | Local RTC read every two seconds; changed RTT (at least 5 ms) reports through `callRtt`, one in flight. Paused/reconnecting clears it. | `/v1/calls/:id/rtt` updates the existing SFU participant attribute. This separate value has different recipients and side effects from the coarse six-field report. |

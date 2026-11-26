@@ -534,8 +534,8 @@ Errors: `410 E_INVITE_INVALID` when the invite is expired, exhausted or revoked.
 | `POST /v1/auth/passkey/register/finish` | E, F | `[ceremony_id(bstr16), response(tstr), name(tstr)]` | `[cred_id(bstr), backup_codes([tstr])]` (§ Second factors) |
 | `POST /v1/auth/passkey/login/begin` | — | `[]` | `[ceremony_id(bstr16), options(tstr)]`; metered per address on its own `passkey_begin` bucket (`limits.rate.passkey_begin_per_second` / `_burst`, default 0.2 / 10) and per network (IPv4 /24, IPv6 /48) on `passkey_begin_net` (default 1 / 40), never on `login`: a begin spends no password attempt. `429 E_RATE_LIMITED` past either. The ceremony lives 120 s (the options' `timeout`). Past `auth.webauthn.max_open_logins` (default 10000) open discoverable ceremonies the oldest (by creation second) is evicted with the write, so a begin always succeeds; a finish on an evicted ceremony fails as an expired one does. Registration and step-up ceremonies are capped per user (`auth.webauthn.max_open_per_user`, default 5, oldest evicted). Expired ceremonies are pruned on the maintenance tick |
 | `POST /v1/auth/passkey/login/finish` | — | `[ceremony_id(bstr16), response(tstr)]`, or `[ceremony_id(bstr16), response(tstr), assertion(tstr)]` binding it to a password or OIDC (first-factor) login | `[assertion(tstr), needs(uint 0\|1)]` (§ Second factors) |
-| `GET /v1/auth/oidc/start` | — | — | `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-oidc` scoped to this route only |
-| `GET /v1/auth/oidc/callback` | — | — | `302` back to the client with a one-time `assertion` |
+| `GET /v1/auth/oidc/start` | — | — | with `desktop_request` (and `desktop_ticket`): `302` to the IdP, PKCE `S256`, state cookie `__Secure-dilla-desktop-oidc`; without it `403 E_FORBIDDEN` (§ Web client and content manifest) |
+| `GET /v1/auth/oidc/callback` | — | — | hands the one-time `assertion` to the pending desktop request and `302`s the browser to its `/desktop-auth/…/?done=1` page; the assertion is never in the redirect |
 
 The `assertion` is a short-lived one-time **enrolment assertion**: it proves host login and is spent
 by `POST /v1/devices/{device_id}/sessions`, sent as the token's UTF-8 bytes in a bstr (element 4).
@@ -2038,7 +2038,10 @@ manifest and the client's CSP no longer describe a served surface. What the inst
   `ready`/`resumed` (`02` § Gateway frames), so a client has no web build to verify.
 - Browser sign-in through OIDC is refused. `GET /v1/auth/oidc/start` without a `desktop_request` is `403 E_FORBIDDEN`
   ("this server serves no browser client: sign in from Dilla desktop") once OIDC is configured and enabled; the
-  desktop flow (`/desktop-auth`) is unchanged. The callback accepts only the desktop cookie.
+  desktop flow (`/desktop-auth`) is unchanged. The callback accepts only the desktop cookie. The `403` is
+  deliberately answered before the login throttle and before OIDC discovery: it stores nothing, spends no login
+  token and asks the identity provider nothing, so a refused browser flow cannot drain an address's login budget.
+  Keep that order.
 
 A test-only seam, `dilla-testhost -web-root` (`dilladtest` `WebRoot`, `Options.Web`), still serves a given directory
 tree, verified against its manifest, for the desktop's test harness; `dillad serve` has no way to set it.
@@ -2065,12 +2068,11 @@ Human clients and managed Bots offer `[6]` to session negotiation and the gatewa
 supports only 6 (`07` § Versions). A client that offers nothing at or above 6 is `426
 E_UPGRADE_REQUIRED` on `POST /v1/sessions/negotiate` and on a session's first socket request, and the
 gateway closes its `identify` with 4006. The desktop app turns that into "Update dilla to continue"
-with its update button; a browser tab reloads once to the new client.
+with its update button.
 
-The ephemeral ops of `02` (typing, presence activity, call statistics, build notices) are socket-only.
+The ephemeral ops of `02` (typing, presence activity, call statistics) are socket-only.
 Presence activity and call statistics are also socket requests (`POST /v1/accounts/me/presence/activity`
 and `POST /v1/calls/{call_id}/stats`). They charge the same single five-second reservation per device
 as op 57 and op 58, so no path refreshes activity more than once per five seconds. Rejected or cancelled call reports release the reservation;
-accepted reports update only the existing coarse in-memory counters. `/app-version.json` remains the
-authoritative manifest check following a build notice or a startup, foreground, online or reconnect.
-There is no HTTP telemetry fallback and no retry follows an ambiguously delivered sample.
+accepted reports update only the existing coarse in-memory counters. There is no build notice and no
+`/app-version.json` any more (§ Web client and content manifest, retired). There is no HTTP telemetry fallback and no retry follows an ambiguously delivered sample.

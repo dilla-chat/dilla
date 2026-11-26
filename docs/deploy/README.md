@@ -1097,8 +1097,11 @@ new one, and putting the old `rp_id` back brings back only the ones registered u
 
 ### Client data version per release
 
-The web client keeps its data in the browser, in a store with a schema number. A client refuses a store whose number
-is newer than the one it knows (web-3.6 onwards) and shows "This version of dilla is too old for the data saved in
+(Historical: this section describes the browser client, which `dillad` no longer serves since 2026-11-26. Dilla
+desktop keeps its data in its own per-instance stores.)
+
+The web client kept its data in the browser, in a store with a schema number. A client refused a store whose number
+was newer than the one it knew (web-3.6 onwards) and showed "This version of dilla is too old for the data saved in
 this browser" with both numbers: "That data needs data version {found}; this version of dilla reads up to
 {supported}. Update to the newer version of dilla, or ask the host of this server."
 
