@@ -899,7 +899,9 @@ fn sound_world(
 /// The state of a live call, with or without a screen share.
 fn call_state(screen: bool) -> Arc<AppState> {
     let mut state = AppState::default();
+    // A call is `In` with its id, as the client sets them: a share start names the call it is for.
     state.voice.call.phase = CallPhase::In;
+    state.voice.call.call_id = Some([7; 16]);
     state.voice.share.screen = screen;
     Arc::new(state)
 }
