@@ -5511,7 +5511,8 @@ mod tests {
         // Nobody else holds the bytes: taken over, not copied.
         let only = frame();
         let at = only.bgra.as_ptr();
-        assert_eq!(super::bgra_of(only, false).as_ptr(), at, "the very bytes");
+        let taken = super::bgra_of(only, false);
+        assert_eq!(taken.as_ptr(), at, "the very bytes");
     }
 
     /// Self-view review m5: a stream's counter that starts again (a quality change gives the share a new sent counter)
