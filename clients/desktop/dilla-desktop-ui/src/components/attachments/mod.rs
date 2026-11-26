@@ -38,6 +38,13 @@ pub(crate) mod testing {
         Arc::new(Image::from_bytes(ImageFormat::Gif, TWO_FRAMES.to_vec()))
     }
 
+    /// [`TWO_FRAMES`] on a `w` x `h` canvas (its frames are drawn at the top left of it).
+    pub fn gif_sized(w: u8, h: u8) -> Arc<Image> {
+        let mut bytes = TWO_FRAMES.to_vec();
+        bytes[6..10].copy_from_slice(&[w, 0, h, 0]);
+        Arc::new(Image::from_bytes(ImageFormat::Gif, bytes))
+    }
+
     type Build = Box<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
     struct Host(Build);
