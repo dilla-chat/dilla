@@ -67,16 +67,13 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, 
 
 ## Continuous integration
 
-CI is three workflows, all run on every pull request and every push to main: `server` (`.github/workflows/server.yml`:
+CI is two workflows, all run on every pull request and every push to main: `server` (`.github/workflows/server.yml`:
 the docs gates, the installer and Bot operation scripts that a release ships, the Go jobs, the Rust core checks and the
 release build), `desktop` (`.github/workflows/desktop-ci.yml`: the script gates, the UI, the wasm core, the
-integration suites; the native client has its own workflow, `desktop-gpui.yml`) and `mobile` (`.github/workflows/mobile.yml`: the iOS and Android
-apps' unit tests, the mobile client build, the debug and release APKs with the release network-config check, the
-Android emulator smoke test and the iOS simulator build). Each reports one check, `server-ok`, `desktop-ok` and
-`mobile-ok`, so a failure in one never blocks a change to another. `server-ok`, `desktop-ok` and `mobile-ok` are the
-required checks for `main`.
+integration suites; the native client has its own workflow, `desktop-gpui.yml`). Each reports one check, `server-ok` and `desktop-ok`,
+so a failure in one never blocks a change to the other. `server-ok` and `desktop-ok` are the required checks for `main`.
 
-The `desktop` and `mobile` workflows also run nightly on main at 02:17 UTC with every area on, so test drift surfaces
+The `desktop` workflow also runs nightly on main at 02:17 UTC with every area on, so test drift surfaces
 within a day.
 
 A pull request runs only the parts of CI it touches. Each workflow's `changes` job
@@ -86,11 +83,10 @@ per area:
 | Area | Paths | Also forces |
 | --- | --- | --- |
 | docs | `docs/**`, any `*.md`, `LICENSE*`, `DCO` | nothing: only server's `docs` job runs (the docs, brief and copy checks and their tests, and `check:ci`) |
-| go | `internal/**`, `cmd/**`, `go.mod`, `go.sum`, `sqlc*`, `deploy/**`, `packages/design-tokens/**` (a Go test reads its CSS), `protocol/*.md` (a Go test parses the route tables) | nothing: a server change does not run the desktop or mobile lane |
-| core | `core/**` (Markdown included: a vendored crate compiles its README), `testkit/**`, `Cargo.*`, `protocol/vectors/**` | go, web, e2e, mobile |
+| go | `internal/**`, `cmd/**`, `go.mod`, `go.sum`, `sqlc*`, `deploy/**`, `packages/design-tokens/**` (a Go test reads its CSS), `protocol/*.md` (a Go test parses the route tables) | nothing: a server change does not run the desktop lane |
+| core | `core/**` (Markdown included: a vendored crate compiles its README), `testkit/**`, `Cargo.*`, `protocol/vectors/**` | go, web, e2e |
 | web | `packages/**`, `package*.json`, `.nvmrc`, `docs/design/flows/**` (tests compare the copy tables with `en.ts`), `internal/sfu/testdata/**` (the LiveKit schema check) | e2e |
 | e2e | `e2e/**` | |
-| mobile | `packages/mobile/**` and what the bundled client is built from: `packages/{web,client-core,ui,media,core-wasm,design-tokens}/**`, `package*.json`, `.nvmrc`; what the emulator smoke test runs beside the app: `cmd/dilla-testhost/**`, `e2e/web/support/native-https-proxy.mjs` (the testkit and the WASI core are core) | |
 | ci | `.github/**`, `scripts/**` | everything |
 
 The browser jobs in CI (`browser-spike`, `browser-media` and `core-integration`) run only Chromium projects; the

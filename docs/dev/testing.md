@@ -26,7 +26,7 @@ What each tier proves:
 - `nightly` and `release`: the full set on one tree. Only these may release a desktop build. Because the nightly runs
   on `main`, it also keeps `main`'s sccache scope warm for the PR runs that read it.
 
-Server (`server.yml`), `desktop-ci.yml` and `mobile.yml` have no tiers. `server.yml` runs every area on every push to
+Server (`server.yml`) and `desktop-ci.yml` have no tiers. `server.yml` runs every area on every push to
 `main`, with no skip.
 
 ### A main push that repeats a PR run
