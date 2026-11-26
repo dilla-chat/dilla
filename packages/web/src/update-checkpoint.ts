@@ -22,8 +22,7 @@ export function updateTabId(storage: Pick<Storage, 'getItem' | 'setItem'>, crypt
 }
 
 /** The checkpoint scope of an account. The worker's storage key stands in for the instance id where it publishes one
- *  (the mobile app: every instance on one origin and one IndexedDB, so the key binds the instance URL; review round 2,
- *  Task 6). Desktop and the web have none, and their record ids stay `<instance id>:<user>:<tab>`. */
+ *  (a client with several instances on one origin binds the key to the instance URL). Desktop and the web have none, and their record ids stay `<instance id>:<user>:<tab>`. */
 export function checkpointScope(instance: { id: string; storageKey?: string }, user: string, tab: string): CheckpointScope {
   return { instance: instance.storageKey ?? instance.id, user, tab };
 }

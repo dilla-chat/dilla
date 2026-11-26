@@ -1,6 +1,9 @@
 // Types of the former Electron shell's bridge (tag desktop-v0.1.0-beta.5, packages/desktop/src/contract.ts and
 // window-layout.ts), kept for the web client's dormant dillaDesktop paths.
-import type { BrowserAuthRequest, BrowserAuthResult } from '../../mobile/src/contract.ts';
+
+/** The browser sign-in ceremony types, as in the former Electron shell (tag desktop-v0.1.0-beta.5, packages/desktop/src/browser-auth.ts). */
+export type BrowserAuthRequest = { kind: 'get' | 'create' | 'oidc'; options: string };
+export type BrowserAuthResult = { response?: string; assertion?: string; needs: number; error?: string };
 
 export type WindowMode = 'starting' | 'authentication' | 'workspace';
 export const WORKSPACE_MINIMUM = { width: 900, height: 600 };

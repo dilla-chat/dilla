@@ -58,11 +58,6 @@ function stripRnnoiseInlineWasm(): Plugin {
   };
 }
 
-// The mobile app's build flag (packages/client-core/src/worker/mobile-build.ts): packages/mobile/scripts/build.mjs sets
-// DILLA_MOBILE_BUILD=1 and builds into its own directory. Every other build (web, desktop) defines it false, so the
-// worker's mobile-only branches (a cross-origin instance, per-URL storage keys) are folded out of the bundle.
-const MOBILE_BUILD = process.env.DILLA_MOBILE_BUILD === '1';
-
 // The parity references' build (clients/desktop/parity/shoot.mjs): DILLA_DESKTOP_STRINGS=1 builds the web client with the
 // native desktop app's wording (src/strings/desktopOverrides.ts put over `en`, as scripts/gen-gpui-strings.mjs does for
 // the desktop's strings.rs) into its own directory, so a reference frame and the GPUI frame draw the same text. The
@@ -83,7 +78,6 @@ function desktopStrings(): Plugin {
 
 export default defineConfig({
   base: '/',
-  define: { __DILLA_MOBILE__: JSON.stringify(MOBILE_BUILD) },
   plugins: [noiseBuild(), desktopStrings(), react(), oneCoreWasm(), stripRnnoiseInlineWasm()],
   resolve: {
     // @dilla/media ships TypeScript sources and no package entry; tsconfig.json maps the same path for tsc.

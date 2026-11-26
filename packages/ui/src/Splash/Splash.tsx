@@ -6,7 +6,7 @@ export interface SplashProps {
   status: string;
   detail?: string;
   action?: { label: string; onAction(): void };
-  /** A second, quieter action after the first (the mobile app's Switch instance). */
+  /** A second, quieter action after the first (e.g. Join a server). */
   secondary?: { label: string; onAction(): void };
 }
 
