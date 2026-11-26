@@ -1349,8 +1349,10 @@ func (d Deps) StartOIDC(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
-// CallbackOIDC is GET /v1/auth/oidc/callback: 302 back to the client with a
-// one-time assertion.
+// CallbackOIDC is GET /v1/auth/oidc/callback: it hands the one-time assertion
+// to the pending desktop browser request (the desktop app collects it there)
+// and 302s the browser to that request's done page. The assertion itself never
+// travels in the redirect.
 //
 // The order is the security property. The cookie is cleared first, whatever
 // happens next, so a failed callback leaves nothing a browser will replay. The
