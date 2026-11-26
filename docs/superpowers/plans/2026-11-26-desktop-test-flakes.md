@@ -536,7 +536,28 @@ The TypeScript packages stay in the repo as the behaviour reference and as gener
 
 **Order:** 12a and 12b in parallel (Go vs CI/YAML/scripts/e2e), then 12c.
 
-### Task 13: the composer shows its text caret (diagnosis pending)
+### Task 13: every text field shows its caret (review: sonnet)
+
+Jonas, 2026-11-26: "theres no indicator in chat for where the position of writing is". Spec:
+`docs/superpowers/specs/2026-11-26-caret-diagnosis.md`.
+
+**The cause:** dilla never sets gpui-component's `Theme`, so the Light default's `caret` #0A0A0A is painted on
+#0F1216. Every Input and Textarea is affected (`dilla-desktop/src/lib.rs` ~124-125).
+
+**The intended look:** the text colour `color::FG` (#E1E5EB), 1 px wide, blinking (the gpui-component default).
+
+- [ ] **Step 1: Write the failing tests.**
+  - `the_theme_caret_is_the_text_colour`: after `crate::install`, `cx.theme().caret == color::FG`.
+  - `a_focused_composer_paints_a_light_caret`: focus the composer in a `TestAppContext` and find, in
+    `painted_quads()`, a quad 1 px wide and about line height with colour `color::FG`.
+  - Verify both fail.
+- [ ] **Step 2: Implement.** After `gpui_component::init(cx)`, set the theme's caret to `color::FG`.
+- [ ] **Step 3: Audit the other gpui-component `Theme` fields that inputs and our widgets actually read**: selection,
+  placeholder/muted foreground, input border, focus ring, scrollbar and list hover. Any field still on a Light default
+  that dilla draws with gets the matching Signal token, each with a test. Fields nothing reads are left alone. List
+  every field you checked in the report.
+- [ ] **Step 4:** Run the crate's tests and clippy. Commit: `desktop: text fields show their caret (and other Signal
+  colours the input theme left on Light)`.
 
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
