@@ -216,6 +216,32 @@ Jonas, 2026-11-26: "speaking indicator for myself is not visible?" He added it t
 - [ ] **Step 3: Run** the crates' unit tests, the `--ignored` live call tests that touch speaking, and
   `cargo clippy -D warnings`. Commit: `desktop: your own tile and avatar light while you speak`.
 
+### Task 6: the own share's self-view at full resolution (review: sonnet)
+
+Jonas, 2026-11-26: "why is the quality so bad?" (a screenshot of his own screen share on the stage). He chose "Full
+resolution always".
+
+**The cause:** the self-view tap scales each sent frame to at most `SELF_VIEW_MAX_SIDE` = 640 px at
+`SELF_VIEW_FPS` = 15 (`clients/desktop/dilla-media/src/room.rs` ~478-560). The stage then stretches that frame about
+4.5× on a 2× display. What viewers receive (about 1080p) is not affected.
+
+**Files:**
+- Modify: `clients/desktop/dilla-media/src/room.rs`:
+  - Remove the `SELF_VIEW_MAX_SIDE` downscale. The copy is the sent frame's own size.
+  - Raise `SELF_VIEW_FPS` to 30.
+  - Keep the existing tap, live-flag and stop semantics, the `MAX_VIDEO_W/H` guard, and "the sent buffer is never
+    written".
+- Test: update the `self_view_tests` module:
+  - A 1920×1080 sent frame reaches the self-view as 1920×1080.
+  - A frame within one 30 fps interval of the last is skipped.
+  - The existing stop and newest-frame tests stay green.
+
+- [ ] **Step 1:** Change the tests to the new values and verify they fail.
+- [ ] **Step 2:** Implement, then run the dilla-media unit tests and clippy (`-D warnings`).
+- [ ] **Step 3:** Check whether dilla-desktop's own-tile drawing or a test assumes a 640 px self-view (grep
+  `SELF_VIEW`), and adjust it.
+- [ ] **Step 4:** Commit: `media: your own share's preview is the sent frame at full size`.
+
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
