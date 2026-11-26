@@ -36,7 +36,7 @@ use crate::client::{Client, ClientError, Inner};
 use crate::gateway::frames::{
     AfkAwayFrame, CallRingFrame, Frame, Op, Value, afk_away_of, call_ring_of,
 };
-use crate::http::routes::{GetAfk, ListDms, NoBody, PutAfkAway, Raw};
+use crate::http::routes::{GetAfk, ListDms, NoBody, PutAfkAway, Raw, SendAfkActivity};
 use crate::seams::Http;
 use crate::state::ring::{
     AFK_AWAY_MAX, AfkNotice, AfkSnapshot, Away, BlockWhen, CallBlock, IncomingRing, Outgoing, RING,
@@ -1590,6 +1590,24 @@ impl Ring {
         self.inner.spawn(async move {
             // `[]`: an empty CBOR array.
             http.call::<PutAfkAway>(&[&community.hex()], Raw(vec![0x80]))
+                .await
+                .map_err(|e| ClientError::Network(e.to_string()))
+        })
+    }
+
+    /// Task 10: this device in a call on `channel`, a voice channel of `community`, is active (Shell.tsx's AFK
+    /// activity, `POST …/afk/activity`, routes.ts `sendAFKActivity`): the instance's AFK clock for its call starts over.
+    /// The body is `[channel]`; the desktop never sends the exempt form (phones and coarse pointers only). The caller
+    /// may drop the answer: a report is fire-and-forget.
+    pub fn afk_activity(
+        &self,
+        community: CommunityId,
+        channel: ChannelId,
+    ) -> oneshot::Receiver<Result<(), ClientError>> {
+        let http = socket(&self.inner);
+        let body = Value::Array(vec![Value::Bytes(channel.0.to_vec())]).encode();
+        self.inner.spawn(async move {
+            http.call::<SendAfkActivity>(&[&community.hex()], Raw(body))
                 .await
                 .map_err(|e| ClientError::Network(e.to_string()))
         })

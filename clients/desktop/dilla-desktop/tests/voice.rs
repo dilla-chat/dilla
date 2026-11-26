@@ -3328,3 +3328,94 @@ fn native_voice_tile_states() {
 fn parity_music_stage_bar() {
     shoot_fixture("music-stage-bar", "music-stage-bar", &[]);
 }
+
+/// Task 10 (Jonas, 2026-11-26: two people talking in a voice channel were both moved to AFK): the window's call reports
+/// activity (`POST …/afk/activity`), so a device in a call with input is not moved. The community's AFK timeout is 60 s;
+/// alice joins, her window reads the AFK snapshot, and 45 s (the host's clock) later her window has input: 90 s after the
+/// join, 45 s after that input, she is still in the call. Then, with only hidden input, 75 s past the last report, the
+/// sweep moves her (the host's clock and sweep are live).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn input_in_a_call_keeps_it_from_the_afk_move(cx: &mut TestAppContext) {
+    let tag = "t-afk-activity";
+    let media = media_slot();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (host, alice, community, voice) = rt.block_on(async {
+        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
+        let (host, alice, c, v) = tokio::task::spawn_blocking(move || {
+            let (c, v) = call_world::voice_community(&host, &alice, &[]);
+            call_world::clear_session(&alice);
+            (host, alice, CommunityId(c), ChannelId(v))
+        })
+        .await
+        .unwrap();
+        let a = call_world::start(&alice).await;
+        call_world::connected(&a).await;
+        a.voice().start();
+        until(&a, "the voice channel is listed", |s| {
+            s.channel(v).is_some()
+        })
+        .await;
+        a.server_admin()
+            .set_afk(c, 60)
+            .wait()
+            .await
+            .expect("the AFK timeout is 60 s");
+        (host, Rc::new(a), c, v)
+    });
+    cx.update(dilla_desktop::install);
+    let win = window_for(cx, &alice);
+    let wa = win.window_id();
+    cx.update(|cx| voice::join(voice, wa, cx));
+    cx.run_until_parked();
+    rt.block_on(until(&alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    // The shell syncs every new state: the window reads the community's AFK snapshot, then reports the join.
+    let resync = |cx: &mut TestAppContext| {
+        let s = alice.state().borrow().clone();
+        cx.update(|cx| voice::sync(wa, s, Some(&alice), cx));
+    };
+    resync(cx);
+    rt.block_on(until(&alice, "the AFK snapshot is read", |s| {
+        s.ring
+            .afk
+            .get(&community)
+            .is_some_and(|a| a.channel.is_some())
+    }));
+    resync(cx);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    call_world::advance_clock(&host.control, 45, false);
+    // The report throttle is 5 s of real time.
+    std::thread::sleep(std::time::Duration::from_millis(5_200));
+    cx.update(|cx| voice::afk_input(wa, true, cx));
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    call_world::advance_clock(&host.control, 45, false);
+    // A few of the host's sweep ticks.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(
+        phase_of(&alice),
+        CallPhase::In,
+        "90 s after the join and 45 s after input, alice is still in the call"
+    );
+    // Input while the window is hidden does not count: 75 s after the last report the sweep moves her.
+    std::thread::sleep(std::time::Duration::from_millis(5_200));
+    cx.update(|cx| voice::afk_input(wa, false, cx));
+    call_world::advance_clock(&host.control, 30, false);
+    rt.block_on(until(
+        &alice,
+        "the sweep moves alice out of the call",
+        |s| s.voice.call.phase == CallPhase::Idle,
+    ));
+    drop((win, alice, host, rt));
+    // The process's call media slot goes last.
+    drop(media);
+}

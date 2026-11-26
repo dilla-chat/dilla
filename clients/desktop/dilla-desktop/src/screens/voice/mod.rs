@@ -7,6 +7,7 @@
 //! The media of the call runs in [`session::MediaSession`] (one per process); the stage's video tiles draw its
 //! newest remote frames.
 
+pub mod afk;
 pub mod keys;
 pub mod menu;
 pub mod session;
@@ -332,6 +333,8 @@ pub struct VoiceUi {
     /// A test's own left room, open while it holds ([`put_test_room_open`], feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_room_open: Option<Rc<std::cell::Cell<bool>>>,
+    /// Task 10: this call's AFK activity reports ([`afk`]).
+    afk: afk::AfkTracker,
 }
 
 /// A simulated call's media (the automation command `voice-sim`): the GPUI-only references of speaking, camera and screen
@@ -1250,6 +1253,63 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
         ui.repainting = true;
         repaint_on_video(window, cx);
     }
+    follow_afk(window, cx);
+}
+
+/// Task 10 (Shell.tsx's AFK activity): `window`'s call reports once when it joins a channel that reports (asking for
+/// its community's AFK snapshot first when it is not read), and while this device speaks ([`afk`]). A report is
+/// fire-and-forget.
+fn follow_afk(window: WindowId, cx: &mut App) {
+    let ui = ui_mut(window, cx);
+    let Some(client) = ui.client.clone() else {
+        return;
+    };
+    let target = afk::target(&ui.state);
+    if target.is_none()
+        && let Some(community) = afk::unread_afk(&ui.state)
+    {
+        drop(client.ring().load_afk(community));
+    }
+    let now = std::time::Instant::now();
+    let speaking = afk::own_speaking(&ui.state);
+    let report = ui
+        .afk
+        .follow(target, now)
+        .or_else(|| ui.afk.speech(speaking, now));
+    if let Some(t) = report {
+        drop(client.ring().afk_activity(t.community, t.channel));
+    }
+}
+
+/// Task 10's speech tick: while this device speaks in `window`'s call, a report every [`afk::EVERY`]. It rides the
+/// call's repaint loop, which runs only while the call does.
+fn afk_speech(window: WindowId, cx: &mut App) {
+    if ui_of(window, cx).is_none() {
+        return;
+    }
+    let ui = ui_mut(window, cx);
+    let Some(client) = ui.client.clone() else {
+        return;
+    };
+    let speaking = afk::own_speaking(&ui.state);
+    if let Some(t) = ui.afk.speech(speaking, std::time::Instant::now()) {
+        drop(client.ring().afk_activity(t.community, t.channel));
+    }
+}
+
+/// Task 10: a pointer move, a press or a key in `window` (the app root's input hooks), `visible` when the window is the
+/// active one: its call reports activity (throttled, [`afk`]).
+pub fn afk_input(window: WindowId, visible: bool, cx: &mut App) {
+    if ui_of(window, cx).is_none() {
+        return;
+    }
+    let ui = ui_mut(window, cx);
+    let Some(client) = ui.client.clone() else {
+        return;
+    };
+    if let Some(t) = ui.afk.input(visible, std::time::Instant::now()) {
+        drop(client.ring().afk_activity(t.community, t.channel));
+    }
 }
 
 /// The audio host a call's media opens its devices on: the system's unless a test chose another.
@@ -1311,6 +1371,9 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
                     None => Tick::Wait,
                 }
             });
+            if !matches!(tick, Tick::Stop) {
+                cx.update(|cx| afk_speech(window, cx));
+            }
             match tick {
                 Tick::Stop => break,
                 Tick::Wait => {}
