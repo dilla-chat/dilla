@@ -485,6 +485,16 @@ impl ShellView {
         crate::screens::voice::sync(self.window_id, state.clone(), self.client.as_ref(), cx);
         self.state = state;
         self.settle_selection(cx);
+        // Only a settle the state drove (the server list landing after a `Root` start, a deleted server) rewrites the
+        // head: the member list draws on a channel route. The person's own navigation settles through `pick_community`
+        // and `select`, which push the entry they came from, so those never replace. `replace`, so Back doesn't land
+        // on an empty root.
+        let settled = self.current_route();
+        if matches!(self.history.current(), Route::Root | Route::Channel { .. })
+            && *self.history.current() != settled
+        {
+            self.history.replace(settled);
+        }
         if let Some(body) = &self.channel_edit {
             let (state, client) = (self.state.clone(), self.client.clone());
             body.update(cx, |b, cx| b.sync(state, client, cx));
@@ -537,15 +547,6 @@ impl ShellView {
             if let Some(first) = first {
                 self.focus_channel(first, cx);
             }
-        }
-        // A selection that settled somewhere else than the head (the server list landing after a `Root` start, a
-        // deleted server) is the route itself: the member list draws on a channel route. `replace`, so Back doesn't
-        // land on an empty root.
-        let settled = self.current_route();
-        if matches!(self.history.current(), Route::Root | Route::Channel { .. })
-            && *self.history.current() != settled
-        {
-            self.history.replace(settled);
         }
         let target: SharedString = self
             .channel
@@ -2686,6 +2687,92 @@ mod tests {
             crate::screens::members::toggle_pane(window.window_handle().window_id(), cx);
         });
         assert!(!drawn(vcx), "Members closes it");
+        shell.read_with(vcx, |s, _| {
+            assert!(
+                !s.history.can_back(),
+                "no empty Root entry behind the startup channel"
+            );
+        });
+    }
+
+    /// Two servers: Midgard (channels 2, 3) and Asgard (channel 4).
+    fn two_servers() -> Arc<AppState> {
+        let mut s = (*world()).clone();
+        s.communities.push(Community {
+            id: CommunityId([5; 16]),
+            name: "Asgard".into(),
+            owner: UserId([9; 16]),
+            policy_version: 0,
+        });
+        let mut hall = channel(4, "hall", 0);
+        hall.community_id = CommunityId([5; 16]);
+        s.channels.push(hall);
+        Arc::new(s)
+    }
+
+    fn two_server_shell(
+        cx: &mut gpui::TestAppContext,
+    ) -> (gpui::Entity<ShellView>, &mut gpui::VisualTestContext) {
+        cx.update(crate::install);
+        let state = two_servers();
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                state,
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        (shell, vcx)
+    }
+
+    /// Picking another server is the person's navigation: the entry they came from stays in the history, so Back
+    /// returns to the channel they were on (the settle must not overwrite it).
+    #[gpui::test]
+    fn picking_another_server_keeps_the_origin_for_back(cx: &mut gpui::TestAppContext) {
+        let (shell, vcx) = two_server_shell(cx);
+        shell.update(vcx, |s, cx| {
+            s.select(ChannelId([3; 16]), cx);
+            s.pick_community(CommunityId([5; 16]), cx);
+            assert_eq!(s.channel, Some(ChannelId([4; 16])));
+            let back = s.back(cx);
+            assert_eq!(
+                back,
+                Some(Route::Channel {
+                    community: CommunityId([1; 16]),
+                    channel: Some(ChannelId([3; 16])),
+                })
+            );
+        });
+    }
+
+    /// A search hit in another server navigates like a click: Back returns to where the search started.
+    #[gpui::test]
+    fn a_search_hit_in_another_server_keeps_the_origin_for_back(cx: &mut gpui::TestAppContext) {
+        let (shell, vcx) = two_server_shell(cx);
+        shell.update(vcx, |s, cx| {
+            let outcome = s.open_search_result(
+                Navigate::Channel {
+                    community: CommunityId([5; 16]),
+                    channel: ChannelId([4; 16]),
+                },
+                None,
+                cx,
+            );
+            assert!(matches!(outcome, NavOutcome::Done));
+            assert_eq!(s.channel, Some(ChannelId([4; 16])));
+            let back = s.back(cx);
+            assert_eq!(
+                back,
+                Some(Route::Channel {
+                    community: CommunityId([1; 16]),
+                    channel: Some(ChannelId([2; 16])),
+                })
+            );
+        });
     }
 
     /// `/dm` with no server draws the no-server state, not an empty column: the shell's main column asks the no-server
