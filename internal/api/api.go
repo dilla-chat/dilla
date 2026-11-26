@@ -47,12 +47,10 @@ type Deps struct {
 	Registration config.Registration
 	Sessions     *auth.Sessions
 
-	// LandingFont is the same-origin path of the web client's JetBrains Mono woff2 the invite
-	// landing page names in its @font-face (LandingFont(webFS)); "" keeps the system stack (R43).
+	// LandingFont is the same-origin path of the JetBrains Mono woff2 the invite landing page
+	// names in its @font-face (dillad passes web.FontPath, its embedded copy); "" keeps the
+	// system stack (R43).
 	LandingFont string
-	// DesktopDownloads changes only the public HTML invite actions.
-	// API content negotiation and redemption retain the existing protocol.
-	DesktopDownloads bool
 
 	// ExternalSenderPub is the public half of the instance's current external-sender signing
 	// key (protocol/03 § Instance keys), elements 9 and 10 of GET /v1/instance with

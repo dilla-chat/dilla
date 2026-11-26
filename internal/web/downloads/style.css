@@ -1,4 +1,5 @@
-/* Signal palette and JetBrains Mono match the existing client and invite page. */
+/* Signal palette and JetBrains Mono (embedded, served at web.FontPath) match the desktop app and the invite page. */
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:100 800;font-display:swap;src:url("/jetbrains-mono.woff2") format("woff2")}
 :root{color-scheme:dark;--bg:#08090B;--bg-2:#0B0D10;--surface:#0D1014;--fg:#E4E8EE;--fg-2:#8C939E;--accent:#5AA8E6;--hairline:#1A1D23}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font-family:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;font-size:14px;line-height:1.65}
@@ -16,7 +17,4 @@ a:focus-visible{outline:2px solid var(--fg);outline-offset:4px}
 .downloads a:hover,.downloads a:focus-visible{background:var(--surface)}
 .downloads strong{font-size:1rem;font-weight:600}
 .downloads span{color:var(--fg-2);font-size:.8125rem}
-.migration{margin-top:2.5rem;border-top:1px solid var(--hairline)}
-.migration-link{display:inline-block;min-height:44px;padding:10px 0;font-weight:600}
-.note{margin-top:0;font-size:.8125rem}
 @media(max-width:38rem){main{padding:2rem 1.25rem}.downloads{grid-template-columns:1fr}.downloads a{min-height:64px}}

@@ -1,11 +1,15 @@
-// Package web serves the browser client from dillad's own origin (C9): an embedded,
-// manifest-verified tree behind the routing, header and CSP rules of protocol/09.
+// Package web is dillad's catch-all for what no API route answers: the desktop download page, its
+// assets and the embedded JetBrains Mono (downloads.go). dillad serves no browser client (Task 12,
+// Jonas 2026-11-26); every former client path is a 302 to /download.
+//
+// New and Handler are a test-only seam: dilladtest's WebRoot and dilla-testhost's -web-root serve a
+// manifest-verified directory tree (the core harness, the GPUI parity strings, a one-page tree that
+// turns on the test host's LiveKit URL rule) behind the download page. `dillad serve` never sets one.
 package web
 
 import (
 	"bytes"
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,12 +27,12 @@ import (
 const ManifestName = "dilla-manifest.json"
 const maxManifestBytes = 1 << 20
 const maxFileBytes = 64 << 20
+
+// The served tree's policy (the test-only seam): the core harness page runs wasm and a worker and
+// talks to the gateway, and e2e/web/support.spec.ts pins these exact values.
 const permissionsPolicy = "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
 const cspHead = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self'"
 const cspTail = "; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-
-//go:embed all:dist
-var dist embed.FS
 
 var contentTypes = map[string]string{
 	".html":  "text/html; charset=utf-8",
@@ -45,24 +49,16 @@ var contentTypes = map[string]string{
 	".txt":   "text/plain; charset=utf-8",
 }
 
-var reservedPrefixes = []string{"/v1/", "/gateway", "/rtc", "/i/", "/hooks/", "/healthz", "/readyz", "/metrics", "/debug/"}
+// reservedPrefixes are the server's own: under them the mux answers, its 404s and 405s included.
+var reservedPrefixes = []string{"/v1/", "/gateway", "/rtc", "/i/", "/hooks/", "/healthz", "/readyz", "/metrics", "/debug/", "/desktop-auth/"}
 
 // belowRootData matches a data prefix one or more segments below the root: a client whose saved
-// instance address has a path asks /<path>/v1/instance, and the client page must not answer that.
+// instance address has a path asks /<path>/v1/instance, and a page or a redirect must not answer that.
 var belowRootData = regexp.MustCompile(`^/.+/(v1/|i/|gateway(/|$)|rtc(/|$))`)
 var dnsHost = regexp.MustCompile(`^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$`)
 var ipv6Host = regexp.MustCompile(`^\[[0-9A-Fa-f:.]{2,45}\](:[0-9]{1,5})?$`)
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var entryScript = regexp.MustCompile(`<script\s+type="module"[^>]*\ssrc="(/assets/[A-Za-z0-9_./-]+\.js)"`)
-
-// Embedded is the committed placeholder, or the real build when CI copied it in before go build.
-func Embedded() fs.FS {
-	tree, err := fs.Sub(dist, "dist")
-	if err != nil {
-		panic(fmt.Sprintf("web: the embedded tree has no dist directory: %v", err))
-	}
-	return tree
-}
 
 type file struct {
 	data              []byte
@@ -71,11 +67,11 @@ type file struct {
 	noStore           bool
 }
 
-// Handler serves one verified client tree; it is safe for concurrent use and immutable after New.
+// Handler serves one verified tree (the test-only seam); it is safe for concurrent use and immutable
+// after New.
 type Handler struct {
-	files   map[string]file
-	version []byte
-	entry   string
+	files map[string]file
+	entry string
 }
 
 type manifestEntry struct {
@@ -197,9 +193,6 @@ func New(fsys fs.FS) (*Handler, error) {
 		}
 	}
 	h.entry = entry
-	h.version, _ = json.Marshal(struct {
-		Entry string `json:"entry"`
-	}{entry})
 	return h, nil
 }
 
@@ -215,6 +208,8 @@ func reserved(p string) bool {
 	return false
 }
 
+// ServeHTTP answers from the tree: a listed file, index.html at the root and for any extensionless
+// path (the harness's own routes), a 404 for everything else.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
@@ -224,17 +219,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := clean(r.URL.Path)
 	if reserved(p) || strings.Contains(r.URL.Path, "..") || strings.ContainsRune(r.URL.Path, 0) {
 		http.NotFound(w, r)
-		return
-	}
-	if p == "/app-version.json" {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Length", strconv.Itoa(len(h.version)))
-		w.WriteHeader(http.StatusOK)
-		if r.Method == http.MethodGet {
-			_, _ = w.Write(h.version)
-		}
 		return
 	}
 	name := strings.TrimPrefix(p, "/")
@@ -267,6 +251,12 @@ func (h *Handler) securityHeaders(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) serve(w http.ResponseWriter, r *http.Request, f file) {
 	h.securityHeaders(w, r)
+	serveFile(w, r, f)
+}
+
+// serveFile writes f once its caller has set the security headers: the validator, the cache policy,
+// a 304 for a matching If-None-Match, and the bytes (none for HEAD).
+func serveFile(w http.ResponseWriter, r *http.Request, f file) {
 	headers := w.Header()
 	headers.Set("ETag", f.etag)
 	if f.noStore {
@@ -292,16 +282,15 @@ func (h *Handler) serve(w http.ResponseWriter, r *http.Request, f file) {
 	}
 }
 
-// Fallback sends paths routed for their method, or under a reserved prefix, to the mux.
-// It registers nothing and checks the mux on each request, so later registrations work.
-func (h *Handler) Fallback(mux *server.Mux) http.Handler {
-	return h.fallback(mux, h)
-}
-
-func (h *Handler) fallback(mux *server.Mux, navigation http.Handler) http.Handler {
+// Fallback is dillad's catch-all. A path routed for its method, or under a reserved prefix, goes to
+// the mux; a data path below the root is the API's refusal; everything else is the download pages'
+// (downloads.go), with tree behind them when it is non-nil (the test-only seam). It registers
+// nothing and checks the mux on each request, so later registrations work.
+func Fallback(mux *server.Mux, tree *Handler) http.Handler {
+	pages := newPages(tree)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, pattern := mux.Mux().Handler(r)
-		if pattern != "" || reserved(clean(r.URL.Path)) || (navigation != h && (r.URL.Path == "/desktop-auth" || strings.HasPrefix(r.URL.Path, "/desktop-auth/"))) {
+		if pattern != "" || reserved(clean(r.URL.Path)) {
 			mux.ServeHTTP(w, r)
 			return
 		}
@@ -309,7 +298,7 @@ func (h *Handler) fallback(mux *server.Mux, navigation http.Handler) http.Handle
 			server.WriteError(w, server.Errorf(server.CodeNotFound, "the instance address must not have a path"))
 			return
 		}
-		navigation.ServeHTTP(w, r)
+		pages.ServeHTTP(w, r)
 	})
 }
 

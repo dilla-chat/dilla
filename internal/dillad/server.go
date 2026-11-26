@@ -129,13 +129,13 @@ func deliverySeams(o Options) (ds.Channels, ds.ACL) {
 // every session signature preimage and the generation is in every response
 // header, and neither changes without a restart or a restore.
 func New(ctx context.Context, o Options) (*Server, error) {
-	tree := o.Web
-	if tree == nil {
-		tree = web.Embedded()
-	}
-	client, err := web.New(tree)
-	if err != nil {
-		return nil, fmt.Errorf("dillad: web client: %w", err)
+	// dillad serves no browser client (Task 12). A web root is the test-only seam (Options.Web).
+	var tree *web.Handler
+	if o.Web != nil {
+		var err error
+		if tree, err = web.New(o.Web); err != nil {
+			return nil, fmt.Errorf("dillad: web root: %w", err)
+		}
 	}
 	if err := o.validate(ctx); err != nil {
 		return nil, err
@@ -206,10 +206,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	deps := api.Deps{
 		Repo: o.Repo, Clock: o.Clock, Log: o.Log, Limiter: limiter, Metrics: o.Metrics,
 		Instance: instance, Domain: o.Config.Instance.Domain,
-		// The invite page's font: the web client dillad serves, found once (R43).
-		LandingFont:      api.LandingFont(tree),
-		DesktopDownloads: o.DesktopDownloads,
-		Registration:     o.Config.Registration, Config: o.Config,
+		// The invite page's font: the JetBrains Mono dillad embeds and serves beside the download page (R43).
+		LandingFont:  web.FontPath,
+		Registration: o.Config.Registration, Config: o.Config,
 		Sessions: sessions, Hasher: hasher, Throttle: throttle, Passkeys: passkeys,
 		StepUps:    api.NewStepUps(o.Clock, api.StepUpTTL),
 		Assertions: api.NewAssertions(o.Clock, api.AssertionTTL),
@@ -321,6 +320,12 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	// The Bot's event feed (Bot v2 task 12) needs the gateway, and the gateway hands it each Bot identify:
 	// the hook reads the variable set right after New, before anything is served.
 	var botFeed *api.BotFeed
+	// app_build names the entry of a served tree (the test-only seam); dillad itself serves no client
+	// to update, so it sends none.
+	var appEntry func() string
+	if tree != nil {
+		appEntry = tree.BuildEntry
+	}
 	gw := gateway.New(gateway.Options{
 		OnBotIdentified: func(s *gateway.BotStream) {
 			if botFeed != nil {
@@ -340,7 +345,7 @@ func New(ctx context.Context, o Options) (*Server, error) {
 			}
 			return net.JoinHostPort(addr.String(), "0")
 		},
-		CurrentAppEntry: client.BuildEntry,
+		CurrentAppEntry: appEntry,
 		OnPresenceChanged: func(user id.ID) {
 			if presence != nil {
 				presence.Changed(context.Background(), user)
@@ -721,23 +726,17 @@ func New(ctx context.Context, o Options) (*Server, error) {
 		mux.Handle("GET "+o.Config.Metrics.Path, o.Metrics.Handler(o.Config.Metrics.RequireAdmin, token))
 	}
 
-	// The browser client answers only what no route and no reserved prefix answers
-	// (internal/web.Fallback): the mux keeps its own 404s and 405s, and the
-	// method-less /rtc patterns mountRTC adds stay legal.
-	// /download/{platform} redirects to the verified desktop release asset on a desktop-only
-	// instance, and is a plain 404 otherwise (never the browser client's navigation fallback).
-	downloads := desktopdownload.NotFound()
-	if o.DesktopDownloads {
-		downloads = o.DesktopDownloadRoutes
-		if downloads == nil {
-			downloads = desktopdownload.New(desktopdownload.Options{Channel: o.DesktopDownloadChannel})
-		}
+	// /download/{platform} redirects to the verified desktop release asset of the configured channel.
+	downloads := o.DesktopDownloadRoutes
+	if downloads == nil {
+		downloads = desktopdownload.New(desktopdownload.Options{Channel: o.DesktopDownloadChannel})
 	}
 	mux.Handle("GET /download/{platform}", downloads)
-	h := client.Fallback(mux)
-	if o.DesktopDownloads {
-		h = client.DownloadsFallback(mux)
-	}
+	// The download pages answer only what no route and no reserved prefix answers
+	// (internal/web.Fallback): the mux keeps its own 404s and 405s, and the method-less
+	// /rtc patterns mountRTC adds stay legal. dillad serves no browser client (Task 12):
+	// its former paths are a 302 to /download; a web root (Options.Web) is a test-only seam.
+	h := web.Fallback(mux, tree)
 	h = generationHeader(h, instance.Generation)
 	// The Bot's enrollment is the socket's alone (fix round 1, M-1), with or without a supervisor (final review I3).
 	h = refuseEnrollmentOffSocket(h)

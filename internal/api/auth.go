@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"sync"
 	"time"
 	"unicode"
@@ -1269,8 +1268,9 @@ func (d Deps) FinishPasskeyLogin(w http.ResponseWriter, r *http.Request) {
 // id_token verification and the pending-login table; the pair below is the
 // HTTP skin over it.
 
-// oidcStateCookie is the cookie protocol/09 names. Deviation ID10 explains why
-// the prefix is __Secure- and not __Host-; auth.StateCookie sets the flags.
+// oidcStateCookie is the browser flow's cookie protocol/09 names (Deviation ID10: __Secure-, not
+// __Host-). That flow is refused since Task 12; the callback still clears the cookie, so a browser
+// that started a login before the upgrade keeps nothing.
 const oidcStateCookie = "__Secure-dilla-oidc"
 
 // oidcStateTTL is how long a started login may take to come back. It matches
@@ -1299,17 +1299,11 @@ func (d Deps) oidc() (*auth.OIDC, error) {
 	return d.OIDC, nil
 }
 
-// oidcReturnURL is where a finished callback sends the browser. The assertion
-// travels in the FRAGMENT, never the query: a fragment is never sent to a
-// server, never reaches a Referer header and never lands in an access log, and
-// this one-time token is the whole login.
-func (d Deps) oidcReturnURL(assertion string) string {
-	return (&url.URL{Scheme: "https", Host: d.Domain, Path: "/",
-		Fragment: "assertion=" + assertion}).String()
-}
-
 // StartOIDC is GET /v1/auth/oidc/start: 302 to the identity provider, PKCE
-// S256, state cookie.
+// S256, state cookie, for a desktop sign-in only (desktop_request and its
+// desktop_ticket, from the /desktop-auth page). The browser flow, which handed
+// its assertion to a browser client at https://<domain>/#assertion=, is refused
+// (Task 12, Jonas 2026-11-26): dillad serves no browser client to land in.
 //
 // The state, the nonce and the verifier are minted here and the last two are
 // kept server-side under the first, so the browser holds nothing but an opaque
@@ -1327,6 +1321,13 @@ func (d Deps) StartOIDC(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, err)
 		return
 	}
+	desktopRequest := r.URL.Query().Get("desktop_request")
+	if desktopRequest == "" {
+		// Before the throttle and before discovery: a refused flow asks the identity provider nothing.
+		server.WriteError(w, server.Errorf(server.CodeForbidden,
+			"this server serves no browser client: sign in from Dilla desktop"))
+		return
+	}
 	addrKey := server.RateKey(server.RealIP(r, d.Config.Server.TrustedProxyCIDRs))
 	if ok, wait := d.Throttle.Allow(classLogin, addrKey); !ok {
 		server.WriteError(w, server.RateLimitedAfter(wait))
@@ -1339,19 +1340,12 @@ func (d Deps) StartOIDC(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, server.Errorf(server.CodeInternal, "oidc discovery failed"))
 		return
 	}
-	desktopRequest := r.URL.Query().Get("desktop_request")
-	if desktopRequest != "" {
-		if d.desktopAuth == nil || !d.desktopAuth.ClaimOIDC(desktopRequest, r.URL.Query().Get("desktop_ticket")) {
-			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request unavailable"))
-			return
-		}
+	if d.desktopAuth == nil || !d.desktopAuth.ClaimOIDC(desktopRequest, r.URL.Query().Get("desktop_ticket")) {
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request unavailable"))
+		return
 	}
 	o.Stash(state, auth.Pending{Nonce: nonce, Verifier: verifier, DesktopRequest: desktopRequest}, oidcStateTTL)
-	if desktopRequest != "" {
-		http.SetCookie(w, auth.DesktopOIDCStateCookie(state, int(oidcStateTTL/time.Second)))
-	} else {
-		http.SetCookie(w, auth.StateCookie(oidcStateCookie, state, int(oidcStateTTL/time.Second)))
-	}
+	http.SetCookie(w, auth.DesktopOIDCStateCookie(state, int(oidcStateTTL/time.Second)))
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
@@ -1409,17 +1403,17 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 		refuse("api: oidc callback carried an error", "error", e)
 		return
 	}
+	// Only the desktop flow's cookie can finish a login (the browser flow is refused at the start
+	// leg, Task 12); it is compared before the pending row is spent, so a callback carrying another
+	// cookie consumes nothing.
 	state := q.Get("state")
-	legacyCookie, legacyErr := r.Cookie(oidcStateCookie)
 	browserCookie, browserErr := r.Cookie("__Secure-dilla-desktop-oidc")
-	legacyMatch := legacyErr == nil && subtle.ConstantTimeCompare([]byte(legacyCookie.Value), []byte(state)) == 1
-	desktopMatch := browserErr == nil && subtle.ConstantTimeCompare([]byte(browserCookie.Value), []byte(state)) == 1
-	if state == "" || (!legacyMatch && !desktopMatch) {
+	if state == "" || browserErr != nil || subtle.ConstantTimeCompare([]byte(browserCookie.Value), []byte(state)) != 1 {
 		refuse("api: oidc callback state does not match the cookie")
 		return
 	}
 	pend, ok := o.Spend(state)
-	if !ok || (pend.DesktopRequest != "" && !desktopMatch) || (pend.DesktopRequest == "" && !legacyMatch) {
+	if !ok || pend.DesktopRequest == "" {
 		refuse("api: oidc callback has no pending login")
 		return
 	}
@@ -1474,20 +1468,15 @@ func (d Deps) CallbackOIDC(w http.ResponseWriter, r *http.Request) {
 	// Bound to its first factor, as a password login's is: a passkey that finishes the second step must be this
 	// account's (desktop merge review I1).
 	assertion := d.Assertions.IssueFirstFactor(userID, needs)
-	if pend.DesktopRequest != "" {
-		if d.desktopAuth == nil || d.desktopAuth.CompleteOIDC(pend.DesktopRequest, assertion, needs) != nil {
-			// The request expired or was taken: the assertion reaches no one, so it is spent here rather than left live
-			// until AssertionTTL (review M3).
-			d.Assertions.SpendNeeds(assertion)
-			server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request expired"))
-			return
-		}
-		w.Header().Set("Location", "../../../desktop-auth/"+pend.DesktopRequest+"/?done=1")
-		w.WriteHeader(http.StatusFound)
+	if d.desktopAuth == nil || d.desktopAuth.CompleteOIDC(pend.DesktopRequest, assertion, needs) != nil {
+		// The request expired or was taken: the assertion reaches no one, so it is spent here rather than left live
+		// until AssertionTTL (review M3).
+		d.Assertions.SpendNeeds(assertion)
+		server.WriteError(w, server.Errorf(server.CodeUnauthenticated, "desktop browser request expired"))
 		return
 	}
-	//nolint:gosec // G710: the target is https://{configured domain}/ with a server-minted one-time token in the fragment; no request input reaches it
-	http.Redirect(w, r, d.oidcReturnURL(assertion), http.StatusFound)
+	w.Header().Set("Location", "../../../desktop-auth/"+pend.DesktopRequest+"/?done=1")
+	w.WriteHeader(http.StatusFound)
 }
 
 // Second factors (protocol/09 § Second factors): step-up, the factor list, removal and fresh

@@ -808,29 +808,10 @@ func serveOne(t *testing.T, h http.Handler, method, path, host string) *httptest
 	return rec
 }
 
-// C9: the instance serves the client from its own origin; a binary built without one serves the
-// committed placeholder, through the whole handler chain.
-func TestTheEmbeddedWebClientIsServedAtTheRoot(t *testing.T) {
-	srv, h, _ := newInstance(t)
-	defer srv.Shutdown(context.Background())
-	for _, path := range []string{"/", "/welcome", "/c/0123456789abcdef0123456789abcdef"} {
-		rec := serveOne(t, h, http.MethodGet, path, "dilla.test")
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<meta name="dilla-web" content="placeholder">`) {
-			t.Fatalf("GET %s = %d %q, want the placeholder", path, rec.Code, rec.Body.String())
-		}
-		if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP("dilla.test") {
-			t.Errorf("GET %s: CSP %q", path, got)
-		}
-		if rec.Header().Get("X-Dilla-Generation") == "" {
-			t.Errorf("GET %s carries no X-Dilla-Generation", path)
-		}
-	}
-}
-
-// The catch-all never answers for the API: every reserved or routed path answers exactly as it did
-// before the client was mounted (the mux's 404 body, its 405 with the route's Allow, the upgrade's
-// 426), and never with the page.
-func TestTheAPIAnswersAsBeforeBesideTheWebClient(t *testing.T) {
+// The catch-all never answers for the API: every reserved or routed path answers exactly as the mux
+// does (its 404 body, its 405 with the route's Allow, the upgrade's 426), and never with a page or a
+// redirect. (The former browser-client paths: TestDilladServesTheDownloadPageInsteadOfTheBrowserClient.)
+func TestTheAPIAnswersAsBeforeBesideTheDownloadPage(t *testing.T) {
 	srv, h, _ := newInstance(t)
 	defer srv.Shutdown(context.Background())
 	message := "/v1/gateway/ticket"
@@ -869,9 +850,9 @@ func TestTheAPIAnswersAsBeforeBesideTheWebClient(t *testing.T) {
 	}
 }
 
-// With an SFU, New mounts /rtc and /rtc/ without a method (routes.go:241-242). The client must be
-// served beside them: a "GET /" pattern would make this New panic (ruling 32).
-func TestTheWebClientAndTheSignallingProxyServeSideBySide(t *testing.T) {
+// With an SFU, New mounts /rtc and /rtc/ without a method (routes.go:241-242). The catch-all must
+// answer beside them: a "GET /" pattern would make this New panic (ruling 32).
+func TestTheDownloadPageAndTheSignallingProxyServeSideBySide(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	}))
@@ -883,9 +864,12 @@ func TestTheWebClientAndTheSignallingProxyServeSideBySide(t *testing.T) {
 		t.Fatalf("dillad.New with an SFU: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
-	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/", ""); rec.Code != http.StatusOK ||
-		!strings.Contains(rec.Body.String(), `content="placeholder"`) {
-		t.Fatalf("GET / beside the SFU = %d %q", rec.Code, rec.Body.String())
+	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/", ""); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/download" {
+		t.Fatalf("GET / beside the SFU = %d %v", rec.Code, rec.Header())
+	}
+	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/download", ""); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), "Download Dilla") {
+		t.Fatalf("GET /download beside the SFU = %d %q", rec.Code, rec.Body.String())
 	}
 	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/rtc/validate?access_token=x", ""); rec.Code != http.StatusForbidden {
 		t.Fatalf("GET /rtc/validate = %d, want the join gate's 403", rec.Code)
@@ -896,7 +880,9 @@ func TestTheWebClientAndTheSignallingProxyServeSideBySide(t *testing.T) {
 	}
 }
 
-func TestOptionsWebReplacesTheEmbeddedClient(t *testing.T) {
+// The test-only seam (dilladtest WebRoot, dilla-testhost -web-root): Options.Web is served behind the
+// download page, with the tree's own policy, and no embedded client is needed for it.
+func TestOptionsWebServesAGivenTreeBehindTheDownloadPage(t *testing.T) {
 	const page = "<!doctype html><title>built</title>\n"
 	srv, err := dillad.New(context.Background(), dillad.Options{
 		Config: testConfig(t), Clock: clock.System(), Wasm: sharedRuntime(t),
@@ -906,13 +892,22 @@ func TestOptionsWebReplacesTheEmbeddedClient(t *testing.T) {
 		t.Fatalf("dillad.New: %v", err)
 	}
 	defer srv.Shutdown(context.Background())
-	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/", ""); rec.Body.String() != page {
-		t.Fatalf("GET / = %q, want the tree passed in Options.Web", rec.Body.String())
+	for _, path := range []string{"/", "/c/0123456789abcdef0123456789abcdef"} {
+		rec := serveOne(t, srv.Handler(), http.MethodGet, path, "dilla.test")
+		if rec.Code != http.StatusOK || rec.Body.String() != page {
+			t.Fatalf("GET %s = %d %q, want the tree passed in Options.Web", path, rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Security-Policy"); got != wantCSP("dilla.test") {
+			t.Errorf("GET %s: CSP %q", path, got)
+		}
+	}
+	if rec := serveOne(t, srv.Handler(), http.MethodGet, "/download", ""); !strings.Contains(rec.Body.String(), "Download Dilla") {
+		t.Fatalf("GET /download beside a tree = %d %q", rec.Code, rec.Body.String())
 	}
 }
 
-// Ruling 12: a client tree its manifest does not describe stops the instance from starting.
-func TestNewRefusesAWebClientItsManifestDoesNotDescribe(t *testing.T) {
+// Ruling 12: a tree its manifest does not describe stops the instance from starting.
+func TestNewRefusesAWebRootItsManifestDoesNotDescribe(t *testing.T) {
 	const page = "<!doctype html><title>built</title>\n"
 	tampered := webTree(t, map[string]string{"index.html": page})
 	tampered["index.html"] = &fstest.MapFile{Data: []byte(strings.ToUpper(page))}
@@ -921,9 +916,9 @@ func TestNewRefusesAWebClientItsManifestDoesNotDescribe(t *testing.T) {
 	})
 	if err == nil {
 		_ = srv.Shutdown(context.Background())
-		t.Fatal("dillad.New accepted a client whose index.html does not match its manifest")
+		t.Fatal("dillad.New accepted a tree whose index.html does not match its manifest")
 	}
-	if !strings.HasPrefix(err.Error(), "dillad: web client: ") ||
+	if !strings.HasPrefix(err.Error(), "dillad: web root: ") ||
 		!strings.Contains(err.Error(), "index.html does not match its manifest sha256") {
 		t.Fatalf("dillad.New = %v", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"html/template"
-	"io/fs"
 	"log/slog"
 	"math"
 	"net/http"
@@ -30,13 +29,15 @@ func (d Deps) RegisterPublicInvites(m *server.Mux) {
 }
 
 // landingPage is the invite landing page. It carries no script, no external
-// reference and no form, and one same-origin link into the web client: it is one
-// card a human reads before following that link or pasting the code into a
-// client, and anything more is a phishing surface an instance hands out to
-// strangers by construction. The colours use the sole supported Signal palette
-// (packages/design-tokens/dist/tokens.css, pinned by TestLandingTokensMatchSignal).
-// The font is the web client's JetBrains Mono when dillad serves one (Deps.LandingFont,
-// R43; font-src 'self' is the only thing the CSP widens), else the system monospace.
+// reference and no form, and points only to Dilla desktop (dillad serves no browser
+// client, Task 12): the dilla:// deep link when the configured domain can carry one,
+// the same-origin download page, and the code to paste. It is one card a human reads
+// before following a link or pasting the code into the app, and anything more is a
+// phishing surface an instance hands out to strangers by construction. The colours use
+// the sole supported Signal palette (packages/design-tokens/dist/tokens.css, pinned by
+// TestLandingTokensMatchSignal). The font is dillad's embedded JetBrains Mono
+// (Deps.LandingFont = web.FontPath, R43; font-src 'self' is the only thing the CSP
+// widens), else the system monospace.
 var landingPage = template.Must(template.New("invite").Parse(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -72,28 +73,24 @@ h1{margin:0;font-size:1.375rem;line-height:1.3;font-weight:700;letter-spacing:.0
 <p class="label">Invite code</p>
 <code class="code">{{.Code}}</code>
 <p class="meta">{{if .ExpiresAt}}<time datetime="{{.ExpiresAt}}">{{.Expires}}</time>{{else}}{{.Expires}}{{end}} · {{.Uses}}</p>
-{{if .DesktopDownloads}}
 {{if .DesktopInvite}}<a class="open" href="{{.DesktopInvite}}">Open Dilla desktop</a>{{end}}
 <p class="note"><a href="/download">Download Dilla desktop</a></p>
 <p class="note">Connect to {{.Instance}} and paste this invite code. This page never asks for a password.</p>
-{{else}}<a class="open" href="/welcome?invite={{.Code}}">Open dilla in this browser</a>
-<p class="note">Or paste the code into a dilla client for {{.Instance}}. This page never asks for a password.</p>{{end}}
 </main>
 </body></html>
 `))
 
 type landingData struct {
-	Instance         string
-	Community        string
-	Code             string
-	Title            string
-	Description      string
-	ExpiresAt        string // the ISO instant, for <time datetime>; empty for an invite that never expires
-	Expires          string // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
-	Uses             string // "1 use left" or "2 uses left"
-	DesktopDownloads bool
-	DesktopInvite    template.URL // generated only by desktopInviteURL, never from request Host
-	Font             string       // the same-origin JetBrains Mono woff2, or "" for the system stack (R43)
+	Instance      string
+	Community     string
+	Code          string
+	Title         string
+	Description   string
+	ExpiresAt     string       // the ISO instant, for <time datetime>; empty for an invite that never expires
+	Expires       string       // "Expires in 23 hours" or "Expires on 2 January 2006 (UTC)"
+	Uses          string       // "1 use left" or "2 uses left"
+	DesktopInvite template.URL // generated only by desktopInviteURL, never from request Host
+	Font          string       // the same-origin JetBrains Mono woff2, or "" for the system stack (R43)
 }
 
 // Match the existing desktop parser's dilla://invite/<host[:port]>/<code>
@@ -143,23 +140,6 @@ func landingCount(n int, one, many string) string {
 		return "1 " + one
 	}
 	return strconv.Itoa(n) + " " + many
-}
-
-// landingFontGlob finds the JetBrains Mono latin variable woff2 in the served web client's tree.
-const landingFontGlob = "assets/jetbrains-mono-latin-wght-normal-*.woff2"
-
-// LandingFont is the same-origin path of the web client's JetBrains Mono latin woff2 (the first
-// match of landingFontGlob), or "" when the tree has none (the embedded placeholder) or is nil.
-// The composition root calls it once at start and hands the answer to Deps.LandingFont.
-func LandingFont(webFS fs.FS) string {
-	if webFS == nil {
-		return ""
-	}
-	matches, err := fs.Glob(webFS, landingFontGlob)
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	return "/" + matches[0]
 }
 
 // InviteLanding is GET /i/{code}. It NEVER mutates: a link pasted into a chat
@@ -246,17 +226,16 @@ func (d Deps) InviteLanding(w http.ResponseWriter, r *http.Request) {
 		expiresAt, expires = time.Unix(invite.ExpiresAt, 0).UTC().Format(time.RFC3339), landingExpiry(invite.ExpiresAt, now)
 	}
 	if err := landingPage.Execute(w, landingData{
-		Instance:         d.Domain,
-		Community:        community,
-		Code:             r.PathValue("code"),
-		Title:            title,
-		Description:      description,
-		ExpiresAt:        expiresAt,
-		Expires:          expires,
-		Uses:             uses,
-		Font:             d.LandingFont,
-		DesktopDownloads: d.DesktopDownloads,
-		DesktopInvite:    desktopInviteURL(d.Domain, r.PathValue("code")),
+		Instance:      d.Domain,
+		Community:     community,
+		Code:          r.PathValue("code"),
+		Title:         title,
+		Description:   description,
+		ExpiresAt:     expiresAt,
+		Expires:       expires,
+		Uses:          uses,
+		Font:          d.LandingFont,
+		DesktopInvite: desktopInviteURL(d.Domain, r.PathValue("code")),
 	}); err != nil {
 		d.logf(r, "api: render invite landing", "err", err)
 	}

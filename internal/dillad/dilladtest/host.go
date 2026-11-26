@@ -111,10 +111,11 @@ type HostOptions struct {
 	// UserFlagInstanceAdmin through the ordinary signup path. That invite admits one account, so
 	// the next signup moves on to a plain one.
 	AdminInvite bool
-	// WebRoot is a built client directory, its dilla-manifest.json included, served at the
-	// instance's own origin instead of the embedded placeholder (dillad.Options.Web =
-	// os.DirFS(WebRoot)); "" keeps the placeholder. A directory its manifest does not describe
-	// fails NewHost and Restore with dillad's "dillad: web client: " error.
+	// WebRoot is a directory tree, its dilla-manifest.json included, served at the instance's
+	// own origin behind the download page (dillad.Options.Web = os.DirFS(WebRoot), the
+	// test-only seam: the core harness, the GPUI parity strings). "" serves none, as `dillad
+	// serve` does. A directory its manifest does not describe fails NewHost and Restore with
+	// dillad's "dillad: web root: " error.
 	WebRoot string
 	// LiveKitURL is the signalling URL the call routes hand a client instead of the instance
 	// domain's wss:// URL (dillad.Options.LiveKitURL); "" keeps that. dilla-testhost passes

@@ -26,7 +26,7 @@ func TestDesktopInviteActionsUseTheConfiguredHostAndExistingGrammar(t *testing.T
 		{"dilla.test/subpath", false}, {"dilla.test?credential=secret", false}, {"user:password@dilla.test", false}, {"dilla.test#fragment", false}, {"dilla.test:65536", false}, {"dilla.test.", false}, {`dilla.test"><script>alert(1)</script>`, false},
 	} {
 		t.Run(tc.domain, func(t *testing.T) {
-			d := api.Deps{Repo: e.Repo, Clock: e.Clk, Domain: tc.domain, DesktopDownloads: true}
+			d := api.Deps{Repo: e.Repo, Clock: e.Clk, Domain: tc.domain}
 			req := httptest.NewRequestWithContext(t.Context(), "GET", "https://untrusted.test/i/"+code, nil)
 			req.SetPathValue("code", code)
 			rec := httptest.NewRecorder()

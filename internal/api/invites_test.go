@@ -3,7 +3,6 @@ package api_test
 import (
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -600,9 +598,10 @@ func TestOnlyThePermittedMayRevokeAnInvite(t *testing.T) {
 	}
 }
 
-// Ruling 34: the landing page is the only URL the instance mints for an invite, and it leads into
-// the web client on the same origin, still with no script and no form.
-func TestTheLandingPageLinksIntoTheWebClient(t *testing.T) {
+// Ruling 34: the landing page is the only URL the instance mints for an invite. dillad serves no
+// browser client (Task 12), so it always points to Dilla desktop: its deep link, the download page
+// and the code to paste, still with no script and no form.
+func TestTheLandingPagePointsToDillaDesktop(t *testing.T) {
 	e, cid, ownerTok := inviteEnv(t)
 	code := mintInvite(t, e, cid, ownerTok, 5, 3600)
 
@@ -611,13 +610,14 @@ func TestTheLandingPageLinksIntoTheWebClient(t *testing.T) {
 		t.Fatalf("GET /i/{code} = %d", resp.StatusCode)
 	}
 	page := string(body)
-	if !strings.Contains(page, `href="/welcome?invite=`+code+`"`) || !strings.Contains(page, `>Open dilla in this browser</a>`) {
-		t.Fatalf("the landing page does not link into the web client:\n%s", page)
+	if !strings.Contains(page, `<a class="open" href="dilla://invite/dilla.example/`+code+`">Open Dilla desktop</a>`) ||
+		!strings.Contains(page, `<a href="/download">Download Dilla desktop</a>`) {
+		t.Fatalf("the landing page does not point to Dilla desktop:\n%s", page)
 	}
-	if !strings.Contains(page, "Or paste the code into a dilla client for dilla.example. This page never asks for a password.") {
+	if !strings.Contains(page, "Connect to dilla.example and paste this invite code. This page never asks for a password.") {
 		t.Fatalf("the landing page lost the paste-the-code sentence:\n%s", page)
 	}
-	for _, absent := range []string{"Open a dilla client", "<script", "<form"} {
+	for _, absent := range []string{"Open a dilla client", "<script", "<form", "/welcome", "this browser"} {
 		if strings.Contains(page, absent) {
 			t.Fatalf("the landing page contains %q:\n%s", absent, page)
 		}
@@ -633,7 +633,7 @@ func landingEnv(t *testing.T, instance bool, maxUses, used uint64, expiresIn tim
 	return landingEnvFont(t, "", instance, maxUses, used, expiresIn)
 }
 
-// landingEnvFont is landingEnv with Deps.LandingFont set (the path api.LandingFont found).
+// landingEnvFont is landingEnv with Deps.LandingFont set (dillad passes web.FontPath).
 func landingEnvFont(t *testing.T, font string, instance bool, maxUses, used uint64, expiresIn time.Duration) (*env, string) {
 	t.Helper()
 	e, cid, tok := inviteEnvFor(t, "dilla.test", font)
@@ -724,23 +724,42 @@ func TestLandingOpenLinkIs44OnPhone(t *testing.T) {
 	}
 }
 
-func TestLandingHasNoScriptNoFormOneLink(t *testing.T) {
-	e, code := landingEnv(t, false, 5, 0, 24*time.Hour)
-	_, page := landingBody(t, e, code)
-	for _, absent := range []string{"<script", "<form", "<link", "<img", "http:", "https:", "src="} {
-		if strings.Contains(page, absent) {
-			t.Fatalf("the landing page contains %q:\n%s", absent, page)
-		}
-	}
-	// The only url( a page may hold is the same-origin font; this env's web client carries none.
-	if strings.Contains(page, "url(") {
-		t.Fatalf("a page with no font names a url(:\n%s", page)
-	}
-	if n := strings.Count(page, "href="); n != 1 {
-		t.Fatalf("the landing page has %d href=, want 1:\n%s", n, page)
-	}
-	if !strings.Contains(page, `href="/welcome?invite=`) {
-		t.Fatalf("the one link is not same-origin /welcome?invite=:\n%s", page)
+// Both branches of the page link only to Dilla desktop: the dilla:// deep link when the configured
+// domain can carry one, and the same-origin download page always; no link into a browser client.
+func TestLandingHasNoScriptNoFormOnlyDesktopLinks(t *testing.T) {
+	for _, tc := range []struct {
+		domain string
+		hrefs  []string // after the code is substituted for CODE
+	}{
+		{"dilla.test", []string{`href="dilla://invite/dilla.test/CODE"`, `href="/download"`}},
+		// A path-scoped instance has no dilla:// form: the download page and the code to paste.
+		{"dilla.test/sub", []string{`href="/download"`}},
+	} {
+		t.Run(tc.domain, func(t *testing.T) {
+			e, cid, tok := inviteEnvFor(t, tc.domain, "")
+			code := mintInvite(t, e, cid, tok, 5, 3600)
+			_, page := landingBody(t, e, code)
+			for _, absent := range []string{"<script", "<form", "<link", "<img", "http:", "https:", "src=", "/welcome", "this browser"} {
+				if strings.Contains(page, absent) {
+					t.Fatalf("the landing page contains %q:\n%s", absent, page)
+				}
+			}
+			// The only url( a page may hold is the same-origin font; this env names none.
+			if strings.Contains(page, "url(") {
+				t.Fatalf("a page with no font names a url(:\n%s", page)
+			}
+			if n := strings.Count(page, "href="); n != len(tc.hrefs) {
+				t.Fatalf("the landing page has %d href=, want %d:\n%s", n, len(tc.hrefs), page)
+			}
+			for _, href := range tc.hrefs {
+				if !strings.Contains(page, strings.ReplaceAll(href, "CODE", code)) {
+					t.Fatalf("the landing page lacks %s:\n%s", href, page)
+				}
+			}
+			if !strings.Contains(page, "Connect to "+tc.domain+" and paste this invite code.") {
+				t.Fatalf("the landing page lost the paste-the-code sentence:\n%s", page)
+			}
+		})
 	}
 }
 
@@ -759,26 +778,18 @@ func TestLandingHeaders(t *testing.T) {
 	}
 }
 
-// R43: the page names the JetBrains Mono latin woff2 of the served web client, found once, and nothing else.
+// R43: the page names the font Deps.LandingFont gives it (dillad's embedded JetBrains Mono at
+// web.FontPath), and nothing else; without one it keeps the system stack.
 func TestLandingFont(t *testing.T) {
-	const font = "/assets/jetbrains-mono-latin-wght-normal-abc.woff2"
 	for _, tc := range []struct {
 		name string
-		tree fs.FS
 		want string
 	}{
-		{"a tree with the font", fstest.MapFS{
-			"assets/jetbrains-mono-latin-wght-normal-abc.woff2":    {Data: []byte("x")},
-			"assets/jetbrains-mono-cyrillic-wght-normal-def.woff2": {Data: []byte("x")},
-		}, font},
-		{"an empty tree", fstest.MapFS{}, ""},
-		{"no tree", nil, ""},
+		{"the embedded font", "/jetbrains-mono.woff2"},
+		{"no font", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := api.LandingFont(tc.tree); got != tc.want {
-				t.Fatalf("LandingFont = %q, want %q", got, tc.want)
-			}
-			e, code := landingEnvFont(t, api.LandingFont(tc.tree), false, 5, 0, 24*time.Hour)
+			e, code := landingEnvFont(t, tc.want, false, 5, 0, 24*time.Hour)
 			_, page := landingBody(t, e, code)
 			if tc.want == "" {
 				if strings.Contains(page, "@font-face") || strings.Contains(page, "url(") {

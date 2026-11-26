@@ -26,7 +26,7 @@ func TestTheWebRootAndACLFlagsReachTheHostOptions(t *testing.T) {
 	}
 }
 
-func TestWithoutTheNewFlagsTheHostKeepsThePlaceholderAndTheHarnessSeams(t *testing.T) {
+func TestWithoutTheNewFlagsTheHostServesNoTreeAndKeepsTheHarnessSeams(t *testing.T) {
 	o, err := parseFlags(nil)
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
