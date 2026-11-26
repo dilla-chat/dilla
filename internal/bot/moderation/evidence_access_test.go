@@ -378,7 +378,9 @@ func TestEvidencePurgeResumesAcrossRestartAndKeepsUnexpiredRecords(t *testing.T)
 		state.rows[string(evidenceKey(binding, input.OperationID))] = native.StateValue{Revision: 1, Value: value}
 	}
 	fresh := EvidenceInput{OperationID: id.ID{250}, MessageID: id.ID{251}, Action: ActionRemove, Rule: RuleDuplicate,
-		Reason: "fresh", CreatedAt: now.Add(-EvidenceRetention + time.Second)}
+		// An hour, not a second, inside retention: `now` is truncated to the second while the purge reads the real clock,
+		// so a one-second margin expired whenever the test ran in the last moments of a second (CI, 2026-11-25).
+		Reason: "fresh", CreatedAt: now.Add(-EvidenceRetention + time.Hour)}
 	freshValue, err := encodeEvidence(binding, fresh)
 	if err != nil {
 		t.Fatal(err)
