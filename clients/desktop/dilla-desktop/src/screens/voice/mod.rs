@@ -29,8 +29,8 @@ use dilla_media::{
 };
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
-    IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
-    Window, WindowId, anchored, deferred, div, img, px, relative,
+    IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, Window, WindowId,
+    anchored, deferred, div, px, relative,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
@@ -3570,6 +3570,13 @@ fn tile(
     } else {
         AvatarSize::Stage
     };
+    // The web draws the tile's edge as an inset shadow, which moves nothing; here it is a border, inside which absolute
+    // children are placed, so their insets are counted from the tile's outer edge.
+    let edge = if speaking || selected {
+        m::TILE_EDGE_STRONG
+    } else {
+        m::TILE_EDGE
+    };
     let media = match video {
         Some(image) => {
             let selector = format!(
@@ -3580,11 +3587,7 @@ fn tile(
             div()
                 .debug_selector(move || selector.clone())
                 .size_full()
-                .child(
-                    img(ImageSource::Render(image))
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
+                .child(stage_video(image, edge))
                 .into_any_element()
         }
         None if k.screen => div()
@@ -3612,13 +3615,6 @@ fn tile(
                 .size(face),
             )
             .into_any_element(),
-    };
-    // The web draws the tile's edge as an inset shadow, which moves nothing; here it is a border, inside which absolute
-    // children are placed, so their insets are counted from the tile's outer edge.
-    let edge = if speaking || selected {
-        m::TILE_EDGE_STRONG
-    } else {
-        m::TILE_EDGE
     };
     // CallStage.css: the focused tile's caption is 24px over its top left (10px in), 8px in, on the tile scrim.
     let caption = if is_focused {
@@ -4398,14 +4394,32 @@ fn card(
                 .rounded(radius::MD)
                 .overflow_hidden()
                 .bg(color::BG)
-                .child(
-                    img(ImageSource::Render(image))
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
+                .child(dm_video(image))
         }))
         .child(caption)
         .into_any_element()
+}
+
+/// A stage tile's video, filling the tile inside its `edge` (a border of 1 or 2px). It carries the tile's rounded corners
+/// itself (radius `xl` less the edge): GPUI clips no child to its parent's corners, so a stream of the tile's aspect
+/// would otherwise show square corners past them.
+fn stage_video(image: Arc<RenderImage>, edge: f32) -> gpui::Img {
+    dilla_desktop_ui::picture::rounded_picture(
+        ImageSource::Render(image),
+        radius::XL,
+        px(edge),
+        gpui::ObjectFit::Contain,
+    )
+}
+
+/// A DM call tile's video, in its 16:9 box (radius `md`, no border), carrying the box's rounded corners itself.
+fn dm_video(image: Arc<RenderImage>) -> gpui::Img {
+    dilla_desktop_ui::picture::rounded_picture(
+        ImageSource::Render(image),
+        radius::MD,
+        px(0.0),
+        gpui::ObjectFit::Contain,
+    )
 }
 
 /// The DM call box's controls (CallControls without the call bar's words): mute, deafen, camera, share, then leave set
@@ -5397,6 +5411,76 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A video's picture carries its tile's rounded corners itself, at the border's inside (GPUI clips no child to its
+    /// parent's corners): a stage tile's (`xl` less its edge, 1 or 2px) and a DM call tile's (`md`, no border).
+    #[gpui::test]
+    fn a_video_follows_its_tile_s_rounded_corners(cx: &mut gpui::TestAppContext) {
+        use gpui::{IntoElement, ParentElement, Styled, div, px};
+
+        struct Host(Box<dyn Fn() -> gpui::AnyElement>);
+        impl gpui::Render for Host {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                (self.0)()
+            }
+        }
+        let frame = || {
+            let f = image::Frame::new(image::ImageBuffer::from_pixel(
+                160,
+                90,
+                image::Rgba([40, 80, 120, 255]),
+            ));
+            std::sync::Arc::new(gpui::RenderImage::new(vec![f]))
+        };
+        let corner = |cx: &mut gpui::TestAppContext, build: Box<dyn Fn() -> gpui::AnyElement>| {
+            let (_, vcx) = cx.add_window_view(|_, _| Host(build));
+            vcx.run_until_parked();
+            vcx.update(|w, _| {
+                let s = *w.painted_sprites().last().expect("the video is painted");
+                let c = s.corner_radii;
+                let min = c
+                    .top_left
+                    .0
+                    .min(c.top_right.0)
+                    .min(c.bottom_left.0)
+                    .min(c.bottom_right.0);
+                px(min / w.painted_scale_factor())
+            })
+        };
+        for edge in [super::m::TILE_EDGE, super::m::TILE_EDGE_STRONG] {
+            let image = frame();
+            let got = corner(
+                cx,
+                Box::new(move || {
+                    div()
+                        .w(px(160.0))
+                        .h(px(90.0))
+                        .child(super::stage_video(image.clone(), edge))
+                        .into_any_element()
+                }),
+            );
+            assert!(
+                got >= dilla_desktop_ui::tokens::radius::XL - px(edge),
+                "stage, edge {edge}: {got:?}"
+            );
+        }
+        let image = frame();
+        let got = corner(
+            cx,
+            Box::new(move || {
+                div()
+                    .w(px(160.0))
+                    .h(px(90.0))
+                    .child(super::dm_video(image.clone()))
+                    .into_any_element()
+            }),
+        );
+        assert!(got >= dilla_desktop_ui::tokens::radius::MD, "DM: {got:?}");
+    }
+
     /// The portal's order (KDE share picker plan, Task 2): the panel before a share asks no sound question; once the
     /// system dialog's pick is live, the panel opens by itself, once, for the share it was asked for only.
     #[test]

@@ -105,15 +105,15 @@ pub(crate) mod testing {
         tiles.len()
     }
 
-    /// The pictures a host drawing `build` paints, once they are decoded.
+    /// The pictures a host drawing `build` paints, once they are decoded, and the scale they were painted at.
     pub fn sprites(
         cx: &mut gpui::TestAppContext,
         build: impl Fn(&mut Window, &mut App) -> AnyElement + 'static,
-    ) -> Vec<gpui::PolychromeSprite> {
+    ) -> (Vec<gpui::PolychromeSprite>, f32) {
         let (host, vcx) = cx.add_window_view(|_, _| Host(Box::new(build)));
         vcx.run_until_parked();
         host.update(vcx, |_, cx| cx.notify());
         vcx.run_until_parked();
-        vcx.update(|window, _| window.painted_sprites())
+        vcx.update(|window, _| (window.painted_sprites(), window.painted_scale_factor()))
     }
 }

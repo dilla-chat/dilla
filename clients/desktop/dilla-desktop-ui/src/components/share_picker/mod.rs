@@ -15,8 +15,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, ElementId, ImageSource, InteractiveElement, IntoElement, ParentElement, RenderImage,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, StyledImage, Window, div, img,
-    px,
+    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
@@ -292,10 +291,14 @@ impl RenderOnce for SharePicker {
                     .border_color(color::HAIRLINE_2)
                     .rounded(radius::MD)
                     .child(match &tile.thumbnail {
-                        Some(image) => img(ImageSource::Render(image.clone()))
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Contain)
-                            .into_any_element(),
+                        // The thumbnail carries its box's rounded corners itself (GPUI clips no child to them).
+                        Some(image) => crate::picture::rounded_picture(
+                            ImageSource::Render(image.clone()),
+                            radius::MD,
+                            px(1.0),
+                            gpui::ObjectFit::Contain,
+                        )
+                        .into_any_element(),
                         None => Icon::new(match tile.kind {
                             TileKind::Window => IconName::AppWindow,
                             TileKind::Screen => IconName::Monitor,
@@ -479,5 +482,34 @@ mod tests {
         assert_eq!(grid_next("end", 0, 5, 3), Some(4));
         assert_eq!(grid_next("a", 0, 5, 3), None);
         assert_eq!(grid_next("down", 0, 0, 3), None);
+    }
+
+    /// A thumbnail follows its box's rounded corners (radius `md` inside its 1px border).
+    #[gpui::test]
+    fn a_thumbnail_follows_its_rounded_corners(cx: &mut gpui::TestAppContext) {
+        use crate::picture::{
+            inner_radius,
+            testing::{decoded, picture_corner},
+        };
+        let frame = decoded(cx, 160, 90);
+        let labels = PickerLabels {
+            title: "".into(),
+            screens: "".into(),
+            windows: "".into(),
+            share: "".into(),
+            cancel: "".into(),
+            empty: "".into(),
+        };
+        let corner = picture_corner(cx, move |_, _| {
+            SharePicker::new("share", labels.clone())
+                .tiles(vec![PickerTile {
+                    key: "a".into(),
+                    name: "".into(),
+                    kind: TileKind::Screen,
+                    thumbnail: Some(frame.clone()),
+                }])
+                .into_any_element()
+        });
+        assert!(corner >= inner_radius(radius::MD, px(1.0)), "{corner:?}");
     }
 }

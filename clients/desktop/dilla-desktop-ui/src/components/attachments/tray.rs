@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px, relative,
+    SharedString, StatefulInteractiveElement, Styled, div, px, relative,
 };
 
 use super::OnClick;
@@ -13,6 +13,7 @@ use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{TRACKING_TAG, focus_ring};
+use crate::picture::rounded_picture;
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, motion, radius, text};
 
@@ -89,12 +90,16 @@ fn card(e: TrayEntry, cx: &App) -> AnyElement {
         _ => PREVIEW_W,
     };
     let body: AnyElement = match &e.preview {
-        Preview::Image(image) => img(image.clone())
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .object_fit(ObjectFit::Cover)
-            .into_any_element(),
+        // The picture carries the card's rounded top corners itself (GPUI clips no child to them); the progress line
+        // is under it, so its bottom corners stay square.
+        Preview::Image(image) => {
+            rounded_picture(image.clone(), radius::LG, px(1.0), ObjectFit::Cover)
+                .h_auto()
+                .flex_1()
+                .min_h_0()
+                .rounded_b(px(0.0))
+                .into_any_element()
+        }
         Preview::Gif => div()
             .relative()
             .flex_1()
@@ -281,5 +286,35 @@ mod tests {
         .collect();
         assert_eq!(fills, [0.25, 0.5, 0.75, 1.0, 1.0]);
         assert_eq!(height(), 94.0);
+    }
+
+    /// A picture's preview follows the card's rounded top corners (radius `lg` inside its 1px border); the progress
+    /// line is under it, so its bottom corners stay square.
+    #[gpui::test]
+    fn a_preview_follows_the_card_s_rounded_corners(cx: &mut gpui::TestAppContext) {
+        use crate::picture::{
+            inner_radius,
+            testing::{picture_corners, png},
+        };
+        let image = png();
+        let corners = picture_corners(cx, move |_, cx| {
+            card(
+                TrayEntry {
+                    id: "1".into(),
+                    name: "a.png".into(),
+                    size: "1 KB".into(),
+                    phase: "".into(),
+                    step: Step::Ready,
+                    preview: Preview::Image(image.clone()),
+                    remove_label: "".into(),
+                    on_remove: std::rc::Rc::new(|_, _, _| {}),
+                },
+                cx,
+            )
+        });
+        let c = corners.last().expect("the preview");
+        let inner = inner_radius(radius::LG, px(1.0));
+        assert!(c.top_left >= inner && c.top_right >= inner, "{c:?}");
+        assert_eq!((c.bottom_left, c.bottom_right), (px(0.0), px(0.0)));
     }
 }

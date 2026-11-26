@@ -13,6 +13,7 @@ use crate::a11y::{Accessible, Role};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{LABEL_TRACKING, focus_ring};
+use crate::picture::{inner_radius, rounded_picture};
 use crate::text::{line, line_height};
 use crate::tokens::{color, font, motion, radius, text};
 
@@ -94,13 +95,13 @@ fn exact_cover(image: Arc<Image>, cw: f32, ch: f32, cover: (f32, f32, f32, f32))
         .relative()
         .size_full()
         .overflow_hidden()
-        .rounded(radius::LG)
-        .child(
-            img(image.clone())
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .rounded(radius::LG),
-        )
+        .rounded(inner_radius(radius::LG, px(1.0)))
+        .child(rounded_picture(
+            image.clone(),
+            radius::LG,
+            px(1.0),
+            ObjectFit::Cover,
+        ))
         .child(band(0.0, CORNER, cw, ch - 2.0 * CORNER))
         .child(band(CORNER, 0.0, cw - 2.0 * CORNER, ch))
         .into_any_element()
@@ -138,10 +139,7 @@ pub fn image_tile(
         // It loses the sub-texel crop ("design, not pixels", 2026-11-20). A GIF that plays carries an id, which keeps
         // its frame clock (GPUI's `Img` animates only with one); a still one holds its first frame.
         Some(image) if image.format == ImageFormat::Gif => {
-            let picture = img(image)
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .rounded(radius::LG - px(1.0));
+            let picture = rounded_picture(image, radius::LG, px(1.0), ObjectFit::Cover);
             if moving {
                 picture
                     .id(gpui::ElementId::Name(format!("{id}-img").into()))
@@ -156,11 +154,9 @@ pub fn image_tile(
                 // rounds a sub-tile's offset and size), a little off Chromium's. The whole picture is scaled into the
                 // cover box instead and the tile clips what overflows, so the crop lands on sub-texel UVs.
                 Some(cover) => exact_cover(image, width - 2.0, h - 2.0, cover),
-                None => img(image)
-                    .size_full()
-                    .object_fit(ObjectFit::Cover)
-                    .rounded(radius::LG)
-                    .into_any_element(),
+                None => {
+                    rounded_picture(image, radius::LG, px(1.0), ObjectFit::Cover).into_any_element()
+                }
             }
         }
         None => div()
@@ -466,8 +462,8 @@ mod tests {
     #[gpui::test]
     fn a_gif_tile_paints_one_picture(cx: &mut gpui::TestAppContext) {
         use crate::components::attachments::testing::sprites;
-        assert_eq!(sprites(cx, |_, _| gif_tile(true)).len(), 1, "playing");
-        assert_eq!(sprites(cx, |_, _| gif_tile(false)).len(), 1, "still");
+        assert_eq!(sprites(cx, |_, _| gif_tile(true)).0.len(), 1, "playing");
+        assert_eq!(sprites(cx, |_, _| gif_tile(false)).0.len(), 1, "still");
     }
 
     /// A posted GIF that plays paints its next frame a frame's delay later.
@@ -489,5 +485,36 @@ mod tests {
             1,
             "reduced motion"
         );
+    }
+
+    /// Every picture of a tile follows the tile's rounded corners at the border's inside (radius `lg` less its 1px
+    /// border: 7, not 8): a still drawn exactly (its rounded layer under the bands), one drawn by GPUI's Cover (no
+    /// size known), and a GIF.
+    #[gpui::test]
+    fn a_tile_s_pictures_follow_its_rounded_corners(cx: &mut gpui::TestAppContext) {
+        use crate::picture::{
+            inner_radius,
+            testing::{picture_corners, png},
+        };
+        let inner = inner_radius(radius::LG, px(1.0));
+        let tile = |size: Option<(u32, u32)>, image: Arc<Image>| {
+            move |_: &mut gpui::Window, _: &mut gpui::App| {
+                image_tile("t", IMAGE_W, size, Some(image.clone()), None, false, None)
+            }
+        };
+        let exact = picture_corners(cx, tile(Some((64, 48)), png()));
+        // The rounded layer is painted first, the square bands over it.
+        assert_eq!(exact.len(), 3);
+        assert_eq!(exact[0].top_left, inner, "the exact path's rounded layer");
+        let cover = picture_corners(cx, tile(None, png()));
+        assert_eq!(cover[0].top_left, inner, "GPUI's Cover");
+        let gif = picture_corners(
+            cx,
+            tile(
+                Some((64, 48)),
+                crate::components::attachments::testing::gif_sized(64, 48),
+            ),
+        );
+        assert_eq!(gif[0].top_left, inner, "a GIF");
     }
 }
