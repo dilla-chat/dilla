@@ -7,7 +7,7 @@ import { parseYaml } from './ci-local-yaml.mjs';
  * The pure half of `npm run ci:local` (scripts/ci-local.mjs runs it): the CI workflows (.github/workflows/server.yml,
  * desktop-ci.yml, WORKFLOWS in scripts/ci-areas.mjs) read into one set of jobs, each step mapped onto what this
  * machine does instead of the GitHub runner, the needs graph, the job selection of --only and --changed, and the port
- * blocks the browser jobs bind. A job both workflows carry (changes, rust-native, rust-wasi, web-build) runs once
+ * blocks the browser jobs bind. A job both workflows carry (changes, rust-native, rust-wasi) runs once
  * locally. Nothing here touches the tree, spawns a process or reads the environment, so scripts/check-ci-workflow.mjs
  * runs `localMirrorProblems` in the docs job: a job, a step, an action, an `if:` or an expression that ci-local cannot
  * map fails `npm run check:ci`, and the mirror cannot drift from either workflow.
@@ -33,7 +33,6 @@ const SHARED_JOBS = {
   'ci-watchdog': { kind: 'aggregate', weight: 0, skip: 'GitHub run cancellation is replaced by the local fail-fast scheduler' },
   'rust-native': { weight: 4 },
   'rust-wasi': { weight: 2 },
-  'web-build': { weight: 4 },
 };
 export const JOB_MAP = {
   server: {
@@ -45,7 +44,6 @@ export const JOB_MAP = {
     'rust-native': SHARED_JOBS['rust-native'],
     'rust-wasi': SHARED_JOBS['rust-wasi'],
     vectors: { weight: 2, locks: ['tracked-tree'] },
-    'web-build': SHARED_JOBS['web-build'],
     deny: { weight: 1 },
     go: { weight: 4, group: 'go' },
     'go-checks': { weight: 3, group: 'go' },
@@ -58,8 +56,7 @@ export const JOB_MAP = {
     'go-vuln': { weight: 2, group: 'go' },
     'go-sqlc': { weight: 1, group: 'go', locks: ['tracked-tree'] },
     'go-postgres': { weight: 3, group: 'go' },
-    // It deletes the tracked placeholder in internal/web/dist and builds with the real client there: alone, and put back.
-    'go-release': { weight: 4, group: 'go', exclusive: true, snapshot: ['internal/web/dist'] },
+    'go-release': { weight: 4, group: 'go' },
     'server-ok': { kind: 'aggregate', weight: 0 },
   },
   desktop: {
@@ -75,7 +72,7 @@ export const JOB_MAP = {
     'rust-wasi': SHARED_JOBS['rust-wasi'],
     'browser-spike': { weight: 3, group: 'e2e', ports: 'fixed' },
     'browser-media': { weight: 3, group: 'e2e', ports: 'fixed' },
-    'web-build': SHARED_JOBS['web-build'],
+    'core-harness': { weight: 4 },
     'desktop-ok': { kind: 'aggregate', weight: 0 },
   },
 };

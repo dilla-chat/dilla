@@ -11,7 +11,7 @@ const yaml = createRequire(import.meta.url)('js-yaml');
  * two). Ruling L added the two Go jobs: they landed with Plan B task 8, and leaving them merely "checked if present"
  * meant deleting them was the one way to make the Go half of the tree ungated without this gate saying a word. The
  * `go` job additionally has to declare its `needs: rust-wasi` edge (see below). Artifacts never cross workflows, so
- * a job whose output several need (rust-native, rust-wasi, web-build) is in each of them, unchanged.
+ * a job whose output several need (rust-native, rust-wasi) is in each of them, unchanged.
  */
 export const REQUIRED_JOBS = {
   server: [
@@ -49,8 +49,6 @@ export const REQUIRED_JOBS = {
     'go-sqlc',
     'go-postgres',
     'go-release',
-    // go-release embeds the web client, so the server workflow builds it too.
-    'web-build',
   ],
   desktop: [
     'changes',
@@ -64,8 +62,8 @@ export const REQUIRED_JOBS = {
     'rust-wasi',
     'browser-spike',
     'browser-media',
-    // Build the bundled client once for the shared encrypted-core integration (BROWSER_WEB_JOBS below).
-    'web-build',
+    // Build the core-worker harness once for the shared encrypted-core integration (BROWSER_WEB_JOBS below).
+    'core-harness',
     // core-integration: BROWSER_WEB_JOBS.
   ],
 };
@@ -153,8 +151,6 @@ function browserWebSteps(job, spec) {
     'name: dilla-core-wasi',
     'path: internal/mlswasi/testdata',
     'name: dilla-testkit',
-    'name: dilla-web-dist',
-    'path: packages/web/dist',
     'name: dilla-core-harness',
     'path: packages/client-core/harness-dist',
     `npx playwright install --with-deps ${spec.engine}`,
@@ -298,8 +294,8 @@ const REQUIRED_STEPS = {
     "DILLA_MEDIA_SFU_AV1: '1'",
     'DILLA_TESTKIT: ${{ github.workspace }}/artifacts/dilla-testkit',
   ],
-  // Task 26/C9: the release and both browser suites consume these same build artifacts.
-  'web-build': [
+  // Task 26/C9: the core-worker browser suite consumes this build artifact.
+  'core-harness': [
     'bash scripts/install-ci-tool.sh wasm-bindgen',
     'bash scripts/install-ci-tool.sh wasm-pack',
     'timeout-minutes: 15',
@@ -308,12 +304,7 @@ const REQUIRED_STEPS = {
     'npm run typecheck -w @dilla/client-core',
     'npm run typecheck -w @dilla/web',
     'npm run typecheck:e2e',
-    'npm run build -w @dilla/web',
-    'npm run -w @dilla/web test:dist',
     'npm run build:harness -w @dilla/client-core',
-    'go test -tags webdist ./internal/web/...',
-    'name: dilla-web-dist',
-    'path: packages/web/dist/',
     'name: dilla-core-harness',
     'path: packages/client-core/harness-dist/',
   ],
@@ -399,7 +390,7 @@ const REQUIRED_STEPS = {
     goShardCommand('go-postgres'),
   ],
   // Task 26/C9: release verifies the downloaded client before embedding it.
-  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error', 'name: dilla-web-dist', 'path: internal/web/dist', 'content="placeholder"', 'go test -tags webdist ./internal/web/...', 'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
+  'go-release': ['CGO_ENABLED=0', 'if-no-files-found: error',
     // Bot v2 task 11: no shipped dillad is a dilla_unsafe_test build (the tag survives -trimpath in the build info).
     `test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2`,
     'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi',
@@ -579,8 +570,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file) {
  * cc) uses clang 23, the dev box's major. The runner's own clang made the same tree about 25 KB larger, so the
  * 3,450,000-byte budget measured different bytes in CI than on the box it was set on.
  *
- * The compiler comes from a third-party apt archive and its output ships (web-build's dist is embedded by
- * go-release), so the step is pinned: the archive key is checked by fingerprint on the very keyring
+ * The compiler comes from a third-party apt archive and its output ships (the core-harness build feeds the browser core suite), so the step is pinned: the archive key is checked by fingerprint on the very keyring
  * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
  * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
  * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
@@ -1062,26 +1052,13 @@ function checkCiWorkflow(root, workflow) {
 
   // Task 26: every artifact consumer waits for the producer in the same workflow run.
   for (const [job, needs] of [
-    ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'web-build']]),
-    ['go-release', ['web-build']],
+    ...Object.keys(BROWSER_WEB_JOBS).map((job) => [job, ['rust-native', 'rust-wasi', 'core-harness']]),
   ]) {
     if (!(job in jobs)) continue;
     for (const need of needs) {
       if (!new RegExp(`^\\s*needs:.*(?<![\\w-])${need}(?![\\w-])`, 'm').test(jobs[job])) {
         problems.push(`${file}: job "${job}" downloads the ${need} artifact but has no "needs: ${need}"`);
       }
-    }
-  }
-
-  // Task 26: downloading and refusing the placeholder must precede each build.
-  for (const [job, build] of [['go-release', 'go build']]) {
-    if (!(job in jobs)) continue;
-    const body = jobs[job];
-    const fetchAt = body.indexOf('name: dilla-web-dist');
-    const guardAt = body.indexOf('content="placeholder"');
-    const buildAt = body.indexOf(build);
-    if (fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && !(fetchAt < guardAt && guardAt < buildAt)) {
-      problems.push(`${file}: job "${job}" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
     }
   }
 
@@ -1094,11 +1071,11 @@ export const checkDesktopCiWorkflow = (root) => checkCiWorkflow(root, 'desktop')
 /**
  * The release workflow (install-release, 2026-10-14): a v* tag builds the assets deploy/install.sh downloads and
  * checks. It builds what it ships, so it is held to the CI workflows' rules for the same jobs (fail-closed lines, the
- * clang 23 pin, the size profile, the placeholder guard), and it uses only actions server.yml or desktop-ci.yml uses at
+ * clang 23 pin, the size profile), and it uses only actions server.yml or desktop-ci.yml uses at
  * the same versions. It
  * builds and pushes no container image: the release is the native install's (Jonas, 2026-10-14).
  */
-export const RELEASE_JOBS = ['tag', 'web-build', 'rust-wasi', 'bot-release', 'go-release', 'release'];
+export const RELEASE_JOBS = ['tag', 'rust-wasi', 'bot-release', 'go-release', 'release'];
 export const RELEASE_ASSETS = ['dillad-linux-amd64', 'dillad-linux-arm64', 'dillabot-linux-amd64', 'dillabot-linux-arm64', 'dilla-bot-core-linux-amd64', 'dilla-bot-core-linux-arm64', 'dilla_core_wasi.wasm', 'install.sh', 'install-bot.sh'];
 const RELEASE_STEPS = {
   tag: [
@@ -1113,14 +1090,6 @@ const RELEASE_STEPS = {
     'run: node scripts/server-release-gate.mjs "$TAG_SHA"',
     // v0.1.0-web3.1: the version go-release stamps into dillad is the validated tag without its leading v.
     'echo "version=${tag#v}" >> "$GITHUB_OUTPUT"',
-  ],
-  'web-build': [
-    'bash scripts/install-ci-tool.sh wasm-bindgen',
-    'bash scripts/install-ci-tool.sh wasm-pack',
-    'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg',
-    'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm',
-    'npm run build -w @dilla/web',
-    'name: dilla-web-dist',
   ],
   'rust-wasi': REQUIRED_STEPS['rust-wasi'],
   'bot-release': [
@@ -1148,7 +1117,6 @@ const RELEASE_STEPS = {
     `test "$(go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -c 'build[[:space:]]CGO_ENABLED=0')" -eq 2`,
     'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_unsafe_test; then echo "a dillad was built with the dilla_unsafe_test tag"; exit 1; fi',
     'if go version -m dist/dillad-linux-amd64 dist/dillad-linux-arm64 | grep -q dilla_testhost; then echo "a dillad was built with the dilla_testhost tag"; exit 1; fi',
-    'DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist',
     'name: dillad-binaries',
   ],
   release: [
@@ -1171,7 +1139,7 @@ const RELEASE_STEPS = {
   ],
 };
 const RELEASE_VERSION_ENV = 'VERSION: ${{ needs.tag.outputs.version }}';
-const RELEASE_NEEDS = { 'web-build': ['tag'], 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag', 'web-build'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release'] };
+const RELEASE_NEEDS = { 'rust-wasi': ['tag'], 'bot-release': ['tag', 'rust-wasi'], 'go-release': ['tag'], release: ['tag', 'go-release', 'rust-wasi', 'bot-release'] };
 
 export function checkReleaseWorkflow(root) {
   const file = 'release.yml';
@@ -1253,12 +1221,6 @@ export function checkReleaseWorkflow(root) {
       if (step.some((l) => /main\.Version|\$\{?VERSION\b/.test(l)) && !step.includes(RELEASE_VERSION_ENV)) {
         problems.push(`${file}: job "go-release" uses the version without its own env ${RELEASE_VERSION_ENV}`);
       }
-    }
-    const fetchAt = body.indexOf('name: dilla-web-dist');
-    const guardAt = body.indexOf('content="placeholder"');
-    const buildAt = body.indexOf('go build');
-    if (!(fetchAt !== -1 && guardAt !== -1 && buildAt !== -1 && fetchAt < guardAt && guardAt < buildAt)) {
-      problems.push(`${file}: job "go-release" must fetch dilla-web-dist into internal/web/dist and refuse the placeholder before it builds`);
     }
   }
   if ('bot-release' in jobs) {

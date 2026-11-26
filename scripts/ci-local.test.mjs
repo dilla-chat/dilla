@@ -113,14 +113,13 @@ test('a job a workflow gains without a JOB_MAP entry fails the sync check, and s
 
 test('a job several workflows carry runs once: any workflow\'s gate runs it, and its steps must agree', () => {
   const shared = JOBS.filter((j) => j.workflows.length >= 2).map((j) => j.id);
-  assert.deepEqual(shared.sort(), ['changes', 'ci-watchdog', 'rust-native', 'rust-wasi', 'web-build']);
-  assert.equal(JOBS.filter((j) => j.id === 'web-build').length, 1);
-  // server builds the client for go-release (go or web), desktop for its suites (e2e).
-  const web = JOBS.find((j) => j.id === 'web-build');
-  assert.deepEqual(web.workflows, ['server', 'desktop']);
-  assert.equal(web.if, "needs.changes.outputs.go != 'false' || needs.changes.outputs.web != 'false' || needs.changes.outputs.e2e != 'false'");
-  for (const outputs of [{ go: true, web: false, e2e: false }, { go: false, web: false, e2e: true }]) assert.equal(evalIf(web.if, { outputs, needResults: [] }), true);
-  assert.equal(evalIf(web.if, { outputs: { go: false, web: false, e2e: false }, needResults: [] }), false);
+  assert.deepEqual(shared.sort(), ['changes', 'ci-watchdog', 'rust-native', 'rust-wasi']);
+  // core-harness is desktop's alone: it builds the harness for core-integration.
+  const harness = JOBS.find((j) => j.id === 'core-harness');
+  assert.deepEqual(harness.workflows, ['desktop']);
+  assert.equal(harness.if, "needs.changes.outputs.e2e != 'false'");
+  assert.equal(evalIf(harness.if, { outputs: { e2e: true }, needResults: [] }), true);
+  assert.equal(evalIf(harness.if, { outputs: { e2e: false }, needResults: [] }), false);
   // A shared job that drifted apart would prove only one of its copies locally.
   const drifted = edit('desktop', 'cargo build -p dilla-testkit --release --locked', 'cargo build -p dilla-testkit --locked');
   assert.ok(localMirrorProblems(drifted).some((p) => p.includes('job "rust-native" differs between server.yml and desktop-ci.yml')), localMirrorProblems(drifted).join('\n'));
@@ -136,7 +135,7 @@ test('--list shows every workflow\'s jobs and what ci-local does with each', () 
   const listed = (from, to) => lines.slice(from + 1, to).map((l) => l.trim().split(' ')[0]);
   assert.deepEqual(listed(server, desktop), Object.keys(PARSED.server.jobs));
   assert.deepEqual(listed(desktop, lines.length), Object.keys(PARSED.desktop.jobs));
-  assert.ok(lines.includes('  web-build  (also in desktop: runs once)'), lines.join('\n'));
+  assert.ok(lines.includes('  rust-wasi  (also in desktop: runs once)'), lines.join('\n'));
   assert.ok(lines.includes('  go  (legs go-1, go-2, go-3, go-4)'), lines.join('\n'));
   assert.equal(parseArgs(['--list']).list, true);
   assert.deepEqual(loadWorkflows(ROOT).parsed, PARSED);
@@ -173,7 +172,7 @@ test('a matrix job becomes one job per leg, and an arm64 leg is skipped with its
 test('the needs graph: a job brings what it needs, in dependency order, and a cycle or unknown need throws', () => {
   const order = dependencyClosure(JOBS, ['core-integration']);
   assert.deepEqual(order.slice(-1), ['core-integration']);
-  assert.deepEqual(new Set(order), new Set(['changes', 'rust-native', 'rust-wasi', 'web-build', 'core-integration']));
+  assert.deepEqual(new Set(order), new Set(['changes', 'rust-native', 'rust-wasi', 'core-harness', 'core-integration']));
   for (const id of order) for (const need of job(id).needs) assert.ok(order.indexOf(need) < order.indexOf(id), `${need} before ${id}`);
   const fake = [{ id: 'a', name: 'a', needs: ['b'] }, { id: 'b', name: 'b', needs: ['a'] }];
   assert.throws(() => dependencyClosure(fake, ['a']), /cycle/);
@@ -207,7 +206,7 @@ test('--changed runs what the ci-areas gates would: a docs-only diff runs only c
 test('--changed: a Go file runs the Go jobs and the release build, not the desktop suites, the Rust lint or ui', () => {
   const outputs = changedOutputs('base', ['internal/api/x.go']);
   const chosen = selectJobs(JOBS, { only: null, outputs });
-  for (const id of ['go-1', 'go-checks', 'go-api-1', 'go-postgres-2', 'web-build', 'go-release', 'rust-wasi', 'rust-native', 'codeql']) assert.ok(chosen.includes(id), id);
+  for (const id of ['go-1', 'go-checks', 'go-api-1', 'go-postgres-2', 'go-release', 'rust-wasi', 'rust-native', 'codeql']) assert.ok(chosen.includes(id), id);
   for (const id of ['ui', 'vectors', 'deny', 'rust-wasm-node', 'core-integration', 'browser-media', 'browser-spike']) assert.ok(!chosen.includes(id), id);
   // rust-native runs for its artifact; its lint and test steps are core-gated.
   const fmt = job('rust-native').steps.find((s) => s.run === 'cargo fmt --all --check');
@@ -244,7 +243,7 @@ test('step mapping: GitHub-only steps become local equivalents, the rest runs as
   assert.deepEqual(core[0], { kind: 'noop', reason: 'the working tree is the checkout' });
   assert.deepEqual(core.filter((m) => m.kind === 'prereq').map((m) => m.tool), ['go', 'node']);
   assert.deepEqual(core.filter((m) => m.kind === 'download').map((m) => [m.name, m.path]), [
-    ['dilla-core-wasi', 'internal/mlswasi/testdata'], ['dilla-testkit', 'artifacts'], ['dilla-web-dist', 'packages/web/dist'], ['dilla-core-harness', 'packages/client-core/harness-dist'],
+    ['dilla-core-wasi', 'internal/mlswasi/testdata'], ['dilla-testkit', 'artifacts'], ['dilla-core-harness', 'packages/client-core/harness-dist'],
   ]);
   const pw = core.find((m) => m.memo === 'playwright install chromium');
   assert.equal(pw.script, 'npx playwright install chromium');
@@ -254,7 +253,7 @@ test('step mapping: GitHub-only steps become local equivalents, the rest runs as
   // ui installs through the playwright CLI file; it shares the same once-per-run install.
   assert.ok(steps('ui').some((m) => m.memo === 'playwright install chromium'));
   // The clang step (scripts/ci-llvm.sh) checks the local LLVM line its name gives instead of apt-installing it.
-  const clang = steps('web-build').find((m) => m.tool === 'llvm');
+  const clang = steps('core-harness').find((m) => m.tool === 'llvm');
   assert.equal(clang.version, '23');
   // install-ci-tool runs as written (pinned, hash-checked downloads), once per run.
   assert.ok(steps('go-lint').some((m) => m.memo === 'bash scripts/install-ci-tool.sh golangci-lint'));
@@ -329,10 +328,10 @@ test('the ui job: every Storybook port moves with the block, and blocks never re
   for (const p of base) assert.ok(p >= UI_PORT_SPAN[0] && p <= UI_PORT_SPAN[1], `ui port ${p} is outside UI_PORT_SPAN, so the block probe misses it`);
 });
 
-/** The suites' sources the port blocks move: the core and web configs and the e2e/web specs and support. */
+/** The suites' sources the port blocks move: the core config and the e2e/web specs and support. */
 function suiteSources() {
   const e2e = join(ROOT, 'e2e');
-  const files = ['playwright.core.config.ts', 'playwright.web.config.ts'].map((f) => join(e2e, f));
+  const files = ['playwright.core.config.ts'].map((f) => join(e2e, f));
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) walk(join(dir, entry.name));

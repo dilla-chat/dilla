@@ -52,8 +52,8 @@ test('a UI-only change runs the web jobs and the browsers, no Go jobs', () => {
   const outputs = areasFor(['packages/ui/src/Button.tsx', 'packages/web/package.json']);
   assert.deepEqual(outputs, { go: false, core: false, web: true, e2e: true, text: false, code: true });
   assert.deepEqual(ranJobs('desktop', outputs), Object.keys(JOB_GATES.desktop));
-  // The release binaries embed the web client, so server rebuilds and embeds it; no Go tests run.
-  assert.deepEqual(ranJobs('server', outputs).sort(), ['go-release', 'rust-native', 'rust-wasi', 'server-scripts', 'web-build']);
+  // The release binaries embed no web client any more, so a UI-only change builds none of the Go jobs.
+  assert.deepEqual(ranJobs('server', outputs).sort(), ['rust-native', 'rust-wasi', 'server-scripts']);
 });
 
 test('a change to anything release.yml ships or the bot-ops guard reads runs server-scripts', () => {
@@ -87,7 +87,7 @@ test('a Go-only change runs the Go jobs and the release build, no rust lint or u
   const outputs = areasFor(['internal/api/messages.go', 'go.sum']);
   assert.deepEqual(outputs, { go: true, core: false, web: false, e2e: false, text: false, code: true });
   const ran = ranJobs('server', outputs);
-  for (const job of ['go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'web-build', 'rust-native', 'rust-wasi']) assert.ok(ran.includes(job), job);
+  for (const job of ['go', 'go-checks', 'go-native', 'go-ds', 'go-api', 'go-harness', 'go-lint', 'go-postgres', 'go-release', 'rust-native', 'rust-wasi']) assert.ok(ran.includes(job), job);
   for (const job of ['vectors', 'deny']) assert.ok(!ran.includes(job), job);
 });
 
@@ -232,11 +232,7 @@ test("a docs-only PR runs every workflow's changes job and reports its ok job", 
 // Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
 const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
-// This build-tagged Go test runs only in web-build/go-release, all gated by the web area (server's also by go).
-// A local generated dist must not make the scanner mistake it for an ordinary Go-job reader.
-const READER_PATH_AREA = {
-  'internal/web/webdist_test.go': 'web',
-};
+const READER_PATH_AREA = {};
 
 function relativeReads(file, text) {
   const reads = [];
