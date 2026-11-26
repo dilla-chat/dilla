@@ -4,7 +4,7 @@
 //! (`DILLA_TESTKIT_CONTROL`): the variable is set once, before any other thread of this binary exists, so it cannot race
 //! the environment reads (proxy settings) of a parallel test. Keep it the only test here.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -104,17 +104,27 @@ fn wasi_core(root: &Path) -> PathBuf {
     wasm
 }
 
+/// What the host's stdout told us: its public origin, then its bootstrap invite.
+enum Line {
+    Public(String),
+    Invite(String),
+}
+
 impl TestHost {
-    fn start(port: u16, control_port: u16) -> Self {
+    /// Starts the host with its public listener on `127.0.0.1:0` (the host's own pick, read back from its `public` line)
+    /// and its control listener on `control_port`. `Err` is the host's stderr when it exited before it was ready.
+    fn start(control_port: u16) -> Result<Self, String> {
         let root = repo_root();
         let binary = testhost_binary(&root);
         let core = wasi_core(&root);
-        let data_dir =
-            std::env::temp_dir().join(format!("dilla-client-http-{}-{port}", std::process::id()));
+        let data_dir = std::env::temp_dir().join(format!(
+            "dilla-client-http-{}-{control_port}",
+            std::process::id()
+        ));
         let mut child = Command::new(binary)
             .args([
                 "-listen",
-                &format!("127.0.0.1:{port}"),
+                "127.0.0.1:0",
                 "-control",
                 &format!("127.0.0.1:{control_port}"),
             ])
@@ -123,16 +133,26 @@ impl TestHost {
             .args(["-log-level", "warn", "-production-acl", "-data-dir"])
             .arg(&data_dir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("start dilla-testhost");
         let stdout = child.stdout.take().expect("stdout");
+        let mut stderr = child.stderr.take().expect("stderr");
+        let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut all = String::new();
+            let _ = stderr.read_to_string(&mut all);
+            let _ = err_tx.send(all);
+        });
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(origin) = line.strip_prefix("public ") {
+                    let _ = tx.send(Line::Public(origin.trim().to_owned()));
+                }
                 if let Some(code) = line.split("DILLA_TESTKIT_INVITE=").nth(1) {
                     // A comma-separated list of codes (the e2e `instanceInvite` takes the first).
-                    let _ = tx.send(
+                    let _ = tx.send(Line::Invite(
                         code.split_whitespace()
                             .next()
                             .unwrap_or_default()
@@ -140,26 +160,42 @@ impl TestHost {
                             .next()
                             .unwrap_or_default()
                             .to_owned(),
-                    );
+                    ));
                 }
             }
         });
         let mut host = Self {
             child,
-            base: format!("http://127.0.0.1:{port}"),
+            base: String::new(),
             invite: String::new(),
             data_dir,
         };
-        let invite: String = rx
-            .recv_timeout(Duration::from_secs(90))
-            .expect("dilla-testhost printed its invite");
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut invite = None;
+        while host.base.is_empty() || invite.is_none() {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(Line::Public(origin)) => host.base = origin,
+                Ok(Line::Invite(code)) => invite = Some(code),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    drop(host);
+                    return Err(err_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap_or_default());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("dilla-testhost did not print its public address and invite")
+                }
+            }
+        }
+        let addr = host.base.trim_start_matches("http://").to_owned();
         let deadline = Instant::now() + Duration::from_secs(60);
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
+        while TcpStream::connect(&addr).is_err() {
             assert!(Instant::now() < deadline, "dilla-testhost does not answer");
             std::thread::sleep(Duration::from_millis(100));
         }
-        host.invite = invite;
-        host
+        host.invite = invite.unwrap_or_default();
+        Ok(host)
     }
 }
 
@@ -204,7 +240,11 @@ fn sign_in_round_trip() {
 
     // The testkit reads the host's fake clock from this variable when it enrols the authenticator app. It is set first,
     // before the host, its reader thread or a runtime exist.
-    let (port, control_port) = (free_port(), free_port());
+    // The public listener is the host's own :0 pick. free_port() hands back a port it has already released, so the
+    // control port (the testkit reads it from the environment before any thread exists, so it cannot change later) can
+    // be taken by a parallel process first: the host then exits with "address already in use". It is started again on
+    // the same control port after a short wait. Any other exit fails with the host's stderr.
+    let control_port = free_port();
     // SAFETY: this binary holds only this test, and no thread of ours has started; nothing reads or writes the
     // environment concurrently.
     #[allow(unsafe_code)]
@@ -214,7 +254,17 @@ fn sign_in_round_trip() {
             format!("http://127.0.0.1:{control_port}"),
         );
     }
-    let host = TestHost::start(port, control_port);
+    let mut attempt = 1;
+    let host = loop {
+        match TestHost::start(control_port) {
+            Ok(host) => break host,
+            Err(stderr) if attempt < 10 && stderr.contains("address already in use") => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(stderr) => panic!("dilla-testhost exited (attempt {attempt}):\n{stderr}"),
+        }
+    };
 
     // An account, enrolled the way every native peer is: the bootstrap invite, an authenticator app, a password.
     let seed = 0x51_61_6e;
