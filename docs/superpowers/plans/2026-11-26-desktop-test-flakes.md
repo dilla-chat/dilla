@@ -277,6 +277,74 @@ search field's "Ctrl K" hint. He added it to this PR.
 - [ ] **Step 3:** Run the crate's title-bar and shell tests and clippy (`-D warnings`). Commit:
   `desktop: in a narrow window the title bar's search shrinks instead of sliding under the call pill`.
 
+### Task 8: the first channel opened at startup is the route (review: sonnet)
+
+Jonas, 2026-11-26: "when starting the app, the channel member list is not visible and you cant click the members icon.
+It works directly if you change the textchannel". Spec: `docs/superpowers/specs/2026-11-26-members-startup-diagnosis.md`.
+
+**The cause:**
+- `ShellView::new` starts the history at `Route::Root`, because the client's first state has no servers.
+- `settle_selection` later opens the first text channel (`clients/desktop/dilla-desktop/src/screens/shell.rs` ~388,
+  ~423, ~538) without updating the history.
+- `members::pane` draws only on `Route::Channel` (`screens/members/mod.rs` ~1045).
+
+- [ ] **Step 1: Write the failing test** `the_first_channel_opened_after_the_server_list_lands_is_the_route` (the
+  diagnosis's version). Start the shell with an empty state, then `set_state(world())`, and assert that:
+  - the route is the first text channel;
+  - the members aside is drawn;
+  - one press of the Members toggle hides it.
+
+  Verify it fails today.
+- [ ] **Step 2: Implement.** At the end of `settle_selection`'s community branch, when the history head is `Root` or a
+  `Channel` that differs from `current_route()`, call `history.replace(current_route())`. Use `replace`, not `push`,
+  so Back doesn't land on an empty root.
+- [ ] **Step 3:** Run the shell, members and navigation tests, and clippy. Commit:
+  `desktop: the channel opened at startup is the route, so its member list shows`.
+
+### Task 9: the profile card closes like the web's, its corners are round, and its actions work (review: sonnet)
+
+Jonas, 2026-11-26: "it should be rounded but you see blue sticking out the edges", and "theres no close button". He
+chose web parity for closing and to fix the smaller differences too. Spec:
+`docs/superpowers/specs/2026-11-26-profile-card-diagnosis.md`, plus `packages/ui` `ProfileCard.tsx`/`.css` and
+`packages/web` `MemberCardHost.tsx`.
+
+**Files:**
+- `clients/desktop/dilla-desktop-ui/src/components/members/mod.rs` (the card: banner, ring, icons, name, bio, height).
+- `clients/desktop/dilla-desktop/src/screens/members/mod.rs` (`card_overlay`, `choose`).
+- `clients/desktop/dilla-desktop/src/screens/user_settings/profile.rs` (the preview's banner).
+- `clients/desktop/dilla-desktop/src/keys.rs` if Escape needs a binding.
+- `parity/tolerance.toml` (`members/profile-card`, `user-settings/profile*`).
+
+- [ ] **Step 1: Write the failing tests.**
+  - The corners:
+    - Extract a `band()` helper for the banner. Its top-left and top-right radii equal the card radius minus the 1 px
+      border: 11 px for the card, 9 px for the settings preview.
+    - A render check: the pixel at the card's (1,1) is not the banner colour.
+    - Lower the two parity tolerances, so the corner wedges fail.
+  - Closing, with `#[gpui::test]`s in the style of `voice.rs` ~457-502:
+    - a click outside closes the card;
+    - Escape closes it wherever focus is;
+    - clicking the open card's row again doesn't close and reopen it;
+    - Message and Compare each close the card;
+    - Tab reaches the ×, and the × closes the card.
+  - The actions: Message opens the DM (`dms::navigate`), and the shield opens the compare view
+    (`dms::compare::open`).
+  - The smaller differences:
+    - a Bot's ring follows the web's shape;
+    - action icons are 15 px;
+    - long names wrap;
+    - the card has a max height and scrolls;
+    - the bio is capped at 8rem.
+
+    Each gets a test or a parity check.
+  - Verify the new tests fail.
+- [ ] **Step 2: Implement.**
+  - Follow the voice screen's card (`voice/menu.rs` ~513-528) for the outside click and Escape.
+  - The card takes focus on open, and returns it to the row on close.
+  - The × is visible only while it has keyboard focus (ProfileCard.css ~41-45).
+- [ ] **Step 3:** Run the crates' tests, the parity check for those two shots, and clippy. Commit:
+  `desktop: the profile card closes like the web's, its banner follows the round corners, Message and Compare work`.
+
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
