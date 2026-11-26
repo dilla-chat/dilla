@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `npm run ci:local`: the CI workflows (.github/workflows/server.yml, desktop-ci.yml and mobile.yml) run on this machine before a
+ * `npm run ci:local`: the CI workflows (.github/workflows/server.yml, desktop-ci.yml) run on this machine before a
  * push. The jobs, their steps, the needs graph and the area gates come from the workflows themselves
  * (scripts/ci-local-plan.mjs maps each step, and a job both carry runs once); GitHub-only steps become local
  * equivalents (artifacts are copied through target/ci-local/artifacts, tool installs are prerequisite checks, Postgres
@@ -34,7 +34,7 @@ const SNAPSHOTS = join(OUT, 'snapshots');
 const EVERYTHING = { ...Object.fromEntries(AREAS.map((area) => [area, true])), code: true };
 
 const USAGE = `usage: npm run ci:local -- [options]
-  --only <job,...>   run these jobs (server.yml, desktop-ci.yml or mobile.yml names, or a matrix leg such as a native target, or codeql) and what they need
+  --only <job,...>   run these jobs (server.yml or desktop-ci.yml names, or a matrix leg such as a native target, or codeql) and what they need
   --no-deps          with --only: do not run the needed jobs; reuse their artifacts from an earlier run
   --changed          the jobs the ci-areas gates run for this branch's diff against origin/main (uncommitted files included)
   --stress           run the Go and browser jobs on a quarter of the CPUs beside a busy-loop load, like a loaded runner

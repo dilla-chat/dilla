@@ -5,7 +5,7 @@ import { parseYaml } from './ci-local-yaml.mjs';
 
 /**
  * The pure half of `npm run ci:local` (scripts/ci-local.mjs runs it): the CI workflows (.github/workflows/server.yml,
- * desktop-ci.yml and mobile.yml, WORKFLOWS in scripts/ci-areas.mjs) read into one set of jobs, each step mapped onto what this
+ * desktop-ci.yml, WORKFLOWS in scripts/ci-areas.mjs) read into one set of jobs, each step mapped onto what this
  * machine does instead of the GitHub runner, the needs graph, the job selection of --only and --changed, and the port
  * blocks the browser jobs bind. A job both workflows carry (changes, rust-native, rust-wasi, web-build) runs once
  * locally. Nothing here touches the tree, spawns a process or reads the environment, so scripts/check-ci-workflow.mjs
@@ -77,21 +77,6 @@ export const JOB_MAP = {
     'browser-media': { weight: 3, group: 'e2e', ports: 'fixed' },
     'web-build': SHARED_JOBS['web-build'],
     'desktop-ok': { kind: 'aggregate', weight: 0 },
-  },
-  mobile: {
-    changes: SHARED_JOBS.changes,
-    'ci-watchdog': SHARED_JOBS['ci-watchdog'],
-    'mobile-work-complete': { kind: 'aggregate', weight: 0 },
-    'mobile-unit': { weight: 2 },
-    'mobile-core-wasm': { weight: 4 },
-    // The mobile client build: what both apps bundle, checked here as on the runner.
-    'mobile-bundle': { weight: 2 },
-    // Opt-in, by hand: `npm run e2e:android -w @dilla/mobile` (packages/mobile/README.md) on a machine with KVM, JDK 21
-    // and the Android SDK runs the same smoke test the runner does.
-    'mobile-e2e-tools': { weight: 4, skip: 'feeds only mobile-android, which ci:local skips; packages/mobile/README.md builds the smoke test\'s tools by hand' },
-    'mobile-android': { weight: 4, skip: 'needs KVM, JDK 21, the Android SDK and an AVD (runner-provisioned); run `npm run e2e:android -w @dilla/mobile` by hand (packages/mobile/README.md)' },
-    'mobile-ios': { weight: 4, skip: 'needs a macOS runner with Xcode' },
-    'mobile-ok': { kind: 'aggregate', weight: 0 },
   },
 };
 

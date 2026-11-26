@@ -3,22 +3,21 @@ import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Which parts of the tree a change touches, and so which jobs of the three CI workflows (WORKFLOWS: server.yml,
- * desktop-ci.yml and mobile.yml) it runs. Each workflow's `changes` job runs this file and writes one boolean output per area; every
+ * Which parts of the tree a change touches, and so which jobs of the two CI workflows (WORKFLOWS: server.yml and
+ * desktop-ci.yml) it runs. Each workflow's `changes` job runs this file and writes one boolean output per area; every
  * other job is gated on the outputs named for it in JOB_GATES[workflow] (scripts/check-ci-workflow.mjs holds each file
  * to its table). A skipped job counts as passed for a required check, so branch protection keeps working: every
- * workflow runs on every pull request, and their aggregate checks (server-ok, desktop-ok, mobile-ok) always report.
+ * workflow runs on every pull request, and their aggregate checks (server-ok, desktop-ok) always report.
  *
  * Areas: go, core, web, e2e, text (the profile-text tables: the generator, the tables and the rule, which the
- * `node` job's step that regenerates them against unicode.org runs for) and mobile (the iOS and Android apps: their
- * package and every package or core source their bundled client is built from). `code` is true when anything other than docs changed. Docs-only changes (every file
+ * `node` job's step that regenerates them against unicode.org runs for). `code` is true when anything other than docs changed. Docs-only changes (every file
  * under docs/ or a *.md at any depth, README.md and protocol/*.md included) set no area, so only each workflow's
  * infrastructure (WORKFLOWS[workflow].always: changes, server's docs, the watchdog, the barrier and the ok check) runs.
  *
  * Fail safe: a push, any event that is not a pull request, a diff that cannot be computed, an empty diff and a file
  * no rule names all turn every area on.
  */
-export const AREAS = ['go', 'core', 'web', 'e2e', 'text', 'mobile'];
+export const AREAS = ['go', 'core', 'web', 'e2e', 'text'];
 
 /**
  * The path tables. A pattern with a slash matches the whole path (`**` crosses directories, `*` does not); a pattern
@@ -50,15 +49,6 @@ export const PATH_RULES = [
     'scripts/gen-profile-text-tables.mjs', 'internal/auth/profile_tables.go', 'internal/auth/profile_text.go', 'internal/auth/testdata/rgi-zwj-sequences.txt',
     'packages/client-core/src/profile-tables.ts', 'packages/client-core/src/profile-text.ts',
   ] },
-  // The mobile apps (mobile.yml): the shell, the client it bundles and what that client is built from, and what the emulator smoke test runs beside the app: the test host's main
-  // package and the HTTPS proxy in front of it (the testkit and the WASI core are core, which forces mobile). Any
-  // other server-only (go) change does not run the mobile lane; the nightly mobile run covers it, as for desktop.
-  // patches/ holds the Capacitor Android fix the app is compiled with.
-  { areas: ['mobile'], patterns: [
-    'packages/mobile/**', 'patches/**', 'packages/web/**', 'packages/client-core/**', 'packages/ui/**', 'packages/media/**',
-    'packages/core-wasm/**', 'packages/design-tokens/**',
-    'package.json', 'package-lock.json', '.nvmrc', 'e2e/web/support/native-https-proxy.mjs', 'cmd/dilla-testhost/**',
-  ] },
   // internal/web/downloads_test.go verifies the embedded brand against this desktop asset.
   { areas: ['go'], patterns: ['clients/desktop/assets/brand/tray.png'] },
   // internal/api/invites_test.go (TestLandingTokensMatchMesh) reads dist/tokens.css.
@@ -74,18 +64,17 @@ export const PATH_RULES = [
 
 /**
  * What an area drags in with it: the WASI core is used by the Go tests, the desktop suites run the web client, and the
- * apps bundle the wasm core. A server-only (go) change does not drag in the desktop lane (e2e) or the mobile one:
- * their acceptance of a server change is their nightly runs', so a server change is never blocked on desktop or mobile
+ * desktop suites run the wasm core. A server-only (go) change does not drag in the desktop lane (e2e):
+ * its acceptance of a server change is its nightly run's, so a server change is never blocked on desktop
  * e2e (plan 2026-11-05, Task 6).
  */
 export const FORCES = {
-  ci: ['go', 'core', 'web', 'e2e', 'text', 'mobile'],
-  core: ['go', 'web', 'e2e', 'mobile'],
+  ci: ['go', 'core', 'web', 'e2e', 'text'],
+  core: ['go', 'web', 'e2e'],
   go: [],
   web: ['e2e'],
   e2e: [],
   text: [],
-  mobile: [],
 };
 
 /**
@@ -96,7 +85,6 @@ export const FORCES = {
 export const WORKFLOWS = {
   server: { file: 'server.yml', name: 'server', ok: 'server-ok', nightly: false, always: ['ci-watchdog', 'changes', 'docs', 'server-work-complete', 'server-ok'] },
   desktop: { file: 'desktop-ci.yml', name: 'desktop', ok: 'desktop-ok', nightly: true, always: ['ci-watchdog', 'changes', 'desktop-work-complete', 'desktop-ok'] },
-  mobile: { file: 'mobile.yml', name: 'mobile', ok: 'mobile-ok', nightly: true, always: ['ci-watchdog', 'changes', 'mobile-work-complete', 'mobile-ok'] },
 };
 
 /**
@@ -139,14 +127,6 @@ export const JOB_GATES = {
     'browser-media': ['e2e'],
     'web-build': ['e2e'],
     'core-integration': ['e2e'],
-  },
-  mobile: {
-    'mobile-core-wasm': ['mobile'],
-    'mobile-unit': ['mobile'],
-    'mobile-bundle': ['mobile'],
-    'mobile-e2e-tools': ['mobile'],
-    'mobile-android': ['mobile'],
-    'mobile-ios': ['mobile'],
   },
 };
 
@@ -227,7 +207,7 @@ export function reachableOutputs(files = null) {
     try {
       list = trackedFiles();
     } catch {
-      list = ['docs/a.md', 'scripts/x.mjs', 'internal/x.go', 'core/x.rs', 'packages/x.ts', 'packages/mobile/x.ts', 'e2e/x.ts', 'no-rule-names-this'];
+      list = ['docs/a.md', 'scripts/x.mjs', 'internal/x.go', 'core/x.rs', 'packages/x.ts', 'e2e/x.ts', 'no-rule-names-this'];
     }
   }
   const singles = new Map();
