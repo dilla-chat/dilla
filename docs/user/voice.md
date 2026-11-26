@@ -1,13 +1,13 @@
 # Voice, calls and media files
 
 This page continues [Getting started](getting-started.md). It describes voice channels, calls in direct messages,
-camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the web client (updated
-2026-10-21, web3.11).
+camera and screen share, push to talk, sounds, AFK channels, and audio and video files in the desktop app (updated
+2026-11-26).
 Every quoted line is the text the screen shows; `{name}` stands for a person's display name (or username), and
 `{where}` for the voice channel or the direct message the call is in.
 
-Voice works in a current Chromium-based browser and in Firefox, in one tab at a time, and needs a microphone only to
-talk: without one you can still listen.
+Voice works in the desktop app, one window per instance, and needs a microphone only to talk: without one you can still
+listen.
 
 ## Join and leave a voice channel
 
@@ -21,9 +21,9 @@ added "harbour". While people are in one, it shows how many are in it, and the p
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
 the server after you opened the page are shown by name too.
 
-On a computer, one click on a voice channel joins it. The row of the channel you are in has no join icon and no coloured speaker: its name turns bold and the screen reader adds "connected". The call panel above your user panel shows the channel name over "connecting", then your ping,
+One click on a voice channel joins it. The row of the channel you are in has no join icon and no coloured speaker: its name turns bold and the screen reader adds "connected". The call panel above your user panel shows the channel name over "connecting", then your ping,
 and the screen announces "You joined {where}." Each person in the call has a tile with their name and
-their state. On a phone, tap the voice channel to see who is there, then press **join voice**.
+their state.
 
 **leave**, in the call panel or on the stage's controls, leaves the call ("You left {where}."). If you were the only
 one left in the call, leaving ends it. If you join again right after leaving, the call panel can stay at "connecting"
@@ -46,18 +46,18 @@ Three states keep their words, because they are about trust and what you can hea
 | "not heard yet" | They are in the call, and nothing from their device has been checked yet. It is not shown for someone who is muted or deafened and sends no camera or screen: their device sends nothing to check, so you see "muted" (or "deafened") and the glyph |
 | "unverified stream" | Something arrives in their name that is not one of the call's devices; nothing of it is shown or played |
 
-The `web` and `bot` tags stay as words after the name. Whoever is speaking has a green ring around their avatar, in the
+The `bot` tag stays as a word after the name. Whoever is speaking has a green ring around their avatar, in the
 list and on their tile.
 
-**Speaking lights within a beat.** Your browser reads the level of the audio it plays (and, for yourself, of your own
-microphone) and lights the dot as soon as someone speaks, without waiting for the instance to say so. Your own dot
-never lights while you are muted, deafened or paused, or while push to talk is up, and no dot lights for anyone while
+**Speaking lights within a beat.** The app reads the level of the audio it plays (and, for yourself, of your own
+microphone) and lights the dot as soon as someone speaks, without waiting for the instance to say so. Your own tile, sidebar entry and avatar ring light the same way, only while your microphone is really sending: never
+while you are muted, deafened or paused, or while push to talk is up, and no dot lights for anyone while
 the call is paused for you. When a person's audio is not playing for you (you are deafened, or their volume for you is
 0 %), the dot follows the instance's own report instead, which is about a second behind.
 
 Each person's tile has "volume for {name}": it changes how loud that person is for you only, from 0 % to 200 %. The
 value shows beside it, and the mark in the middle is 100 %, the volume they arrive at. The volume sits at the foot of the
-tile (under the name on a phone), never over the face. Your own tile has no volume.
+tile, never over the face. Your own tile has no volume.
 
 ### The call panel
 
@@ -97,33 +97,15 @@ sharing it is a grid.
   for a share: if you unfocus it, it stays a tile. Your own screen comes to the front when you start it (and after
   **Apply** restarts it); a share someone starts while another tile is focused does not take over.
 - **Full screen** for one tile: the button in its top right corner, or a double-click on the picture. Only a tile that
-  shows a camera or a screen has it (not an avatar), and only where the browser allows full screen. Escape leaves it.
+  shows a camera or a screen has it (not an avatar), Escape leaves it.
 - Nothing restarts when you change the focus: the pictures keep playing.
-- **Stats** in a tile's corner (on a computer, not on a phone): your own tile shows what your microphone sends ("opus
-  48k"), another person's tile their ping to the server as their own browser (or the bot) measures and reports it
+- **Stats** in a tile's corner: your own tile shows what your microphone sends ("opus
+  48k"), another person's tile their ping to the server as their own app (or the bot) measures and reports it
   through the server ("18 ms"; none until it has one, and none while their call is paused or reconnecting), and a
   focused screen its picture as it arrives ("1440p · 30 fps", with "· audio" on your own share when its sound goes too).
   Your ping is visible to the others in the call this way.
 
 ![The same stage in the grid: Mira, Ada, Ada's screen and Björn as four tiles](screenshots/voice-stage-grid-desktop.png)
-
-At phone width the tiles take the full width, one above the other (two columns once there are more than two), the call's buttons sit under them, and every
-control is at least 44 by 44 pixels. The call panel is replaced by [the call bar](#on-a-phone).
-
-![The voice channel at 360 pixels wide](screenshots/voice-stage-phone.png)
-
-### On a phone
-
-On a phone, while you are in a call, a call bar sits above the tab bar. It shows where the call is, and has three
-buttons, each at least 44 by 44 pixels: **open the call in {where}** (the wide one, which opens the call's screen),
-**mute** and **leave**. It stays on the home, activity and you tabs and over a channel you are reading. It goes
-away on the call's own screen, which has all the call's controls, and when you leave. The other buttons of the call panel
-(**deafen**, **camera** and, where the browser can, **share screen**) are on the call's screen. The call bar's dot shows
-connecting, reconnecting or paused as the call panel does. A phone has no user panel, and a phone browser that cannot
-share a screen has no **share screen** button at all (iPhones and Android phones cannot; share from a desktop
-browser).
-
-![The call bar on a phone](screenshots/phone-callbar.png)
 
 An open voice channel's call setup that nobody has used for 10 minutes is renewed by the instance the next time
 someone joins. You do not have to do anything.
@@ -139,12 +121,12 @@ red with a line under it, and a screen reader says "pressed". The stage's toolba
 **Mute is enforced from the first frame.** A call you join muted starts with the microphone closed, and a mute you
 press while the call is still starting takes effect at the press: nothing of you is sent before the call is up.
 
-Outside a call the two buttons set how your next call starts, and this browser keeps them: press **mute** and you join
+Outside a call the two buttons set how your next call starts, and this device keeps them: press **mute** and you join
 muted (pressed again, you do not); press **deafen** and you join deafened. If you were muted when you left a call, you
 join muted. If you join deafened, pressing **deafen** again turns your sound back on but leaves you muted; press
 **mute** to talk.
 
-Reloading the page, or closing it, leaves the call; the others see you leave. Press **join voice** (or **join call**)
+Closing the app leaves the call; the others see you leave. Press **join voice** (or **join call**)
 to come back.
 
 | Key | What it does |
@@ -163,14 +145,14 @@ When push to talk is on, the mute button in the user panel carries a small "PTT"
 
 1. Open **Settings → Voice**, and under "Input mode" choose "Push to talk". The microphone closes at once.
 2. Next to "Shortcut", press **Change**. The row says "Press a key…" with **Cancel** (Escape cancels too). It works only
-   while dilla is the active tab.
+   while dilla has focus.
 3. Press one key on its own: F13 to F24, Pause or Scroll Lock. Any other key, and any key held with Control, Alt, ⌘,
    Shift or AltGr, is refused with "That key types text, moves the focus or needs another key. Use one key on its own,
    such as Pause, Scroll Lock or F13 to F24." Insert works too, but screen readers use it as their own key, so it
    is not suggested.
 
-There is no key until you set one ("No key set"). Hold it to talk. It works only while the dilla tab is the active
-tab, never while you type in a text field. **Release delay** (0 to 1000 ms, 200 ms unless you change it) keeps sending that
+There is no key until you set one ("No key set"). Hold it to talk. It works only while the dilla window has focus,
+never while you type in a text field. **Release delay** (0 to 1000 ms, 200 ms unless you change it) keeps sending that
 long after you let go, so word endings are not cut; pressing the key again within the delay keeps the microphone open,
 and **mute** closes it at once. While push to talk is in force the call panel says "hold {key} to talk" (for example
 "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → Voice.
@@ -181,15 +163,14 @@ suppression and processing](screenshots/voice-settings-desktop.png)
 Settings → Voice has four groups:
 
 - **Devices**: **Input device** and **Output device** ("System default" unless you pick one), each with its **Volume**
-  (0 to 200 %, 100 % unless you change it). The input volume is applied in this browser before your voice is encrypted;
-  the output volume scales everyone you hear. Choosing the output device works in Chrome and Edge, and the call follows it:
-  change the output device during a call and the sound moves at once. If the browser refuses, the call panel says "The
-  output device did not change. Call sound plays where it did before." Firefox plays call sound on the system default
-  device, and a browser that cannot choose where sound plays says "This browser plays voice on the system default device."
+  (0 to 200 %, 100 % unless you change it). The input volume is applied on this device before your voice is encrypted;
+  the output volume scales everyone you hear. The call follows the output device: change it during a call and the sound
+  moves at once. If the system refuses, the call panel says "The output device did not change. Call sound plays where it
+  did before."
 - **Mic test**: **Let’s check** plays your microphone back to you live for up to ten seconds, through the same chain a
   call sends (echo cancellation and automatic gain, noise suppression, input volume and the sensitivity gate), on the
   output device you chose; wear headphones, or your speakers feed back into the microphone. Nothing is recorded or
-  uploaded, and **Stop testing**, the ten seconds, leaving the page or changing a device releases the microphone. The
+  uploaded, and **Stop testing**, the ten seconds, leaving the screen or changing a device releases the microphone. The
   meter shows your level in 50 segments; the white line is the **sensitivity threshold**: dilla sends your voice only
   while the level is over it. The pill says "Not testing", "You’re being heard" or "Too quiet to send", with the level and
   the threshold in dB beside it. With **Set sensitivity automatically** on (the default), dilla puts the line 15 dB over
@@ -204,14 +185,9 @@ Settings → Voice has four groups:
   locally and remains the default, including existing On preferences; Automatic picks the best processor this device can
   run and falls back to RNNoise. The screen shows the effective processor and explains a fallback during a call. Off sends
   the raw microphone. **Echo cancellation** ("Stops your speakers from feeding back into the mic") and **Automatic gain
-  control** ("Evens out loud and quiet speech") are on unless you turn them off; a switch the browser cannot apply is not
+  control** ("Evens out loud and quiet speech") are on unless you turn them off; a switch the system cannot apply is not
   shown. A change during a call applies at once: the microphone is captured again on the same connection, and the
   others notice nothing but the difference.
-
-If the browser cannot run the input volume and sensitivity (no AudioWorklet), Settings says "This browser cannot apply
-the input volume or sensitivity: your microphone is sent as it is."
-
-![Settings → Voice at 360 pixels wide](screenshots/voice-settings-phone.png)
 
 ## Camera and screen
 
@@ -220,18 +196,17 @@ call panel as well as on the stage's toolbar, and show in green while they are o
 your camera, mirrored as a mirror shows you (the others see it the right way round). In a voice channel, **Share**
 opens the share picker above it:
 
-- **Source**: Screen, Window or Tab, which the browser's own picker then opens on (Chrome and Edge; Firefox and Safari
-  ignore it and show their own choice, so the row is not there).
+- **Source**: Screen or Window, which the picker then opens on.
 - **Resolution**: 720p, 1080p, 1440p or Source, and **Frame rate**: 15, 30 or 60.
-- **Also share system audio**, where the browser can share sound from the picked source (see below).
+- **Also share system audio**, where the system can share sound from the picked source (see below).
 - The estimate, like "≈ 4.5 Mb/s up": what the stream will send. It is never above the server's share cap (8 Mb/s
   unless the server's operator changed it; a share also sends a small lower-quality copy on top). Above 9 Mb/s, which
   only Source and 1440p at 60 fps can ask for, and only a server whose cap its operator raised can send, it turns amber
   and warns that your link may drop frames.
 - **Go live** starts the share ("You’re live"). While you share, **Share** reads **Stop sharing** and ends it at once, and the small
   arrow beside it opens the same picker as **Stream quality**: **Apply** changes resolution and frame rate without
-  stopping ("Stream set to 1080p · 30 fps"); a new source or sound choice asks the browser again, and if you cancel the
-  browser's picker the running share goes on unchanged.
+  stopping ("Stream set to 1080p · 30 fps"); a new source or sound choice asks again, and if you cancel the
+  picker the running share goes on unchanged.
 
 In the desktop app on macOS, Windows and Linux with X11, **Go live** opens a picker of your own: thumbnails of your
 screens and windows, one tile each, under **Screens** and **Windows** tabs. Choose a tile with the pointer or the arrow keys, then press
@@ -239,29 +214,15 @@ Enter or **Share**. Escape or **Cancel** closes it without starting a share. On 
 
 In a DM call, **share screen** starts at once with your last choices. Pressed again it ends the share. A share is its own tile, "{name}’s screen",
 beside the person's own tile, so with the camera and a share both on, a person has two tiles
-([The stage](#the-stage)). A share carries sound from:
+([The stage](#the-stage)). A share carries sound where the system allows it: tick "Also share system audio" in the share picker, or choose an
+application under "sound from" to share only its sound. dilla leaves the call's own sound out of a shared screen. If a
+share has no sound, dilla tells the person sharing and shows "no sound" on the screen tile for everyone watching. Each
+person's stream also gets its own volume and mute. dilla never sends your microphone or another audio input as a
+stream's sound.
 
-- A browser tab in Chrome or Edge (all platforms).
-- A screen or window on Windows and ChromeOS in Chrome and Edge (when you tick "Also share system audio" in the browser's picker); on macOS 14.2+ with Chrome 141+ too.
-- A browser tab on Linux (no screen or window audio).
-- No sound from Firefox or Safari: they share the picture only.
-
-A game or app's own sound without a virtual device needs the desktop app (planned). dilla asks the browser to leave the call's own sound out of a shared screen. If a share has no sound, dilla tells the person sharing what their browser can do, and shows "no sound" on the screen tile for everyone watching. Each person's stream also gets its own volume and mute.
-
-The notice to the person sharing depends on the browser:
-
-- In Firefox (and browsers built on it) and Safari: "This browser can’t share sound; Chrome or Edge can share a browser tab with its sound."
-- In Chrome or Edge on Linux: only a browser tab can carry sound, so share a tab and keep "Also share tab audio" ticked.
-- In Chrome or Edge on Windows, ChromeOS or macOS: share a browser tab, or tick "Also share system audio" when you pick a screen.
-
-
-### Share sound from Firefox or Linux
-
-A browser cannot capture your computer's sound by itself on Linux, and Firefox and Safari cannot at all, so there a screen
-or a window is shared without sound. For a video or a game's soundtrack, open it in a Chrome or Edge tab and share that
-tab: a tab carries its own sound on every system. dilla never sends your microphone or another audio input as a stream's
-sound (the share picker has no sound-source choice); sharing an app's sound outside a browser tab needs the desktop app
-(planned).
+A Share or camera press right after you join a call or move to another one is no longer lost, a stop always applies at
+once, and leaving the call cancels a share press that had not started yet. The preview of your own share is shown at
+full resolution; the others always saw the full stream.
 
 If too many people already show a camera or a screen: "Too many people are sharing. Try again when someone stops."
 
@@ -273,7 +234,7 @@ there, and **join call** when someone is. Pressing **call** joins the call and r
 without an answer. If nobody answered, you leave the call by yourself 5 seconds later, and the strip keeps saying why.
 A call someone answered never ends by itself. There is no ringback tone. During the call the tiles sit above the conversation, which stays
 usable below them, in the compact grid of the call box (no focus, strip or full-screen buttons: those are for the
-stage of a voice channel); at phone width, **messages** switches between the call and the conversation. In a direct
+stage of a voice channel). In a direct
 message's call the call panel and what is said name it
 "the call with {name}": "in the call with {name}", "You joined the call with {name}."
 
@@ -284,18 +245,16 @@ sound. With the keyboard, Tab from the start of the main area reaches **answer**
 
 - lasts 30 seconds from when it arrives on your device, and ends earlier when you answer or decline on any of your
   devices, or when the call ends;
-- reaches only a browser where a dilla tab is open. With no open tab there is no ring; the call is still there to
+- reaches only a device where dilla is running. With dilla closed there is no ring; the call is still there to
   join from the direct message;
-- shows a desktop notification, "{name} is calling", "Open dilla to answer.", only while the tab is hidden and only if
-  you turned notifications on. The notification itself has no buttons: open the tab to answer;
+- shows a desktop notification, "{name} is calling", "Open dilla to answer.", only while the window is hidden and only if
+  you turned notifications on. The notification itself has no buttons: open the app to answer;
 - of a muted direct message shows the banner only: no sound and no notification;
 - while you are already in a call says "{name} is calling. Answering leaves {where}." and plays nothing.
 
 The same person rings you at most once every 15 seconds (and 20 times an hour); a call they start more often still
 opens, it just does not ring you, and the caller's strip says "{name} not rung: called too recently." instead of
 "ringing {name}". In a group direct message, each person is rung on their own.
-
-![The ring banner at 360 pixels wide, fixed at the top](screenshots/call-ring-phone.png)
 
 ## The call code
 
@@ -326,13 +285,13 @@ camera and no media server, and nobody hears anything. The channel instead lists
 - **The away list.** Each person who is away is listed under the AFK row with the word "away", with a count beside AFK.
   Opening the AFK channel shows its page with “Nobody is away”, “{name} is away” or “{names} are away”.
 - **Go AFK.** Click the AFK row to open its page, then press **Go AFK**. You leave your call and are listed as
-  away. The page says “You are away” and explains the server’s idle timeout; phones are never moved.
+  away. The page says “You are away” and explains the server’s idle timeout.
 - **After the inactive timeout**, a computer that has sat in a voice channel with no keyboard, pointer, touch or
   speech is disconnected from the call and listed as away, and the screen announces "Moved to AFK for inactivity".
-  Quiet listening counts as idle, and activity on another of your devices does not count. The owner or a manager sets
+  Quiet listening counts as idle, and activity on another of your devices does not count. The desktop app reports call
+  activity, so a live conversation is not moved to AFK. The owner or a manager sets
   the timeout (1, 5, 15, 30 minutes or 1 hour) in server settings → overview
   ([Run your server](getting-started.md#run-your-server)).
-- **A phone is never disconnected** for being idle.
 - **Another device takes over voice.** If you join voice on a second device while this one is in a call, the one that
   lost the call says "Voice moved to your other device." It stays calm and does not rejoin by itself; **join voice**
   takes the call back. In a direct message with no server context, you see the general "You were removed from voice."
@@ -344,33 +303,31 @@ camera and no media server, and nobody hears anything. The channel instead lists
   blip or a quick sleep, still rejoins by itself. On a server without an AFK channel, when the AFK settings cannot be
   read, and in direct-message calls, a lost call keeps trying to rejoin as before.
 - **Come back** opens the last text channel where you may send, if one is available. Joining a voice channel,
-  sending a message or typing in that server clears your away status. Closing every tab and device
-  also removes you from the list, 30 seconds later; reloading the page or a short network drop keeps you away. **Come back** does not rejoin your old call.
+  sending a message or typing in that server clears your away status. Closing the app on every device
+  also removes you from the list, 30 seconds later; a restart or a short network drop keeps you away. **Come back** does not rejoin your old call.
 
 ## Sounds
 
 dilla makes three short sounds of its own: a tick when someone else joins the call you are in, another when someone
 leaves it, and the ring (a short double ping every 2 seconds while a ring lasts). They are on by default. They never
 play for your own join, leave, mute or deafen, nor while you are deafened, and a muted direct message rings without
-sound. A browser plays nothing on a page you have not clicked or typed in yet.
+sound.
 
 To turn them off, open **Settings → notifications** and, under "sounds", switch off "join and leave sounds", "ring
 for calls", or both.
 
 ## Audio and video files
 
-![Björn's bridge-shanty.wav in #general, playing in the browser's own player with save
+![Björn's bridge-shanty.wav in #general, playing in the app's own player with save
 next to it](screenshots/media-player-desktop.png)
 
 Audio and video files of these types play in the conversation: audio as MP3, MP4 or M4A, AAC, Ogg, Opus, WebM, WAV
-or FLAC, and video as MP4, WebM or Ogg. Press **play {name}** ("loading" while it downloads): the browser's own
+or FLAC, and video as MP4, WebM or Ogg. Press **play {name}** ("loading" while it downloads): the app's own
 player shows and you start it yourself; nothing plays on its own. A video shows no picture until you play it (there
 are no preview frames), and there are no captions. Every other type, and a file over 25 MB, is a card with **save**.
 
-"This browser cannot play this file." means the browser does not know how to play what is inside: **save** it and
-play it with another program.
-
-![The player at 360 pixels wide](screenshots/media-player-phone.png)
+"dilla cannot play this file." means the app does not know how to play what is inside: **save** it and play it with
+another program.
 
 ## When voice stops or pauses
 
@@ -382,7 +339,7 @@ no join button](screenshots/voice-blocked-desktop.png)
 If someone in the call has a changed identity that you have not compared yet, the join is refused before anything is
 sent: "{name}’s identity changed. Compare safety numbers in Privacy before joining." **compare safety numbers**,
 next to it, opens the comparison. Compare the number with them (Settings → privacy, [Contacts and safety numbers](getting-started.md#contacts-and-safety-numbers)); once you have
-verified them, **join voice** is offered again without a reload.
+verified them, **join voice** is offered again straight away.
 
 If the identity of someone changes while you are in the call, the call pauses for you: "{name}’s identity changed, so
 this call is paused for you: nothing you say is sent and nothing is played. Compare safety numbers in Privacy to
@@ -393,8 +350,6 @@ continues." The call goes on for the others.
 If a device in the call cannot be checked yet (its owner's device list could not be read), the call holds for you the
 same way: "A device in this call could not be checked yet, so this call is paused for you: nothing you say is sent and
 nothing is played. It continues once the check is done." It continues by itself once the check succeeds.
-
-![The refused join at 360 pixels wide](screenshots/voice-blocked-phone.png)
 
 ### A device failed the check
 
@@ -410,12 +365,10 @@ checks every device again.
 
 | The app shows | What it means and what to do |
 |---|---|
-| "The microphone is blocked. You can listen; allow the microphone in the browser to talk." | The browser has refused the microphone to dilla. Allow it in the browser's site settings, then leave and join again |
+| "The microphone is blocked. You can listen; allow dilla to use the microphone in the system settings to talk." | The system has refused the microphone to dilla. Allow it in the system's privacy settings, then leave and join again |
 | "No microphone found. You can listen." | Connect a microphone, then leave and join again |
 | "The microphone could not be connected. You can listen." | The microphone is there but could not be used; leave and join again, or pick another input device |
-| "Voice does not work in this browser" | "This browser lacks a feature dilla needs for voice. Use a current Chromium-based browser or Firefox." Safari is not supported yet |
-| "Voice is open in another tab of this browser." | Voice runs in one tab at a time: use the tab that has it, or close it |
-| "You are in a call in the other tab. Using this tab ends that call." | You pressed **Use this tab** while the other tab is in voice: **Keep the call**, or **Leave the call and use this tab** |
+| "Voice is open in another dilla window." | Voice runs in one window at a time: use the window that has it, or close it |
 | "This voice is full." | The call has as many people as the instance allows |
 | "Could not join voice. Try again." | Press **join voice** again |
 | "Voice moved to your other device." | You joined voice on another of your devices, and this one gave it up. It does not rejoin; press **join voice** to take it back |
@@ -435,11 +388,9 @@ and you can join again straight away.
 
 ### You see people speaking but hear nothing
 
-If the call panel says "Your browser paused call audio.", press **turn on audio**: the browser holds call sound back until
-you press something on the page. The line and its button sit above the call panel's buttons; one press
-starts the call's sound and the line goes. Nothing else about the call changes. This happens when the browser did not
-let the call start its sound, for example when the browser or your system suspended audio, or a stricter autoplay
-setting in the browser held it back.
+If the call panel says "Your browser paused call audio.", press **turn on audio**: the system held call sound back until
+you press something in the app. The line and its button sit above the call panel's buttons; one press starts the call's
+sound and the line goes. Nothing else about the call changes.
 
 If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
 volume. The stage's toolbar also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
@@ -447,12 +398,9 @@ not people. {expected} is how many audio streams should reach you, and {attached
 screen's sound is its own). A person whose volume you set to 0 counts as not heard. When the two numbers differ for
 more than a moment, ask the missing person to leave and join again.
 
-If you hear no one on any call, ask whoever runs your instance to update it to v0.1.0-web3.3 or later.
-
 ## Known limits
 
-- Voice only in a browser tab: no desktop app yet, and voice is not supported in Safari.
-- On Windows, Chrome and Edge before version 141 may send the call's own sound back through a shared screen or window (an echo); update the browser.
-- No ring without an open dilla tab, and no answering from the notification itself.
+- No voice on a phone: there is no phone app yet.
+- No ring while dilla is closed, and no answering from the notification itself.
 - No preview frames and no captions for videos; only the listed types play.
 - You cannot block a person so that their calls never ring.
