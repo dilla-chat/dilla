@@ -495,9 +495,12 @@ pub fn render(
     let mark = mark
         .relative()
         .child(crate::automation::bounds_probe("topbar-brand"));
+    // `.d-topbar__brand { flex: 1 1 0; min-width: 0 }`: in a narrow window it has no room left, and clips instead of
+    // drawing over the search.
     let brand = div()
         .flex_1()
         .min_w_0()
+        .overflow_hidden()
         .flex()
         .items_center()
         .gap(Pixels::from(css::BRAND_GAP))
@@ -679,6 +682,10 @@ pub fn render(
                 |window, _| window.remove_window(),
             ));
     }
+    #[cfg(feature = "automation")]
+    let brand = brand
+        .relative()
+        .child(crate::automation::bounds_probe("topbar-brand-box"));
     let bar = div()
         .id("topbar")
         .a11y_unnamed(Role::Banner)
@@ -917,12 +924,23 @@ mod tests {
     fn the_search_shrinks_before_the_end_group_overlaps_it(cx: &mut gpui::TestAppContext) {
         use crate::automation::probed;
         cx.update(crate::install);
-        let (_host, vcx) = cx.add_window_view(|_, _| BarHost {
+        let long = "Stark's Pond, the long room name of a very large call";
+        let (host, vcx) = cx.add_window_view(|_, _| BarHost {
             renders: 0,
-            voice: Some("Stark's Pond, the long room name of a very large call".into()),
+            voice: Some(long.into()),
             controls: true,
         });
-        for width in [1280.0_f32, 890.0, 760.0, 640.0] {
+        for (width, room) in [
+            (1280.0_f32, long),
+            (890.0, long),
+            (890.0, "Stark's Pond"),
+            (760.0, long),
+            (640.0, long),
+        ] {
+            host.update(vcx, |h, cx| {
+                h.voice = Some(room.into());
+                cx.notify();
+            });
             vcx.simulate_resize(gpui::size(Pixels::from(width), Pixels::from(600.0)));
             vcx.run_until_parked();
             vcx.update(|window, cx| window.simulate_next_frame(cx));
@@ -931,7 +949,12 @@ mod tests {
             let field = probed("topbar-search-field").expect("field");
             let end = probed("topbar-end").expect("end");
             let chip = probed("topbar-voice").expect("chip");
-            let at = format!("at {width}px");
+            let brand = probed("topbar-brand-box").expect("brand");
+            let at = format!("at {width}px ({room})");
+            assert!(
+                brand.right() <= slot.left() + Pixels::from(0.5),
+                "the brand ({brand:?}) reaches into the search slot ({slot:?}) {at}"
+            );
             assert!(
                 end.left() >= slot.right() - Pixels::from(0.5),
                 "the end group starts at {} inside the search slot (ends {}) {at}",
