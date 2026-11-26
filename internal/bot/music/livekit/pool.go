@@ -163,6 +163,7 @@ type Pool struct {
 	roomCancel  context.CancelFunc
 	connection  *poolConnection
 	active      *Session
+	draining    *Session // the track before active, playing its queued tail beside it (draining.go); at most one
 	connectDone chan struct{}
 	startDone   chan struct{}
 	closeDone   chan struct{}
@@ -352,16 +353,29 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 		_ = source.Close()
 		return nil, startStage(ctx, "track_publish", p.currentError())
 	}
-	if p.active != nil || p.connecting {
+	if err := p.waitSlotLocked(ctx); err != nil {
 		p.mu.Unlock()
 		stopParent()
 		trackCancel()
 		_ = source.Close()
-		return nil, startStage(ctx, "track_publish", ErrPoolBusy)
+		return nil, startStage(ctx, "track_publish", err)
+	}
+	if p.closed || p.dead || p.generation != generation || p.connection != conn {
+		p.mu.Unlock()
+		stopParent()
+		trackCancel()
+		_ = source.Close()
+		return nil, startStage(ctx, "track_publish", p.currentError())
 	}
 	p.connecting = true // reserves the single publication slot during PublishTrack.
 	startDone := make(chan struct{})
 	p.startDone = startDone
+	// A track published while the one before it drains holds its first sample until that one played out.
+	if prev := p.draining; prev != nil {
+		if holder, ok := source.(sampleHolder); ok {
+			holder.HoldFirstSample(prev.playedOut())
+		}
+	}
 	p.mu.Unlock()
 	if err := trackCtx.Err(); err != nil {
 		stopParent()
@@ -486,9 +500,13 @@ func (p *Pool) acquireRoom(ctx context.Context, call client.Call, binding poolBi
 		p.markDead(gen, ErrBinding)
 		return nil, nil, 0, ErrBinding
 	}
-	if p.active != nil || p.connecting {
+	if err := p.waitSlotLocked(ctx); err != nil {
 		p.mu.Unlock()
-		return nil, nil, 0, ErrPoolBusy
+		return nil, nil, 0, err
+	}
+	if p.closed || p.dead {
+		p.mu.Unlock()
+		return nil, nil, 0, p.currentErrorLocked()
 	}
 	if p.connection != nil {
 		ctx := p.roomCtx
@@ -636,6 +654,10 @@ func teardown(conn *poolConnection, cancel context.CancelFunc) {
 func (p *Pool) currentError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.currentErrorLocked()
+}
+
+func (p *Pool) currentErrorLocked() error {
 	if p.closed {
 		return ErrPoolClosed
 	}
@@ -667,7 +689,7 @@ func (p *Pool) LeaveIdle() error {
 		p.mu.Unlock()
 		return ErrPoolClosed
 	}
-	if p.dead || p.connection == nil || p.active != nil || p.connecting || p.connectDone != nil || p.startDone != nil {
+	if p.dead || p.connection == nil || p.active != nil || p.draining != nil || p.connecting || p.connectDone != nil || p.startDone != nil {
 		p.mu.Unlock()
 		return nil
 	}
@@ -708,10 +730,13 @@ func (p *Pool) Reset() error {
 			<-pending
 			continue
 		}
-		gen, active, conn, cancel := p.generation, p.active, p.connection, p.roomCancel
+		gen, active, draining, conn, cancel := p.generation, p.active, p.draining, p.connection, p.roomCancel
 		p.mu.Unlock()
 		if cancel != nil {
 			cancel()
+		}
+		if draining != nil {
+			_ = draining.Close()
 		}
 		if active != nil {
 			_ = active.Close()
@@ -726,7 +751,7 @@ func (p *Pool) Reset() error {
 		}
 		if p.generation == gen && p.dead && p.connectDone == nil {
 			p.connection, p.roomCtx, p.roomCancel, p.bound = nil, nil, nil, nil
-			p.active, p.connecting, p.dead, p.deadReason = nil, false, false, nil
+			p.active, p.draining, p.connecting, p.dead, p.deadReason = nil, nil, false, false, nil
 			p.spare = nil
 			// Invalidate the old room's deadline watcher and disconnect callback.
 			p.generation++
@@ -748,10 +773,13 @@ func (p *Pool) Close() error {
 	}
 	p.closed, p.dead = true, true
 	p.spare = nil
-	active, cancel, connectDone, startDone := p.active, p.roomCancel, p.connectDone, p.startDone
+	active, draining, cancel, connectDone, startDone := p.active, p.draining, p.roomCancel, p.connectDone, p.startDone
 	p.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if draining != nil {
+		_ = draining.Close()
 	}
 	if active != nil {
 		_ = active.Close()
@@ -763,8 +791,11 @@ func (p *Pool) Close() error {
 		<-startDone
 	}
 	p.mu.Lock()
-	active, conn := p.active, p.connection
+	active, draining, conn := p.active, p.draining, p.connection
 	p.mu.Unlock()
+	if draining != nil {
+		_ = draining.Close()
+	}
 	if active != nil {
 		_ = active.Close()
 	}
@@ -777,8 +808,13 @@ func (p *Pool) Close() error {
 
 func (p *Pool) releaseTrack(s *Session) {
 	p.mu.Lock()
-	if p.active == s && p.generation == s.generation {
-		p.active = nil
+	if p.generation == s.generation {
+		if p.active == s {
+			p.active = nil
+		}
+		if p.draining == s {
+			p.draining = nil
+		}
 	}
 	p.mu.Unlock()
 }

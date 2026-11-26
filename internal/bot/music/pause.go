@@ -94,6 +94,7 @@ func (s *Supervisor) cancelPauseLocked() {
 	s.pausedPlayback = false
 }
 func (s *Supervisor) pausePlaybackLocked() {
+	s.closeDrainingLocked()
 	p, ok := s.playback.(Pausable)
 	if !ok || !s.canHoldPlaybackLocked() {
 		s.closePlaybackLocked()

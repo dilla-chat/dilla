@@ -37,6 +37,11 @@ type LiveOpusProvider struct {
 	changed    chan struct{}
 	paused     bool
 	positionMS int64
+	// drained closes once the input is closed and the last queued sample was handed out (Drained).
+	drained     chan struct{}
+	drainedOnce sync.Once
+	// hold, when set, keeps the first sample back until it closes (HoldFirstSample).
+	hold <-chan struct{}
 }
 
 var _ lksdk.SampleProvider = (*LiveOpusProvider)(nil)
@@ -51,6 +56,7 @@ func NewLiveOpusProvider(capacity int) (*LiveOpusProvider, error) {
 	return &LiveOpusProvider{
 		queue:   make([][]byte, capacity),
 		changed: make(chan struct{}),
+		drained: make(chan struct{}),
 	}, nil
 }
 
@@ -98,6 +104,7 @@ func (p *LiveOpusProvider) CloseInput() error {
 	if !p.closed {
 		p.closed = true
 		p.signalLocked()
+		p.drainedLocked()
 	}
 	return nil
 }
@@ -105,6 +112,9 @@ func (p *LiveOpusProvider) CloseInput() error {
 func (p *LiveOpusProvider) NextSample(ctx context.Context) (media.Sample, error) {
 	if ctx == nil {
 		return media.Sample{}, errors.New("media: nil context")
+	}
+	if err := p.waitHold(ctx); err != nil {
+		return media.Sample{}, err
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -122,10 +132,12 @@ func (p *LiveOpusProvider) NextSample(ctx context.Context) (media.Sample, error)
 			p.size--
 			p.positionMS += 20
 			p.signalLocked()
+			p.drainedLocked()
 			p.mu.Unlock()
 			return media.Sample{Data: data, Duration: LiveOpusSampleDuration}, nil
 		}
 		if p.closed {
+			p.drainedLocked()
 			p.mu.Unlock()
 			return media.Sample{}, io.EOF
 		}
@@ -137,6 +149,44 @@ func (p *LiveOpusProvider) NextSample(ctx context.Context) (media.Sample, error)
 		case <-changed:
 		}
 	}
+}
+
+// Drained closes once the input is closed and the last queued sample has been handed out: the track has played to
+// its end. It stays open while samples are queued, and it never closes for a provider whose input is still open.
+func (p *LiveOpusProvider) Drained() <-chan struct{} { return p.drained }
+
+func (p *LiveOpusProvider) drainedLocked() {
+	if p.closed && p.size == 0 {
+		p.drainedOnce.Do(func() { close(p.drained) })
+	}
+}
+
+// HoldFirstSample keeps the first sample back until gate closes, so a track published while the one before it still
+// drains starts right after that one's last sample and never overlaps it. Call it before the provider is published.
+func (p *LiveOpusProvider) HoldFirstSample(gate <-chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hold = gate
+}
+
+func (p *LiveOpusProvider) waitHold(ctx context.Context) error {
+	p.mu.Lock()
+	gate := p.hold
+	p.mu.Unlock()
+	if gate == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-gate:
+	}
+	p.mu.Lock()
+	if p.hold == gate {
+		p.hold = nil
+	}
+	p.mu.Unlock()
+	return nil
 }
 
 func (p *LiveOpusProvider) OnBind() error { return nil }

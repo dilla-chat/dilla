@@ -23,6 +23,16 @@ type Playback interface {
 	Close() error
 }
 
+// DrainingPlayback is a playback whose input can end before its audio does: InputDone closes when the encoder has
+// read the track to its end (InputErr is then its terminal error), while up to a second of queued audio still plays
+// until Done. The supervisor advances to the next track on a clean InputDone, so the next track's save, start and
+// publication overlap the old track's tail.
+type DrainingPlayback interface {
+	Playback
+	InputDone() <-chan struct{}
+	InputErr() error
+}
+
 // TrackStarter composes provider PCM, the bounded Opus encoder, call credentials,
 // MLS epoch source and encrypted LiveKit publisher for one track.
 type TrackStarter interface {
@@ -45,6 +55,7 @@ type Supervisor struct {
 	state                      State
 	revision                   uint64
 	playback                   Playback
+	draining                   Playback // the playback before playback, playing its queued tail (DrainingPlayback)
 	closed                     bool
 	changed                    chan struct{}
 	emptyTimer                 Timer
@@ -860,6 +871,9 @@ func (s *Supervisor) endedAtDurationLocked(p Playback) bool {
 }
 
 func (s *Supervisor) monitor(p Playback, budget *startBudget) {
+	if s.advanceOnInputEnd(p, budget) {
+		return
+	}
 	<-p.Done()
 	err := p.Wait()
 	s.mu.Lock()
@@ -939,7 +953,12 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		return
 	}
 	// A clean EOF that won the race with Pause still owns its advance.
-	// Complete against a playing base, then keep the successor paused.
+	skipped = s.advanceLocked(budget, wasPaused)
+}
+
+// advanceLocked completes the current track after its clean end and starts the next one. Complete runs against a
+// playing base; wasPaused (an EOF that won the race with Pause) keeps the successor paused.
+func (s *Supervisor) advanceLocked(budget *startBudget, wasPaused bool) []SkippedTrack {
 	base := cloneState(s.state)
 	if wasPaused {
 		base.Paused = false
@@ -948,7 +967,7 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	if applyErr != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
-		return
+		return nil
 	}
 	if wasPaused {
 		next.Paused = true
@@ -956,16 +975,20 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 	}
 	// The save's notice (DeferNotice) goes out once the next track's start returns, or after advanceNoticeLimit if that
 	// is sooner: the listeners' reads it sets off would otherwise run on the Bot's helper between the start's own calls
-	// (advance_notice.go).
-	saveCtx, flushNotices := withDeferredNotices(s.ctx)
+	// (advance_notice.go). The save is on the audible path (the next track waits for it), so it is interactive on the
+	// helper's gate, not background work.
+	saveCtx, flushNotices := withDeferredNotices(client.WithInteractive(s.ctx))
 	defer flushNotices()
+	saveBegan := time.Now()
 	revision, saveErr := s.store.Save(saveCtx, s.channel, s.revision, next)
+	s.logAdvanceSave(saveErr, time.Since(saveBegan))
 	if saveErr != nil {
 		_ = s.pauseLocked(s.ctx)
 		s.signalLocked()
-		return
+		return nil
 	}
 	s.state, s.revision = next, revision
+	var skipped []SkippedTrack
 	if !s.state.Paused && s.state.Current != nil {
 		after := s.noticeAfter
 		if after == nil {
@@ -984,6 +1007,67 @@ func (s *Supervisor) monitor(p Playback, budget *startBudget) {
 		}
 	}
 	s.signalLocked()
+	return skipped
+}
+
+// logAdvanceSave logs the advance's durable save: its stage, class and duration only.
+func (s *Supervisor) logAdvanceSave(err error, took time.Duration) {
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	class := "ok"
+	if err != nil {
+		class = helper.Class(err)
+	}
+	logger.InfoContext(s.ctx, "bot music advance", "stage", "advance_save", "class", class, "duration_ms", took.Milliseconds())
+}
+
+// advanceOnInputEnd advances to the next track as soon as p's input ended cleanly, while p still plays the tail its
+// queue holds: p moves to the draining slot, the next track is saved and started beside it, and its publication
+// holds its first sample until p played out. It reports whether it took over p's end; otherwise (no input signal, a
+// failed or paused input, p replaced or closed) monitor handles p's Done as before.
+func (s *Supervisor) advanceOnInputEnd(p Playback, budget *startBudget) bool {
+	input, ok := p.(DrainingPlayback)
+	if !ok || input.InputDone() == nil {
+		return false
+	}
+	select {
+	case <-input.InputDone():
+	case <-p.Done():
+		return false
+	}
+	inputErr := input.InputErr()
+	s.mu.Lock()
+	if s.closed || s.playback != p || s.pausedPlayback ||
+		(inputErr != nil && !(errors.Is(inputErr, encode.ErrInvalidOpus) && endDetail(inputErr) == "invalid" && s.endedAtDurationLocked(p))) {
+		s.mu.Unlock()
+		return false
+	}
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("item_id", s.playingItem, "restored", s.restored[s.playingItem])
+	s.playback, s.draining = nil, p
+	skipped := s.advanceLocked(budget, false)
+	s.idleCheckLocked()
+	s.mu.Unlock()
+	s.reportSkipped(skipped)
+
+	<-p.Done()
+	err := p.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.draining == p {
+		s.draining = nil
+	}
+	if err == nil || (inputErr != nil && errors.Is(err, inputErr)) {
+		logger.InfoContext(s.ctx, "bot music playback ended", "class", "eof", "detail", "eof")
+	} else {
+		logger.WarnContext(s.ctx, "bot music playback ended", "class", FailureClass(err), "detail", endDetail(err), "error_class", helper.Class(err))
+	}
+	return true
 }
 
 func (s *Supervisor) pauseLocked(ctx context.Context) error {
@@ -1052,10 +1136,19 @@ func (s *Supervisor) closePlaybackLocked() {
 		s.starting.interrupted = true
 		s.starting.cancel()
 	}
+	s.closeDrainingLocked()
 	if s.playback != nil {
 		p := s.playback
 		s.playback = nil
 		_ = p.Close()
+	}
+}
+
+// closeDrainingLocked ends the draining track's tail at once (a stop, skip, pause or leave).
+func (s *Supervisor) closeDrainingLocked() {
+	if d := s.draining; d != nil {
+		s.draining = nil
+		_ = d.Close()
 	}
 }
 func (s *Supervisor) signalLocked() { close(s.changed); s.changed = make(chan struct{}) }
