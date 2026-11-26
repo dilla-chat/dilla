@@ -965,3 +965,296 @@ fn custom_colour_is_listed() {
         assert!(!dilla_desktop::strings::t(&format!("roles.color.{key}")).is_empty());
     }
 }
+
+/// Task 9 (Jonas, 2026-11-26: "it should be rounded but you see blue sticking out the edges"): in the shipping frame of
+/// `members/profile-card` the card's top-left corner, one pixel in, is not the band's colour (the band follows the round
+/// edge), while one pixel in under the corner it is.
+#[test]
+fn the_profile_card_s_corner_shows_no_band() {
+    let mut app = Driver::launch_fixture(&fixture_path("members/profile-card"), None, &[]);
+    app.wait_for("member-Björn", Duration::from_secs(60));
+    app.click("member-Björn");
+    app.wait_idle();
+    let card = app.wait_for("members-profile-card", Duration::from_secs(10));
+    app.wait_idle();
+    let shot = app.screenshot();
+    // The headless frame is drawn at scale 2.
+    let at = |x: f32, y: f32| {
+        let p = shot.get_pixel(((card.x + x) * 2.0) as u32, ((card.y + y) * 2.0) as u32);
+        [i32::from(p[0]), i32::from(p[1]), i32::from(p[2])]
+    };
+    let delta = |a: [i32; 3], b: [i32; 3]| (0..3).map(|i| (a[i] - b[i]).abs()).max().unwrap_or(0);
+    let band = at(2.0, 20.0);
+    let corner = at(1.0, 1.0);
+    assert!(
+        delta(corner, band) > 24,
+        "the corner is the band's colour: {corner:?} vs {band:?}"
+    );
+}
+
+/// Task 9: the profile card closes as ProfileCard.tsx's popover does (a press outside, Escape wherever the focus is, the
+/// keyboard's close ×, its actions), and Message and Compare open their views (MemberCardHost.tsx `onAction`).
+mod card {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use dilla_client::state::dms::{DM_KIND_PAIR, DmState, DmSummary};
+    use dilla_client::state::members::Presence as Wire;
+    use dilla_client::state::trust::TrustSummary;
+    use dilla_client::state::{
+        AppState, ChannelGroupState, ChannelId, Community, CommunityId, Member, UserId,
+    };
+    use dilla_desktop::router::Route;
+    use dilla_desktop::screens::dms::{self, Nav};
+    use dilla_desktop::screens::members;
+    use dilla_desktop::slots::SlotCx;
+    use gpui::{
+        Context, FocusHandle, InteractiveElement, IntoElement, Modifiers, MouseButton,
+        ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, WindowId, div,
+        point, px,
+    };
+
+    const C: CommunityId = CommunityId([7; 16]);
+    const ME: UserId = UserId([1; 16]);
+    const ADA: UserId = UserId([2; 16]);
+    const DM: ChannelId = ChannelId([5; 16]);
+
+    fn state() -> Arc<AppState> {
+        let mut s = AppState::default();
+        s.account.user_id = Some(ME);
+        s.communities.push(Community {
+            id: C,
+            name: "crew".into(),
+            owner: ME,
+            policy_version: 0,
+        });
+        let member = |id: UserId, name: &str| Member {
+            user_id: id,
+            username: name.to_lowercase(),
+            display: name.into(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        s.members
+            .insert(C, vec![member(ME, "Olof"), member(ADA, "Ada")]);
+        s.people.presence.insert(
+            C,
+            [(ME, Wire::Online), (ADA, Wire::Online)]
+                .into_iter()
+                .collect(),
+        );
+        s.dms = DmState {
+            list: Some(vec![DmSummary {
+                id: DM,
+                kind: DM_KIND_PAIR,
+                members: vec![ME, ADA],
+                name: "Ada".into(),
+                group: ChannelGroupState::Unsupported,
+            }]),
+        };
+        s.trust.contacts.push(TrustSummary {
+            user_id: ADA,
+            name: "Ada".into(),
+            shared: true,
+            umk: "01".repeat(32),
+            first_seen: 1,
+            verified: false,
+            changed_umk: None,
+            unlisted: false,
+            removed_in: Vec::new(),
+            blocked: None,
+        });
+        Arc::new(s)
+    }
+
+    struct Host {
+        elsewhere: FocusHandle,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let route = Route::Channel {
+                community: C,
+                channel: None,
+            };
+            let pane = members::pane(&route, window, cx);
+            div()
+                .size_full()
+                .flex()
+                .child(
+                    div()
+                        .id("elsewhere")
+                        .track_focus(&self.elsewhere)
+                        .debug_selector(|| "test-elsewhere".into())
+                        .flex_1()
+                        .h_full(),
+                )
+                .child(div().w(px(240.)).h_full().children(pane))
+        }
+    }
+
+    type Went = Rc<RefCell<Vec<Nav>>>;
+
+    fn host(cx: &mut TestAppContext) -> (&mut VisualTestContext, WindowId, Went, FocusHandle) {
+        cx.update(dilla_desktop::install);
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let elsewhere = cx.update(|cx| cx.focus_handle());
+        let held = elsewhere.clone();
+        let (_, vcx) = cx.add_window_view(move |_, _| Host { elsewhere: held });
+        let went: Went = Rc::default();
+        let log = went.clone();
+        let w = vcx.update(|window, cx| {
+            let w = window.window_handle().window_id();
+            members::sync(
+                w,
+                &SlotCx {
+                    state: state(),
+                    community: Some(C),
+                    ..SlotCx::default()
+                },
+                cx,
+            );
+            dms::set_navigator(w, Rc::new(move |nav, _, _| log.borrow_mut().push(nav)), cx);
+            window.refresh();
+            w
+        });
+        vcx.run_until_parked();
+        (vcx, w, went, elsewhere)
+    }
+
+    fn row(cx: &mut VisualTestContext, user: UserId) -> gpui::Point<gpui::Pixels> {
+        let selector: &'static str =
+            Box::leak(format!("member-row-{}", user.hex()).into_boxed_str());
+        cx.debug_bounds(selector)
+            .expect("the member's row")
+            .center()
+    }
+
+    fn click(cx: &mut VisualTestContext, at: gpui::Point<gpui::Pixels>) {
+        cx.simulate_click(at, Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    fn open(cx: &mut VisualTestContext) -> bool {
+        cx.debug_bounds("members-profile-card").is_some()
+    }
+
+    fn open_ada(cx: &mut VisualTestContext) {
+        let at = row(cx, ADA);
+        click(cx, at);
+        assert!(open(cx), "a click on the row opens the card");
+    }
+
+    #[gpui::test]
+    fn a_press_outside_closes_the_member_card(cx: &mut TestAppContext) {
+        let (cx, _, _, _) = host(cx);
+        open_ada(cx);
+        cx.simulate_mouse_down(point(px(4.), px(4.)), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        assert!(!open(cx), "a press outside closes it");
+    }
+
+    #[gpui::test]
+    fn escape_closes_the_member_card_wherever_the_focus_is(cx: &mut TestAppContext) {
+        let (cx, _, _, elsewhere) = host(cx);
+        open_ada(cx);
+        // The focus moved on (not by a press, which would close the card itself).
+        cx.update(|window, cx| window.focus(&elsewhere, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!open(cx), "Escape closes it");
+    }
+
+    #[gpui::test]
+    fn a_second_click_on_the_open_row_closes_the_card_once(cx: &mut TestAppContext) {
+        let (cx, _, _, _) = host(cx);
+        open_ada(cx);
+        let at = row(cx, ADA);
+        click(cx, at);
+        assert!(
+            !open(cx),
+            "the second click closes it, and does not open it again"
+        );
+        click(cx, at);
+        assert!(open(cx), "a third opens it");
+    }
+
+    #[gpui::test]
+    fn message_closes_the_card_and_opens_the_dm(cx: &mut TestAppContext) {
+        let (cx, _, went, _) = host(cx);
+        open_ada(cx);
+        let at = cx
+            .debug_bounds("profile-action-message")
+            .expect("Message")
+            .center();
+        click(cx, at);
+        assert!(!open(cx), "Message closes the card");
+        assert_eq!(*went.borrow(), vec![Nav::Dm(DM)]);
+    }
+
+    #[gpui::test]
+    fn compare_closes_the_card_and_opens_the_comparison(cx: &mut TestAppContext) {
+        let (cx, w, _, _) = host(cx);
+        open_ada(cx);
+        let at = cx
+            .debug_bounds("profile-action-compare")
+            .expect("Compare")
+            .center();
+        click(cx, at);
+        assert!(!open(cx), "Compare closes the card");
+        let (shown, user) = cx.update(|_, cx| {
+            let m = dms::compare::model_in(w, cx);
+            (m.open, m.user)
+        });
+        assert!(shown, "the comparison is open");
+        assert_eq!(user, Some(ADA));
+    }
+
+    #[gpui::test]
+    fn the_card_takes_the_focus_and_tab_reaches_its_keyboard_close(cx: &mut TestAppContext) {
+        let (cx, w, went, elsewhere) = host(cx);
+        open_ada(cx);
+        let (root, items) = cx
+            .update(|_, cx| members::card_focus_for_tests(w, cx))
+            .expect("the card's focus");
+        let first = items[0].clone();
+        let close = items.last().cloned().expect("the close");
+        assert!(
+            cx.update(|window, _| first.is_focused(window)),
+            "Message has the focus"
+        );
+        // Shift+Tab from the first button wraps to the last: the close ×.
+        cx.simulate_keystrokes("shift-tab");
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, _| close.is_focused(window)),
+            "the × has it"
+        );
+        // Tab from the × wraps back into the card.
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+        assert!(
+            cx.update(|window, cx| root.contains_focused(window, cx)),
+            "Tab stays inside"
+        );
+        cx.simulate_keystrokes("shift-tab");
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| close.is_focused(window)));
+        // A keyboard activation is the key's down and up (the vendored GPUI's activation patch).
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        cx.run_until_parked();
+        assert!(!open(cx), "the × closes it");
+        assert!(went.borrow().is_empty(), "and does nothing else");
+        // The focus goes back to the row it was opened from, not elsewhere.
+        assert!(
+            cx.update(|window, cx| window.focused(cx).is_some() && !elsewhere.is_focused(window))
+        );
+    }
+}

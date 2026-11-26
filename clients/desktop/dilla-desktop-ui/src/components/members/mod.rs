@@ -4,22 +4,24 @@
 
 pub mod role_editor;
 
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, BoxShadow, ClickEvent, ElementId, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Point,
-    RenderOnce, Rgba, SharedString, StatefulInteractiveElement, Styled, Window, div, point, px,
-    rgb,
+    AnyElement, App, Bounds, BoxShadow, ClickEvent, Div, ElementId, FocusHandle, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Point, RenderOnce, Rgba, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    point, px, rgb,
 };
 
 use crate::a11y::{Accessible, Role};
 use crate::components::avatar::{Avatar, AvatarShape, AvatarSize, Presence, colour_of};
+use crate::components::dialog::{TrapNext, TrapPrevious, trap_tab};
 use crate::icon::Icon;
 use crate::icon_names::IconName;
 use crate::metrics::{Density, LABEL_TRACKING, LABEL_TRACKING_WIDE, OPACITY_MUTED};
 use crate::roving::{Roving, opens_context_menu};
-use crate::text::{line, line_height};
+use crate::text::{flow_paragraph, line, line_height};
 use crate::tokens::{color, font, layout, motion, radius, text};
 
 /// What a group of the list is (MemberList.tsx `kind`).
@@ -130,6 +132,7 @@ pub struct MemberList {
     on_close: Option<OnClose>,
     probe: Option<Probe>,
     in_section: bool,
+    open_row: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
 }
 
 impl MemberList {
@@ -149,6 +152,7 @@ impl MemberList {
             on_close: None,
             probe: None,
             in_section: false,
+            open_row: None,
         }
     }
 
@@ -194,6 +198,13 @@ impl MemberList {
 
     pub fn on_open(mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
         self.on_open = Some(Rc::new(f));
+        self
+    }
+
+    /// Where the open member's row was last laid out: a press on it is the row's own (it toggles the card), not a press
+    /// outside the card (ProfileCard.tsx skips `anchor.contains(target)`).
+    pub fn open_row_bounds(mut self, cell: Rc<Cell<Option<Bounds<Pixels>>>>) -> Self {
+        self.open_row = Some(cell);
         self
     }
 
@@ -286,15 +297,26 @@ fn row(
     // The row's painted bounds, for a menu the keyboard opens under it.
     let laid_out: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>> = Rc::default();
     let record = laid_out.clone();
+    let open_row = focus.open_row.clone().filter(|_| focus.open);
+    let selector = format!("member-row-{}", m.id);
     div()
         .child(
-            gpui::canvas(move |b, _, _| record.set(Some(b)), |_, _, _, _| {})
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
+            gpui::canvas(
+                move |b, _, _| {
+                    record.set(Some(b));
+                    if let Some(cell) = &open_row {
+                        cell.set(Some(b));
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
         )
         .id(id.clone())
+        .debug_selector(move || selector)
         .a11y(Role::Button, row_name)
         .aria_expanded(focus.open)
         .h(layout::ROW_H_2)
@@ -387,6 +409,8 @@ struct RowFocus {
     stop: bool,
     /// Its member's card is open: the row keeps the hover fill.
     open: bool,
+    /// Where the open row records its bounds ([`MemberList::open_row_bounds`]).
+    open_row: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
 }
 
 trait OpenFill {
@@ -530,6 +554,7 @@ impl RenderOnce for MemberList {
                             index,
                             stop: index == stop,
                             open: self.open_id.as_ref() == Some(&m.id),
+                            open_row: self.open_row.clone(),
                         },
                     ));
                 }
@@ -590,9 +615,50 @@ fn shadow_profile() -> Vec<BoxShadow> {
     crate::metrics::css_shadow(gpui::hsla(0., 0., 0., 0.6), 24.0, 60.0)
 }
 
+/// The key context of an open profile card: Tab and Shift+Tab stay inside it ([`TrapNext`], [`TrapPrevious`], bound by
+/// the members area), as ProfileCard.tsx's Tab trap. Not the dialog's overlay context: the card is no modal, so push to
+/// talk and the window's keys go on working under it.
+pub const CARD_CONTEXT: &str = "ProfileCard";
+
+/// The card's 56px band in the person's hue (ProfileCard.css `.d-profile-card__band`). GPUI clips a child to its parent's
+/// square bounds, never to its rounded corners, so the band rounds its own top corners to the card's inner radius (the
+/// card's 12px less its 1px edge, the padding box CSS clips to): no square of band shows outside the round edge.
+pub fn band(hue: f32, saturation: f32) -> Div {
+    div()
+        .h(px(56.))
+        .rounded_t(space::CARD_INNER_R)
+        .bg(gpui::linear_gradient(
+            135.,
+            gpui::linear_color_stop(gpui::hsla(hue, saturation, 0.30, 1.), 0.),
+            gpui::linear_color_stop(gpui::hsla(hue, saturation, 0.16, 1.), 1.),
+        ))
+}
+
+/// The avatar's 4px `--surface-2` ring (ProfileCard.css: a `box-shadow` on the `.d-avatar` itself), so it follows the
+/// avatar's shape: a circle, or a Bot's rounded square.
+pub fn ring(is_bot: bool) -> Div {
+    div()
+        .rounded(if is_bot {
+            AvatarSize::Card.bot_radius()
+        } else {
+            radius::PILL
+        })
+        .shadow(vec![BoxShadow {
+            color: color::SURFACE_2,
+            offset: point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: px(4.),
+            inset: false,
+        }])
+}
+
 /// The profile card (Signal §5.7): 300px, `--surface-2` in the `--control-edge-field` line, 12px corners; the 56px band
-/// in the person's hue, the 56px avatar over it, the name (15px 700) with the crown, the status line, the bio, the role
-/// chips, then Message and the glyph actions.
+/// in the person's hue, the 56px avatar over it, the name (15px 700, wrapping) with the crown, the status line, the bio
+/// (at most 8rem, then it scrolls), the role chips, then Message and the glyph actions. It is at most the window's height
+/// less 16px, and scrolls past it.
+///
+/// With [`ProfileCard::focus`] its buttons are tab stops and Tab stays inside; with [`ProfileCard::on_close`] Escape closes
+/// it and the keyboard's close × is drawn, seen only while it has the keyboard focus (ProfileCard.css `__close`).
 #[derive(IntoElement)]
 pub struct ProfileCard {
     id: ElementId,
@@ -607,6 +673,8 @@ pub struct ProfileCard {
     message: Option<SharedString>,
     actions: Vec<CardAction>,
     on_action: Option<OnId>,
+    on_close: Option<(SharedString, OnClose)>,
+    focus: Option<(FocusHandle, Vec<FocusHandle>)>,
 }
 
 impl ProfileCard {
@@ -630,6 +698,8 @@ impl ProfileCard {
             message: None,
             actions: Vec::new(),
             on_action: None,
+            on_close: None,
+            focus: None,
         }
     }
 
@@ -675,10 +745,44 @@ impl ProfileCard {
         self.on_action = Some(Rc::new(f));
         self
     }
+
+    /// Escape and the keyboard's close × (named `label`) call `f`.
+    pub fn on_close(
+        mut self,
+        label: impl Into<SharedString>,
+        f: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_close = Some((label.into(), Rc::new(f)));
+        self
+    }
+
+    /// The card's own focus handle and one per button in tab order (Message, the glyph actions, then the close ×): at
+    /// least [`ProfileCard::focusables`] of them.
+    pub fn focus(mut self, root: FocusHandle, items: Vec<FocusHandle>) -> Self {
+        self.focus = Some((root, items));
+        self
+    }
+
+    /// How many buttons the card draws, in tab order (Message, the glyph actions, the close ×).
+    pub fn focusables(&self) -> usize {
+        usize::from(self.message.is_some())
+            + self.actions.len()
+            + usize::from(self.on_close.is_some())
+    }
+}
+
+/// A card button's tab stop and its keyboard ring, when the card has focus handles.
+fn stop(el: gpui::Stateful<Div>, handle: Option<&FocusHandle>) -> gpui::Stateful<Div> {
+    match handle {
+        Some(h) => el
+            .track_focus(h)
+            .focus_visible(|s| s.shadow(crate::metrics::focus_ring())),
+        None => el,
+    }
 }
 
 impl RenderOnce for ProfileCard {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let hue = f32::from(self.hue) / 360.;
         // `hsl(var(--avatar-hue) var(--avatar-s, 45%) ...)`: the saturation of the person's avatar palette entry (the
         // name's), 45% for a hue that is not the name's.
@@ -686,11 +790,14 @@ impl RenderOnce for ProfileCard {
             (h, s, _) if h == self.hue => f32::from(s) / 100.,
             _ => 0.45,
         };
-        let band = div().h(px(56.)).bg(gpui::linear_gradient(
-            135.,
-            gpui::linear_color_stop(gpui::hsla(hue, saturation, 0.30, 1.), 0.),
-            gpui::linear_color_stop(gpui::hsla(hue, saturation, 0.16, 1.), 1.),
-        ));
+        let mut stops = self
+            .focus
+            .as_ref()
+            .map(|(_, items)| items.clone())
+            .unwrap_or_default()
+            .into_iter();
+        // `.d-profile-card__name { min-width: 0; overflow-wrap: anywhere }`: a long name wraps; the crown and the tag
+        // stay beside it.
         let mut title = div()
             .mt(px(10.))
             .flex()
@@ -698,17 +805,25 @@ impl RenderOnce for ProfileCard {
             .gap(px(6.))
             .min_w_0()
             .child(
-                line(
-                    self.name.clone(),
-                    text::CARD,
-                    line_height(text::CARD, 1.5),
-                    color::FG,
-                )
-                .weight(font::WEIGHT_DISPLAY)
-                .ellipsis(),
+                div()
+                    .debug_selector(|| "profile-name".into())
+                    .min_w_0()
+                    .child(
+                        flow_paragraph(
+                            self.name.clone(),
+                            text::CARD,
+                            line_height(text::CARD, 1.5),
+                            color::FG,
+                        )
+                        .weight(font::WEIGHT_DISPLAY),
+                    ),
             );
         if self.is_owner {
-            title = title.child(Icon::new(IconName::Crown).size(px(13.)).color(color::WARN));
+            title = title.child(
+                div()
+                    .flex_none()
+                    .child(Icon::new(IconName::Crown).size(px(13.)).color(color::WARN)),
+            );
         }
         if let Some(client) = self.client.clone() {
             title = title.child(
@@ -729,25 +844,15 @@ impl RenderOnce for ProfileCard {
             .flex_col()
             .child(
                 div().flex().child(
-                    div()
-                        .rounded(radius::PILL)
-                        // ProfileCard.css: `box-shadow: 0 0 0 4px var(--surface-2)`, a ring that takes no layout.
-                        .shadow(vec![BoxShadow {
-                            color: color::SURFACE_2,
-                            offset: point(px(0.), px(0.)),
-                            blur_radius: px(0.),
-                            spread_radius: px(4.),
-                            inset: false,
-                        }])
-                        .child(
-                            Avatar::new("profile-avatar", self.name.clone())
-                                .size(AvatarSize::Card)
-                                .shape(if self.is_bot {
-                                    AvatarShape::Bot
-                                } else {
-                                    AvatarShape::Circle
-                                }),
-                        ),
+                    ring(self.is_bot).child(
+                        Avatar::new("profile-avatar", self.name.clone())
+                            .size(AvatarSize::Card)
+                            .shape(if self.is_bot {
+                                AvatarShape::Bot
+                            } else {
+                                AvatarShape::Circle
+                            }),
+                    ),
                 ),
             )
             .child(title)
@@ -758,14 +863,22 @@ impl RenderOnce for ProfileCard {
                 color::FG_2,
             ));
         if !self.bio.is_empty() {
-            body = body.child(div().mt(px(10.)).children(self.bio.split('\n').map(|l| {
-                line(
-                    l.to_owned(),
-                    text::UI,
-                    crate::text::root_line_height(text::UI),
-                    color::FG_STRONG,
-                )
-            })));
+            // `.d-profile-card__about { max-height: 8rem; overflow-y: auto }`, the bio `pre-wrap`.
+            body = body.child(
+                div()
+                    .id("profile-about")
+                    .debug_selector(|| "profile-about".into())
+                    .mt(px(10.))
+                    .min_w_0()
+                    .max_h(space::CARD_BIO_MAX_H)
+                    .overflow_y_scroll()
+                    .child(flow_paragraph(
+                        self.bio.clone(),
+                        text::UI,
+                        crate::text::root_line_height(text::UI),
+                        color::FG_STRONG,
+                    )),
+            );
         }
         if !self.roles.is_empty() {
             body = body.child(
@@ -780,81 +893,145 @@ impl RenderOnce for ProfileCard {
         let mut row = div().mt(px(14.)).flex().justify_end().gap(px(6.));
         if let Some(label) = self.message {
             let on = self.on_action.clone();
-            row = row.child(
-                div()
-                    .id("profile-action-message")
-                    .flex_1()
-                    .h(px(34.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(6.))
-                    .rounded(radius::SEG)
-                    .bg(color::ACCENT)
-                    .cursor_pointer()
-                    .child(
-                        Icon::new(IconName::MessageSquare)
-                            .size(px(14.))
-                            .color(color::ACCENT_INK),
+            let button = div()
+                .id("profile-action-message")
+                .debug_selector(|| "profile-action-message".into())
+                .flex_1()
+                .h(px(34.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .rounded(radius::SEG)
+                .bg(color::ACCENT)
+                .cursor_pointer()
+                .child(
+                    Icon::new(IconName::MessageSquare)
+                        .size(px(14.))
+                        .color(color::ACCENT_INK),
+                )
+                .child(
+                    line(
+                        label,
+                        text::UI,
+                        crate::text::root_line_height(text::UI),
+                        color::ACCENT_INK,
                     )
-                    .child(
-                        line(
-                            label,
-                            text::UI,
-                            crate::text::root_line_height(text::UI),
-                            color::ACCENT_INK,
-                        )
-                        .weight(font::WEIGHT_DISPLAY),
-                    )
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        if let Some(f) = &on {
-                            f("message", window, cx);
-                        }
-                    }),
-            );
+                    .weight(font::WEIGHT_DISPLAY),
+                )
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    if let Some(f) = &on {
+                        f("message", window, cx);
+                    }
+                });
+            row = row.child(stop(button, stops.next().as_ref()));
         }
         for a in self.actions {
             let on = self.on_action.clone();
             let id = a.id.clone();
-            row = row.child(
-                div()
-                    .id(SharedString::from(format!("profile-action-{}", a.id)))
-                    .size(px(34.))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(radius::SEG)
-                    .border_1()
-                    .border_color(color::CONTROL_EDGE_FIELD)
-                    .hover(|s| s.border_color(color::ACCENT))
-                    .cursor_pointer()
-                    .child(Icon::new(a.icon).size(px(14.)).color(if a.danger {
-                        color::DANGER
-                    } else {
-                        color::FG_CHIP
-                    }))
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        if let Some(f) = &on {
-                            f(&id, window, cx);
-                        }
-                    }),
-            );
+            let selector = format!("profile-action-{}", a.id);
+            let icon_selector = format!("profile-action-{}-icon", a.id);
+            let button = div()
+                .id(SharedString::from(selector.clone()))
+                .debug_selector(move || selector)
+                .a11y(Role::Button, a.label.clone())
+                .size(px(34.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(radius::SEG)
+                .border_1()
+                .border_color(color::CONTROL_EDGE_FIELD)
+                .hover(|s| s.border_color(color::ACCENT))
+                .cursor_pointer()
+                // ProfileCard.tsx: a glyph action's icon is 15px (Message's own is 14).
+                .child(
+                    div()
+                        .flex_none()
+                        .debug_selector(move || icon_selector)
+                        .child(
+                            Icon::new(a.icon)
+                                .size(space::CARD_GLYPH)
+                                .color(if a.danger {
+                                    color::DANGER
+                                } else {
+                                    color::FG_CHIP
+                                }),
+                        ),
+                )
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    if let Some(f) = &on {
+                        f(&id, window, cx);
+                    }
+                });
+            row = row.child(stop(button, stops.next().as_ref()));
         }
         let enter_id = (self.id.clone(), "enter");
-        let card = div()
+        // `max-height: calc(100dvh - 16px)` of the content box (`box-sizing: content-box`), plus its 1px edges; past it
+        // the card scrolls (`overflow: hidden auto`).
+        let max_h = window.viewport_size().height - space::CARD_EDGE * 2. + space::CARD_BORDER * 2.;
+        let mut card = div()
             .id(self.id)
+            .relative()
             .w(space::CARD_OUTER_W)
-            .overflow_hidden()
+            .max_h(max_h)
+            .overflow_x_hidden()
+            .overflow_y_scroll()
             .bg(color::SURFACE_2)
             .border_1()
             .border_color(color::CONTROL_EDGE_FIELD)
             .rounded(radius::XXL)
             .shadow(shadow_profile())
             .occlude()
-            .child(band)
+            .child(band(hue, saturation))
             .child(body.child(row));
+        if let Some((root, _)) = &self.focus {
+            let (next, prev) = (root.clone(), root.clone());
+            card = card
+                .track_focus(root)
+                .key_context(CARD_CONTEXT)
+                .on_action(move |_: &TrapNext, window, cx| trap_tab(&next, true, window, cx))
+                .on_action(move |_: &TrapPrevious, window, cx| trap_tab(&prev, false, window, cx));
+        }
+        if let Some((label, on_close)) = self.on_close {
+            let on_key = on_close.clone();
+            card = card.on_key_down(move |e: &KeyDownEvent, window, cx| {
+                if e.keystroke.key == "escape" && !e.keystroke.modifiers.modified() {
+                    cx.stop_propagation();
+                    on_key(window, cx);
+                }
+            });
+            // The keyboard's close (ProfileCard.css `.d-profile-card__close`): a 28px × over the band's corner, drawn only
+            // while it has the keyboard focus; the prototype draws none.
+            let close = div()
+                .id("profile-close")
+                .debug_selector(|| "profile-close".into())
+                .a11y(Role::Button, label)
+                .absolute()
+                .top(px(8.))
+                .right(px(8.))
+                .size(space::CARD_CLOSE)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(radius::MD)
+                .bg(color::SURFACE_2)
+                .cursor_pointer()
+                .opacity(0.)
+                .child(
+                    Icon::new(IconName::X)
+                        .size(space::CARD_GLYPH)
+                        .color(color::FG),
+                )
+                .on_click(move |_: &ClickEvent, window, cx| on_close(window, cx));
+            let close = match stops.next() {
+                Some(h) => close.track_focus(&h).focus_visible(|s| s.opacity(1.)),
+                None => close,
+            };
+            card = card.child(close);
+        }
         // ProfileCard.css:6: `d-modal` over `--duration-profile`.
         crate::motion::modal_in(card, enter_id, motion::PROFILE, cx)
     }
@@ -902,6 +1079,17 @@ pub mod space {
     /// ProfileCard.tsx: the card sits 14px beside the pointer and 24px above it.
     pub const POINTER_GAP: Pixels = px(14.);
     pub const POINTER_RISE: Pixels = px(24.);
+    /// The card's edge (`border: 1px`).
+    pub const CARD_BORDER: Pixels = px(1.);
+    /// The band's top corners: the card's 12px (`--r-xxl`) less its 1px edge, the padding box `overflow: hidden` clips
+    /// to.
+    pub const CARD_INNER_R: Pixels = px(11.);
+    /// A glyph action's icon and the close × (ProfileCard.tsx `size={15}`).
+    pub const CARD_GLYPH: Pixels = px(15.);
+    /// The bio's box (`.d-profile-card__about { max-height: 8rem }`).
+    pub const CARD_BIO_MAX_H: Pixels = px(128.);
+    /// The keyboard's close (`.d-profile-card__close`).
+    pub const CARD_CLOSE: Pixels = px(28.);
 }
 
 #[cfg(test)]
@@ -910,5 +1098,126 @@ mod shadow_tests {
     #[test]
     fn the_profile_card_shadow_blurs_as_css_does() {
         assert_eq!(super::shadow_profile()[0].blur_radius, gpui::px(30.0));
+    }
+}
+
+/// Task 9 (2026-11-26): the card's band follows its round corners, a Bot's ring its rounded square, and the smaller
+/// differences from ProfileCard.tsx/.css (15px glyphs, a wrapping name, the 8rem bio, the window-high card).
+#[cfg(test)]
+mod card_tests {
+    use gpui::{AbsoluteLength, Context, Render, TestAppContext, VisualTestContext, Window, size};
+
+    use super::*;
+
+    #[test]
+    fn the_band_rounds_its_top_corners_to_the_card_s_inner_radius() {
+        let mut b = band(0.5, 0.45);
+        let r = b.style().corner_radii.clone();
+        let inner: Option<AbsoluteLength> = Some(px(11.).into());
+        assert_eq!(r.top_left, inner);
+        assert_eq!(r.top_right, inner);
+        assert_eq!(r.bottom_left, None, "the band's foot is square");
+        assert_eq!(space::CARD_INNER_R, radius::XXL - space::CARD_BORDER);
+    }
+
+    #[test]
+    fn a_bot_s_ring_follows_its_rounded_square() {
+        let bot: Option<AbsoluteLength> = Some(AvatarSize::Card.bot_radius().into());
+        let pill: Option<AbsoluteLength> = Some(radius::PILL.into());
+        assert_eq!(ring(true).style().corner_radii.top_left, bot);
+        assert_eq!(ring(false).style().corner_radii.top_left, pill);
+    }
+
+    struct Host {
+        name: &'static str,
+        bio: String,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().flex().items_start().child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "test-card".into())
+                    .child(
+                        ProfileCard::new("profile-card", self.name, "@someone · online", 200)
+                            .bio(self.bio.clone())
+                            .client("WEB")
+                            .message("Message")
+                            .actions(vec![CardAction {
+                                id: "compare".into(),
+                                label: "Compare".into(),
+                                icon: IconName::Shield,
+                                danger: false,
+                            }]),
+                    ),
+            )
+        }
+    }
+
+    fn draw<'a>(
+        cx: &'a mut TestAppContext,
+        name: &'static str,
+        bio: String,
+        height: f32,
+    ) -> &'a mut VisualTestContext {
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let (_, vcx) = cx.add_window_view(move |_, _| Host { name, bio });
+        vcx.simulate_resize(size(px(800.), px(height)));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        vcx
+    }
+
+    fn lines(n: usize) -> String {
+        (0..n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[gpui::test]
+    fn a_glyph_action_s_icon_is_15px(cx: &mut TestAppContext) {
+        let vcx = draw(cx, "Ada", String::new(), 600.);
+        let icon = vcx
+            .debug_bounds("profile-action-compare-icon")
+            .expect("the glyph");
+        assert_eq!(icon.size, size(px(15.), px(15.)));
+    }
+
+    #[gpui::test]
+    fn a_long_name_wraps_inside_the_card(cx: &mut TestAppContext) {
+        let vcx = draw(
+            cx,
+            "Astrid Ingeborg Sigrunsdotter Lindqvist-Ekstrom",
+            String::new(),
+            600.,
+        );
+        let name = vcx.debug_bounds("profile-name").expect("the name");
+        let card = vcx.debug_bounds("test-card").expect("the card");
+        assert!(
+            f32::from(name.size.height) > line_height(text::CARD, 1.5) + 1.,
+            "more than one line: {name:?}"
+        );
+        assert!(
+            name.right() <= card.right() - px(16.),
+            "inside the body: {name:?} {card:?}"
+        );
+        assert_eq!(card.size.width, space::CARD_OUTER_W);
+    }
+
+    #[gpui::test]
+    fn the_bio_is_at_most_8rem_high(cx: &mut TestAppContext) {
+        let vcx = draw(cx, "Ada", lines(20), 900.);
+        let about = vcx.debug_bounds("profile-about").expect("the bio");
+        assert_eq!(about.size.height, px(128.));
+    }
+
+    #[gpui::test]
+    fn the_card_is_at_most_the_window_less_16px_high(cx: &mut TestAppContext) {
+        let vcx = draw(cx, "Ada", lines(20), 200.);
+        let card = vcx.debug_bounds("test-card").expect("the card");
+        // The content box's `calc(100dvh - 16px)`, plus its two 1px edges.
+        assert_eq!(card.size.height, px(200. - 16. + 2.));
     }
 }

@@ -40,18 +40,23 @@ colour_max_pct = 0.0
 
 # Per-screen macOS colour limits: twice the screen's honest macOS score (run 43838350768). Each is a screen with an
 # avatar or a picture, whose scaled image samples otherwise on Metal than in Chromium (TOLERANCES.md "macOS").
+# Task 9 (2026-11-26): the profile band's square corners (blue outside the card's round edge) are gone; the six profile
+# limits below drop by twice the share that fix took off each screen's Linux colour score (card 0.1295 -> 0.1240,
+# card-b 0.1370 -> 0.1340, profile 0.0954 -> 0.0930, profile-b 0.0927 -> 0.0907, short-wide 0.0927 -> 0.0898, short-wide-b
+# 0.1137 -> 0.1101), rounded down. The wedges are a few thousandths of a percent of the frame, under any limit with a
+# margin: `the_profile_card_s_corner_shows_no_band` (members.rs) is what fails on their return.
 [macos_screens."user-settings/profile"]
-colour_max_pct = 0.92
+colour_max_pct = 0.91
 [macos_screens."user-settings/profile-b"]
-colour_max_pct = 0.73
+colour_max_pct = 0.72
 [macos_screens."user-settings/profile-short-wide"]
-colour_max_pct = 1.11
+colour_max_pct = 1.10
 [macos_screens."user-settings/profile-short-wide-b"]
-colour_max_pct = 1.36
+colour_max_pct = 1.35
 [macos_screens."members/profile-card"]
-colour_max_pct = 0.88
+colour_max_pct = 0.86
 [macos_screens."members/profile-card-b"]
-colour_max_pct = 0.74
+colour_max_pct = 0.73
 [macos_screens."voice/stage-focused"]
 colour_max_pct = 0.77
 [macos_screens."voice/person-menu"]
