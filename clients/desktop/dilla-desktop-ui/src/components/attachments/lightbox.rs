@@ -43,7 +43,9 @@ fn button(id: &'static str, label: SharedString, variant: ButtonVariant, f: OnCl
 /// The lightbox, filling its (window-sized) parent.
 pub fn lightbox(p: LightboxProps, cx: &App) -> AnyElement {
     let stage: AnyElement = match p.image {
+        // The id keeps an opened GIF's frame clock: GPUI's `Img` animates only with one.
         Some(image) => img(image)
+            .id("lightbox-img")
             .max_w_full()
             .max_h_full()
             .object_fit(ObjectFit::Contain)
@@ -135,4 +137,36 @@ pub fn lightbox(p: LightboxProps, cx: &App) -> AnyElement {
         crate::motion::EASE,
         cx,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn props(image: Option<Arc<Image>>, cx: &mut App) -> LightboxProps {
+        let none: OnClick = std::rc::Rc::new(|_, _, _| {});
+        LightboxProps {
+            label: "".into(),
+            image,
+            save_label: "".into(),
+            on_save: none.clone(),
+            close_label: "".into(),
+            on_close: none,
+            close_focus: cx.focus_handle(),
+            previous: None,
+            next: None,
+        }
+    }
+
+    /// An opened GIF plays (its picture has an id): a render a frame's delay later paints its next frame; under reduced
+    /// motion it holds its first.
+    #[gpui::test]
+    fn an_opened_gif_paints_its_next_frame(cx: &mut gpui::TestAppContext) {
+        use crate::components::attachments::testing::{frames_painted, gif};
+        let image = gif();
+        let draw =
+            move |_: &mut gpui::Window, cx: &mut App| lightbox(props(Some(image.clone()), cx), cx);
+        assert_eq!(frames_painted(cx, false, draw.clone()), 2, "it plays");
+        assert_eq!(frames_painted(cx, true, draw), 1, "reduced motion");
+    }
 }

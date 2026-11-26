@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, StyledImage, div, img, px,
+    AnyElement, Image, ImageFormat, InteractiveElement, IntoElement, ObjectFit, ParentElement,
+    SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px,
 };
 
 use super::OnClick;
@@ -125,11 +125,31 @@ pub fn image_tile(
     thumb_size: Option<(u32, u32)>,
     thumb: Option<Arc<Image>>,
     badge: Option<SharedString>,
+    // A GIF that plays: its picture gets an id, which keeps GPUI's frame clock (`Img` animates only with one).
+    moving: bool,
     // What it opens, named for a screen reader (`shell.attachment.open`), and the open itself.
     on_open: Option<(SharedString, OnClick)>,
 ) -> AnyElement {
     let h = tile_height(width);
+    let id: SharedString = id.into();
     let inner: AnyElement = match thumb {
+        // A GIF is one rounded Cover picture: `exact_cover`'s three layers would each keep their own frame clock (and
+        // could drift a frame apart at the band seams), and their square bands snap apart from the rounded layer at 1x.
+        // It loses the sub-texel crop ("design, not pixels", 2026-11-20). A GIF that plays carries an id, which keeps
+        // its frame clock (GPUI's `Img` animates only with one); a still one holds its first frame.
+        Some(image) if image.format == ImageFormat::Gif => {
+            let picture = img(image)
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .rounded(radius::LG - px(1.0));
+            if moving {
+                picture
+                    .id(gpui::ElementId::Name(format!("{id}-img").into()))
+                    .into_any_element()
+            } else {
+                picture.into_any_element()
+            }
+        }
         Some(image) => {
             match thumb_size.and_then(|(iw, ih)| exact_cover_box(width - 2.0, h - 2.0, iw, ih)) {
                 // `object-fit: cover` by hand: GPUI's own Cover crops the picture in whole texels (`Window::paint_image`
@@ -150,7 +170,7 @@ pub fn image_tile(
             .into_any_element(),
     };
     let mut tile = div()
-        .id(gpui::ElementId::Name(id.into()))
+        .id(gpui::ElementId::Name(id))
         .relative()
         .flex_none()
         .w(px(width))
@@ -406,5 +426,68 @@ mod tests {
         assert_eq!(tile_height(IMAGE_W), 210.0);
         assert_eq!(tile_height(GIF_W), 180.0);
         assert_eq!(file_card_height(), 54.0);
+    }
+
+    fn gif_tile(moving: bool) -> AnyElement {
+        image_tile(
+            "attachment-1-0",
+            GIF_W,
+            Some((1, 1)),
+            Some(crate::components::attachments::testing::gif()),
+            None,
+            moving,
+            None,
+        )
+    }
+
+    /// A posted GIF that plays asks for its next frame (its picture has an id, GPUI's frame clock); one shown still, or
+    /// any under reduced motion, asks for none.
+    #[gpui::test]
+    fn a_posted_gif_asks_for_its_next_frame(cx: &mut gpui::TestAppContext) {
+        use crate::components::attachments::testing::frames_asked;
+        assert!(
+            frames_asked(cx, false, |_, _| gif_tile(true)) > 0,
+            "a playing GIF"
+        );
+        assert_eq!(
+            frames_asked(cx, false, |_, _| gif_tile(false)),
+            0,
+            "a still GIF"
+        );
+        assert_eq!(
+            frames_asked(cx, true, |_, _| gif_tile(true)),
+            0,
+            "reduced motion"
+        );
+    }
+
+    /// A GIF is one rounded Cover picture, not `exact_cover`'s three layers (three frame clocks could drift apart at the
+    /// band seams, and the bands' square masks snap apart from the rounded layer at 1x).
+    #[gpui::test]
+    fn a_gif_tile_paints_one_picture(cx: &mut gpui::TestAppContext) {
+        use crate::components::attachments::testing::sprites;
+        assert_eq!(sprites(cx, |_, _| gif_tile(true)).len(), 1, "playing");
+        assert_eq!(sprites(cx, |_, _| gif_tile(false)).len(), 1, "still");
+    }
+
+    /// A posted GIF that plays paints its next frame a frame's delay later.
+    #[gpui::test]
+    fn a_posted_gif_paints_its_next_frame(cx: &mut gpui::TestAppContext) {
+        use crate::components::attachments::testing::frames_painted;
+        assert_eq!(
+            frames_painted(cx, false, |_, _| gif_tile(true)),
+            2,
+            "it plays"
+        );
+        assert_eq!(
+            frames_painted(cx, false, |_, _| gif_tile(false)),
+            1,
+            "a still"
+        );
+        assert_eq!(
+            frames_painted(cx, true, |_, _| gif_tile(true)),
+            1,
+            "reduced motion"
+        );
     }
 }

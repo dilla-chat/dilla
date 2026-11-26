@@ -140,6 +140,26 @@ fn with_state(element: AnyElement, width: f32, height: f32, state: Option<(Strin
     }
 }
 
+/// Measures, as the GIF card `key` paints, whether at least half of it is visible in its scroll viewport (the content
+/// mask it paints under: the timeline's list and the window), as the web's IntersectionObserver at 0.5 did; a change
+/// asks for one more frame, which plays or stills the GIF.
+fn gif_visibility(key: CardKey) -> gpui::Canvas<()> {
+    gpui::canvas(
+        move |bounds, window, cx| {
+            let seen = bounds.intersect(&window.content_mask().bounds);
+            let area =
+                |b: gpui::Bounds<gpui::Pixels>| f32::from(b.size.width) * f32::from(b.size.height);
+            let half = area(bounds) > 0.0 && 2.0 * area(seen) >= area(bounds);
+            if ui::set_gif_visible(key, half, cx) {
+                window.request_animation_frame();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+
 /// A message's attachment cards and image grid (`slots::message_extras`, after the reply chip).
 pub fn attachment_cards(
     item: &TimelineItem,
@@ -216,16 +236,21 @@ pub fn attachment_cards(
             }
             AttachmentKind::Image => {
                 let gif = a.mime == "image/gif";
-                // A GIF plays in its card up to 8 MB (the whole file, GPUI animates it); else and until then, the still.
-                let full = key
-                    .filter(|_| gif && a.size <= GIF_AUTOPLAY_MAX && live)
-                    .map(|k| ImageKey {
-                        client: owner,
-                        channel,
-                        seq: k.seq,
-                        index: k.index,
-                        thumb: false,
-                    });
+                // Attachments.tsx's autoplay rules: a GIF plays in its card (the whole file, GPUI animates it) only up to
+                // 8 MB, never under reduced motion, while at least half of it is visible (measured as it paints, below)
+                // and for five minutes from its first play; else, and until then, the still.
+                let playable = gif && a.size <= GIF_AUTOPLAY_MAX && live && !cx.reduce_motion();
+                let now = std::time::Instant::now();
+                let plays = key
+                    .filter(|_| playable)
+                    .filter(|k| ui::ui(cx).gif_plays.get(k).is_some_and(|p| p.may_play(now)));
+                let full = plays.map(|k| ImageKey {
+                    client: owner,
+                    channel,
+                    seq: k.seq,
+                    index: k.index,
+                    thumb: false,
+                });
                 let thumb_key = key.map(|k| ImageKey {
                     client: owner,
                     channel,
@@ -245,6 +270,9 @@ pub fn attachment_cards(
                     _ => None,
                 };
                 let moving = ready(full, cx);
+                if let (Some(k), Some(_)) = (plays, &moving) {
+                    ui::gif_played(k, now, cx);
+                }
                 let fixture = (!live)
                     .then(|| {
                         ctx.state
@@ -304,9 +332,11 @@ pub fn attachment_cards(
                         shown.as_ref().and_then(|i| ui::dimensions(i)),
                         shown,
                         badge,
+                        moving.is_some(),
                         open.map(|o| (tf("shell.attachment.open", &[("name", &name)]).into(), o)),
                     ))
                     .child(probe)
+                    .children(key.filter(|_| playable).map(gif_visibility))
                     .into_any_element();
                 cards.push(with_state(el, w, tile_height(w), state_text));
             }

@@ -174,6 +174,46 @@ pub enum TrayPreview {
     Gif,
 }
 
+/// Attachments.tsx `GIF_PLAY_MS`: a posted GIF plays in its card for at most this long from when it first played.
+pub const GIF_PLAY: Duration = Duration::from_secs(5 * 60);
+
+/// A posted GIF's play (Attachments.tsx's autoplay rules): whether at least half of its card was visible when it last
+/// painted, and when it first played.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GifPlay {
+    pub visible: bool,
+    pub since: Option<Instant>,
+}
+
+impl GifPlay {
+    /// Whether it may play at `now`: at least half visible, and within [`GIF_PLAY`] of its first play. After that it
+    /// shows its still.
+    pub fn may_play(&self, now: Instant) -> bool {
+        self.visible
+            && self
+                .since
+                .is_none_or(|s| now.saturating_duration_since(s) < GIF_PLAY)
+    }
+}
+
+/// Records whether at least half of the GIF card `key` is visible; answers whether that changed.
+pub fn set_gif_visible(key: CardKey, visible: bool, cx: &mut App) -> bool {
+    let play = ui(cx).gif_plays.entry(key).or_default();
+    let changed = play.visible != visible;
+    play.visible = visible;
+    changed
+}
+
+/// The GIF card `key` plays now: its first play starts its [`GIF_PLAY`] window.
+pub fn gif_played(key: CardKey, now: Instant, cx: &mut App) {
+    ui(cx)
+        .gif_plays
+        .entry(key)
+        .or_default()
+        .since
+        .get_or_insert(now);
+}
+
 /// The attachments area's state. One per app, and that is safe by construction (final review sweep): what belongs to a
 /// window is keyed by it (`targets`) or carries its owner window and is drawn only there (the lightbox, the GIF picker,
 /// the DM notice); what belongs to a client is keyed by its [`Client::serial`] (review M2: trays, previews, images,
@@ -187,6 +227,8 @@ pub struct AttachmentsUi {
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
     pub players: HashMap<CardKey, Player>,
+    /// Each posted GIF's play (its visibility and its first play), by card.
+    pub gif_plays: HashMap<CardKey, GifPlay>,
     /// The newest open's generation of each image, card and player (the key names its client): [`release`] drops what
     /// that client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
     pub media_owners: HashMap<MediaKey, u64>,
@@ -354,15 +396,16 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     {
         u.lightbox = None;
     }
-    if u.gif
+    let picker = u
+        .gif
         .as_ref()
-        .is_some_and(|g| g.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
-    {
-        u.gif = None;
-    }
+        .is_some_and(|g| g.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
     u.trays.retain(|(c, _), _| *c != owner);
     u.tray_previews.retain(|(c, _, _), _| *c != owner);
     u.released.insert(owner);
+    if picker {
+        close_gifs(cx);
+    }
     // Final review I5: the DM GIF notice of any window that asked with it goes.
     crate::per_window::each_mut::<Notice>(cx, |_, n| {
         if n.0.as_ref().is_some_and(|n| Rc::ptr_eq(&n.client, client)) {
@@ -396,7 +439,7 @@ pub fn window_closed(window: WindowId, cx: &mut App) {
         u.lightbox = None;
     }
     if u.gif.as_ref().is_some_and(|g| g.owner == Some(window)) {
-        u.gif = None;
+        close_gifs(cx);
     }
 }
 
@@ -444,6 +487,7 @@ pub fn forget_owner(owner: u64, cx: &mut App) {
     u.images.retain(|k, _| k.client != owner);
     u.cards.retain(|k, _| k.client != owner);
     u.players.retain(|k, _| k.client != owner);
+    u.gif_plays.retain(|k, _| k.client != owner);
     u.saves.retain(|_, k| k.client != owner);
 }
 
@@ -1271,11 +1315,46 @@ pub fn toggle_gifs(
     community: CommunityId,
     cx: &mut App,
 ) {
-    if ui(cx).gif.take().is_some() {
+    if close_gifs(cx) {
         cx.refresh_windows();
         return;
     }
     open_gifs(client, owner, channel, community, String::new(), cx);
+}
+
+/// Closes the GIF picker, if one is open, and lets go of its decoded previews ([`release_pictures`]). Answers whether
+/// one was open.
+pub fn close_gifs(cx: &mut App) -> bool {
+    let Some(g) = ui(cx).gif.take() else {
+        return false;
+    };
+    release_pictures(g.previews.into_values().collect(), cx);
+    true
+}
+
+/// Lets go of decoded pictures (the GIF picker's previews): every frame leaves the GPU atlas of every window, and the
+/// decode leaves GPUI's asset cache, where it would otherwise stay for the app's life (a page of GIF previews decodes to
+/// tens of MB). Deferred, so no window is being updated when the frames are dropped.
+pub fn release_pictures(images: Vec<Arc<Image>>, cx: &mut App) {
+    if images.is_empty() {
+        return;
+    }
+    cx.defer(move |cx| {
+        // The decode is app-wide; any window answers it, and `drop_image` clears it from all of them.
+        if let Some(window) = cx.windows().into_iter().next() {
+            let _ = window.update(cx, |_, window, cx| {
+                // A preview never decoded starts no lasting work: its load goes with `remove_asset` below.
+                for image in &images {
+                    if let Some(r) = image.clone().get_render_image(window, cx) {
+                        cx.drop_image(r, Some(window));
+                    }
+                }
+            });
+        }
+        for image in images {
+            image.remove_asset(cx);
+        }
+    });
 }
 
 /// Opens the GIF picker of `channel` in `community` with `query` in its search field and searches it (`/giphy`,
@@ -1289,6 +1368,8 @@ pub fn open_gifs(
     query: String,
     cx: &mut App,
 ) {
+    // A picker open before (`/giphy` again) lets go of its previews.
+    close_gifs(cx);
     ui(cx).gif = Some(GifState {
         channel: Some(channel),
         community: Some(community),
@@ -1345,7 +1426,7 @@ pub fn open_dm_gifs(
     // A second press closes this window's picker or notice (never another window's).
     let picker_here = ui(cx).gif.as_ref().is_some_and(|g| g.owner == Some(owner));
     if picker_here {
-        ui(cx).gif = None;
+        close_gifs(cx);
     }
     let notice_here = crate::per_window::get_mut::<Notice>(owner, cx)
         .0
@@ -1433,15 +1514,19 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
         return;
     };
     let offset = if more { g.next.unwrap_or(0) } else { 0 };
+    let mut dropped = Vec::new();
     if !more {
         g.items.clear();
         g.active = None;
+        // A new search's results replace the old: their previews are let go.
+        dropped.extend(g.previews.drain().map(|(_, p)| p));
     }
     g.query = query.clone();
     g.loading = true;
     g.error = false;
     g.turn += 1;
     let turn = g.turn;
+    release_pictures(dropped, cx);
     cx.refresh_windows();
     let rx = client.gifs().search(community, query, offset);
     cx.spawn(async move |cx| {
@@ -1993,6 +2078,78 @@ mod tests {
             .unwrap();
         let kept = cx.update(|cx| ui(cx).targets.len());
         assert_eq!(kept, 1, "a closed window's target is pruned");
+    }
+
+    /// A 1x1 GIF89a of two frames (black, then white), 100ms each.
+    const TWO_FRAMES: &[u8] = &[
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x21, 0xf9, 0x04,
+        0x00, 0x0a, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b,
+    ];
+
+    /// The GIF picker's decoded previews leave GPUI's asset cache and the atlas when it closes (Escape, a second press,
+    /// a pick); they would otherwise stay for the app's life.
+    #[gpui::test]
+    fn closing_the_picker_releases_its_previews(cx: &mut gpui::TestAppContext) {
+        let open = |cx: &mut gpui::TestAppContext| {
+            let preview = picture(TWO_FRAMES).expect("a GIF");
+            let w = cx.add_window(|_, _| Blank);
+            let decoded = w
+                .update(cx, |_, w, cx| {
+                    ui(cx).gif = Some(GifState {
+                        previews: HashMap::from([("a".to_owned(), preview.clone())]),
+                        ..GifState::default()
+                    });
+                    preview.clone().get_render_image(w, cx)
+                })
+                .unwrap();
+            assert!(decoded.is_none(), "it decodes in the background");
+            cx.run_until_parked();
+            let decoded = w
+                .update(cx, |_, w, cx| preview.clone().get_render_image(w, cx))
+                .unwrap();
+            assert!(decoded.is_some(), "decoded");
+            preview
+        };
+        let preview = open(cx);
+        assert!(cx.update(close_gifs), "it was open");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| !preview.is_asset_cached(cx)), "released");
+        assert!(cx.read(|cx| cx.global::<AttachmentsUi>().gif.is_none()));
+        assert!(!cx.update(close_gifs), "none is open");
+    }
+
+    /// Attachments.tsx's play window: a posted GIF plays while at least half visible and for five minutes from its
+    /// first play; after that it shows its still.
+    #[test]
+    fn a_posted_gif_plays_while_half_visible_for_five_minutes() {
+        let t0 = Instant::now();
+        let unseen = GifPlay::default();
+        assert!(!unseen.may_play(t0), "not yet measured visible");
+        let seen = GifPlay {
+            visible: true,
+            since: None,
+        };
+        assert!(seen.may_play(t0), "visible, never played");
+        let playing = GifPlay {
+            since: Some(t0),
+            ..seen
+        };
+        assert!(playing.may_play(t0 + GIF_PLAY - Duration::from_millis(1)));
+        assert!(
+            !playing.may_play(t0 + GIF_PLAY),
+            "five minutes on: the still"
+        );
+        assert!(
+            !GifPlay {
+                visible: false,
+                ..playing
+            }
+            .may_play(t0),
+            "scrolled away"
+        );
     }
 
     #[test]
