@@ -22,7 +22,9 @@ const tools = join(dir, 'tools');
 mkdirSync(tools);
 const log = join(dir, 'tools.log');
 writeFileSync(join(tools, 'appimagetool'), `#!/bin/sh\necho "appimagetool $*" >> '${log}'\nfor last; do :; done\necho appimage > "$last"\n`);
-writeFileSync(join(tools, 'nfpm'), `#!/bin/sh\necho "nfpm $* DILLA_PKG_VERSION=$DILLA_PKG_VERSION DILLA_PKG_RELEASE=$DILLA_PKG_RELEASE cwd=$(pwd)" >> '${log}'\nwhile [ "$#" -gt 0 ]; do [ "$1" = --target ] && echo pkg > "$2"; shift; done\n`);
+// nfpm's stand-in also keeps the desktop entry the packages install (nfpm.yaml's `../chat.dilla.Dilla.desktop`).
+const entryLog = join(dir, 'entry.log');
+writeFileSync(join(tools, 'nfpm'), `#!/bin/sh\necho "nfpm $* DILLA_PKG_VERSION=$DILLA_PKG_VERSION DILLA_PKG_RELEASE=$DILLA_PKG_RELEASE cwd=$(pwd)" >> '${log}'\ncp ../chat.dilla.Dilla.desktop '${entryLog}'\nwhile [ "$#" -gt 0 ]; do [ "$1" = --target ] && echo pkg > "$2"; shift; done\n`);
 chmodSync(join(tools, 'appimagetool'), 0o755);
 chmodSync(join(tools, 'nfpm'), 0o755);
 const runtime = join(dir, 'runtime');
@@ -112,10 +114,31 @@ test('a non-glibc binary, a bad version, a non-empty out-dir and a missing runti
   assert.notEqual(run({ env: { DILLA_APPIMAGE_RUNTIME: join(dir, 'absent') } }).status, 0);
 });
 
+const KDE_INTERFACES = 'X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1';
+
+// KDE share picker plan, Task 3: KWin 6.0-6.7 offers its window list and screencast only to a client whose installed
+// desktop entry names its binary in Exec= (the canonical path of Exec's first word against /proc/<pid>/exe: the deb and
+// rpm run /opt/Dilla/dilla-desktop behind a /usr/bin script, so only that path matches) and lists them in
+// X-KDE-Wayland-Interfaces. The tarball and the AppImage keep `Exec=dilla-desktop %U` (no fixed path; the portal there).
+test('the deb and rpm install an entry whose Exec is /opt/Dilla/dilla-desktop, the tarball the plain one', () => {
+  rmSync(entryLog, { force: true });
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  const installed = readFileSync(entryLog, 'utf8').split('\n');
+  assert.ok(installed.includes('Exec=/opt/Dilla/dilla-desktop %U'), installed.join('\n'));
+  assert.equal(installed.filter((l) => l.startsWith('Exec=')).length, 1);
+  for (const line of [KDE_INTERFACES, 'MimeType=x-scheme-handler/dilla;', 'Icon=chat.dilla.Dilla']) assert.ok(installed.includes(line), line);
+  const nfpm = readFileSync(join(root, 'clients', 'desktop', 'packaging', 'linux', 'nfpm.yaml'), 'utf8');
+  assert.match(nfpm, /- src: \.\.\/chat\.dilla\.Dilla\.desktop\n\s+dst: \/usr\/share\/applications\/chat\.dilla\.Dilla\.desktop/);
+  const tarred = spawnSync('tar', ['-xzOf', join(r.out, `dilla-${V}-linux-x64.tar.gz`), `dilla-${V}/chat.dilla.Dilla.desktop`], { encoding: 'utf8' }).stdout.split('\n');
+  assert.ok(tarred.includes('Exec=dilla-desktop %U'), tarred.join('\n'));
+  assert.ok(tarred.includes(KDE_INTERFACES));
+});
+
 test('the desktop entry, metainfo and nfpm recipe use chat.dilla.Dilla (KDE strips a trailing .desktop from the app id)', () => {
   const linux = join(root, 'clients', 'desktop', 'packaging', 'linux');
   const entry = readFileSync(join(linux, 'chat.dilla.Dilla.desktop'), 'utf8').split('\n');
-  for (const line of ['Icon=chat.dilla.Dilla', 'StartupWMClass=chat.dilla.Dilla', 'MimeType=x-scheme-handler/dilla;', 'Exec=dilla-desktop %U']) assert.ok(entry.includes(line), line);
+  for (const line of ['Icon=chat.dilla.Dilla', 'StartupWMClass=chat.dilla.Dilla', 'MimeType=x-scheme-handler/dilla;', 'Exec=dilla-desktop %U', KDE_INTERFACES]) assert.ok(entry.includes(line), line);
   const metainfo = readFileSync(join(linux, 'chat.dilla.Dilla.metainfo.xml'), 'utf8');
   assert.match(metainfo, /<id>chat\.dilla\.Dilla<\/id>/);
   assert.match(metainfo, /<launchable type="desktop-id">chat\.dilla\.Dilla\.desktop<\/launchable>/);

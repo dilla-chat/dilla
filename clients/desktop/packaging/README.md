@@ -10,6 +10,12 @@
   `dev.dilla.desktop.desktop` was never found and Plasma drew a generic icon. `MimeType=x-scheme-handler/dilla;` and `Exec=dilla-desktop %U`
   register the `dilla:` scheme (D12, superseded 2026-11-16); the deb and rpm need no maintainer script, their package
   manager's desktop-database trigger indexes it. Check with `desktop-file-validate`.
+  `X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1` lets KWin 6.0-6.7 offer Dilla
+  its window list and screencast (Dilla's own share picker on KDE; KWin 6.8+ offers them to any unsandboxed client).
+  KWin 6.0-6.7 trusts an entry only when the canonical path of its `Exec=`'s first word is the running binary
+  (`/proc/<pid>/exe`), so the deb, rpm and AUR install it with `Exec=/opt/Dilla/dilla-desktop %U`
+  (`desktop-gpui-package-linux.sh` writes that copy, the AUR recipe edits its own); the tarball and the AppImage keep
+  `Exec=dilla-desktop %U` and use the system's share dialog on those versions.
 - `chat.dilla.Dilla.metainfo.xml`: the AppStream metadata. Check with `appstreamcli validate --no-net` (appimagetool
   runs it too).
 - `AppRun`: the AppImage's entry point, the binary alone (nothing is bundled, no `LD_LIBRARY_PATH`).

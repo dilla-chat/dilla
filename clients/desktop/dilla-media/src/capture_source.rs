@@ -147,6 +147,12 @@ pub trait CaptureSource: Send + 'static {
     fn has_audio(&self) -> bool {
         false
     }
+    /// Whether the share's feeder re-sends its last frame on a tick with nothing new ([`Pull::Idle`]): a source that sends
+    /// a frame only when it changes (KWin's screencast on KDE Plasma), so a still picture keeps the share's rate and a
+    /// viewer who joins, or asks for a key frame, gets it.
+    fn repeats_when_idle(&self) -> bool {
+        false
+    }
     /// The newest frame, if any.
     fn pull(&mut self) -> Pull;
     /// The person changed the stream quality of the running share (beta.5 `configure-screen-capture`): the source

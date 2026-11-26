@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "dilla-desktop"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "ashpd",
  "block2 0.6.2",
@@ -2338,6 +2338,8 @@ dependencies = [
  "thiserror 2.0.20",
  "tls_codec",
  "tokio",
+ "wayland-client",
+ "wayland-protocols-plasma",
  "webrtc-sys",
  "windows 0.62.2",
  "windows-core 0.62.2",

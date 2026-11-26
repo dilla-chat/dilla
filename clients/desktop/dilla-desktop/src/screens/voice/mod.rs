@@ -206,13 +206,16 @@ mod m {
     pub const DIVIDER_INSET_X: f32 = 4.0;
 }
 
-/// What the screen share's sound is, and who chose it (Task 44, D21).
+/// What the screen share's sound is, and who chose it (Task 44, D21). It belongs to one share (Jonas 2026-11-25): every
+/// share starts `Unset`, so a window brings its own application's sound and a screen none, and a choice in the live
+/// panel holds until that share (or the call) ends.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum ShareSound {
     /// Nothing chosen: a shared window brings its application's sound.
     #[default]
     Unset,
-    /// The person's choice in the sound section: an application, or switched off (`None`). A window never replaces it.
+    /// The person's choice in the live panel's sound row for this share: an application, or switched off (`None`). The
+    /// window's lookup landing late never replaces it.
     Person(Option<dilla_media::app_audio::AppSource>),
     /// The shared window's application. It goes when that share ends or another share starts.
     Window(dilla_media::app_audio::AppSource),
@@ -227,12 +230,9 @@ impl ShareSound {
         }
     }
 
-    /// A share starts: `Window(_)` becomes `Unset`; everything else is kept.
+    /// A share starts: from nothing, whatever the last one carried.
     pub fn on_share(self) -> ShareSound {
-        match self {
-            ShareSound::Window(_) => ShareSound::Unset,
-            other => other,
-        }
+        ShareSound::Unset
     }
 
     /// The window's application was looked up for the current share: `Unset` and `Some(a)` become `Window(a)`;
@@ -244,13 +244,9 @@ impl ShareSound {
         }
     }
 
-    /// The share ended: `Window(_)` and `Person(None)` become `Unset`. `Person(Some(_))` is kept, the remembered
-    /// choice for the next share.
+    /// The share (or the call) ended: nothing is remembered for the next share.
     pub fn ended(self) -> ShareSound {
-        match self {
-            ShareSound::Window(_) | ShareSound::Person(None) => ShareSound::Unset,
-            other => other,
-        }
+        ShareSound::Unset
     }
 }
 
@@ -289,6 +285,11 @@ pub struct VoiceUi {
     pub share_sound: ShareSound,
     /// Counts the shares that started (and ended): a window's sound that is found late is dropped when this moved.
     share_seq: u64,
+    /// The Share control's bounds (with its quality half while sharing), as last drawn: the share panel hangs from it.
+    share_anchor: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// The share (its `share_seq`) the system portal's dialog was opened for: when it goes live, the share panel opens
+    /// by itself with the sound row (the portal's pick comes first, then the sound).
+    share_panel_after: Option<u64>,
     video_seq: u64,
     /// A stage or DM call box drew video since the last repaint for a frame ([`video_tick`]).
     video_drawn: bool,
@@ -1216,8 +1217,22 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     if ui.state.voice.call.phase != CallPhase::Idle && state.voice.call.phase == CallPhase::Idle {
         ui.focused = None;
         ui.selected = 0;
+        // Review I4: no sound choice outlives the call.
+        ui.share_sound = std::mem::take(&mut ui.share_sound).ended();
     }
     let live = state.voice.call.phase != CallPhase::Idle;
+    if panel_after_pick(
+        ui.state.voice.share.screen,
+        state.voice.share.screen,
+        ui.share_panel_after,
+        ui.share_seq,
+    ) {
+        // The portal's pick is live: the panel opens with its sound row.
+        ui.share_menu = true;
+    }
+    if state.voice.share.screen || !live {
+        ui.share_panel_after = None;
+    }
     if ui.state.voice.share.screen && !state.voice.share.screen {
         // The share ended: a window's sound goes with it, and a lookup still running is dropped.
         ui.share_sound = std::mem::take(&mut ui.share_sound).ended();
@@ -2041,8 +2056,8 @@ pub fn toggle_deafen_in(window: WindowId, cx: &mut App) {
 
 /// The camera or Share button of `window`'s call: stops a running share, or starts one. A start needs a press on the
 /// focused window (beta.5: "screen capture without a real user gesture is refused without opening a picker"); a screen
-/// share opens the picker (Linux on Wayland: the system portal's dialog), and the chosen source is shared
-/// ([`share_source`]).
+/// share opens the picker (Dilla's own on X11, Windows, macOS and KDE Plasma; elsewhere on Wayland the system portal's
+/// dialog), and the chosen source is shared ([`share_source`]).
 pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     let w = wid(window);
     let Some(ui) = ui_of(w, cx) else { return };
@@ -2067,8 +2082,10 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     if kind == ShareKind::Screen {
         // The system's own dialog chooses and Dilla never learns the window: nothing is looked up. The share starts with
         // the person's choice or none, in the same command.
+        // Once the pick is live, the share panel opens by itself with the sound row (the pre-share panel asks none).
         let ui = ui_mut(w, cx);
         ui.share_seq += 1;
+        ui.share_panel_after = Some(ui.share_seq);
         ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
         session.share_screen(None, options, ui.share_seq, ui.share_sound.clone());
         return;
@@ -2097,8 +2114,8 @@ pub fn share_app_audio(
     }
 }
 
-/// The sound section's choice for `window` (the chooser's application, or `None` when the switch goes off): kept for
-/// the next share, and sent to the running one.
+/// The sound section's choice for `window` (the chooser's application, or `None` when the switch goes off): for the
+/// running share only (it is dropped when that share or the call ends), and sent to it.
 pub fn set_share_app(
     window: WindowId,
     source: Option<dilla_media::app_audio::AppSource>,
@@ -2836,7 +2853,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 .collect()
         })
         .unwrap_or_default();
-    let menu = ui_of(w, cx).and_then(share_menu);
+    let viewport_w = window.viewport_size().width;
+    let menu = ui_of(w, cx).and_then(|ui| share_menu(ui, viewport_w));
+    let share_anchor = ui_of(w, cx)?.share_anchor.clone();
     let sound = screen_sound_of(w, cx);
     let person_menu = menu::person_menu(w, channel, cx);
     let profile_card = menu::profile_card(w, channel, window, cx);
@@ -3116,7 +3135,9 @@ pub fn stage(channel: &Channel, window: &mut Window, cx: &mut App) -> Option<Any
                 )
                 .child(body),
         )
-        .when(in_call, |d| d.child(call_bar(&state, channel, wide)))
+        .when(in_call, |d| {
+            d.child(call_bar(&state, channel, wide, share_anchor.clone()))
+        })
         .children(menu)
         .children(person_menu)
         .children(profile_card)
@@ -4801,8 +4822,14 @@ fn bar_control(
 
 /// The 64px call bar (CallStage.tsx `bar`, Signal §5.6): the room with its `--ok` dot and the stats line under it on the
 /// left, then mute, deafen, camera, share (with the stream-quality chevron while sharing) and leave, worded. The stats
-/// are the link's ping as the dock reads it ([`ping_text`]: `voice.dock.pingNone` until the media reads one).
-fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
+/// are the link's ping as the dock reads it ([`ping_text`]: `voice.dock.pingNone` until the media reads one). The share
+/// control's bounds go to `share_anchor` as it is drawn: the share panel hangs from them ([`share_menu`]).
+fn call_bar(
+    state: &AppState,
+    channel: &Channel,
+    wide: bool,
+    share_anchor: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+) -> AnyElement {
     let v = &state.voice;
     let muted = v.self_mute || v.self_deaf;
     let (mute_key, deafen_key) = keycaps();
@@ -4848,8 +4875,26 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         );
     let sharing = v.share.screen;
     let share = div()
+        .debug_selector(|| "voice-share-anchor".to_owned())
+        .relative()
         .flex()
         .items_center()
+        .child(
+            gpui::canvas(
+                move |b, window, _| {
+                    // Review m2: the control changed (the chevron came with a share going live in the same frame as the
+                    // panel opening): the next frame hangs the panel from where the control is now.
+                    if share_anchor.replace(Some(b)) != Some(b) {
+                        window.request_animation_frame();
+                    }
+                },
+                |_, (), _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
         .child(bar_control(
             "voice-share",
             IconName::MonitorUp,
@@ -5001,10 +5046,23 @@ fn call_bar(state: &AppState, channel: &Channel, wide: bool) -> AnyElement {
         .into_any_element()
 }
 
+use dilla_desktop_ui::popover::{
+    POPOVER_EDGE as SHARE_PANEL_EDGE, corner_above_right as share_panel_corner,
+};
+
+/// Whether the share panel opens by itself now: the share the system portal's dialog was opened for (`asked`, its
+/// share number) went live (`was` to `now`) and is still the current one (`seq`). Dilla's own picker asks nothing.
+pub(crate) fn panel_after_pick(was: bool, now: bool, asked: Option<u64>, seq: u64) -> bool {
+    !was && now && asked == Some(seq)
+}
+
 /// The stream-quality menu (SharePicker's options on a desktop: resolution and frame rate, with the upload estimate;
-/// no surface or sound choice, share-options.ts `shareSupport` with `desktop`). Before a share its button goes live;
-/// while sharing a change applies to the running share.
-fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
+/// no surface choice, share-options.ts `shareSupport` with `desktop`). Before a share its button goes live; while
+/// sharing a change applies to the running share. It hangs from the Share control ([`share_panel_corner`]).
+///
+/// The sound row is in the live panel only (KDE share picker plan): Dilla's picker brings a shared window's sound by
+/// itself (D21), so nothing is asked before the pick, and after the portal's pick the panel opens again with the row.
+fn share_menu(ui: &VoiceUi, viewport_w: gpui::Pixels) -> Option<AnyElement> {
     if !ui.share_menu {
         return None;
     }
@@ -5045,8 +5103,8 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
     let label = |key: &'static str| line(t(key), text::XS, 14.0, color::FG_2);
     let panel = div()
         .id("voice-share-menu")
-        .absolute()
-        .bottom(px(m::MENU_BOTTOM))
+        .debug_selector(|| "voice-share-menu".to_owned())
+        .occlude()
         .w(px(m::MENU_W))
         .p(px(m::MENU_PAD))
         .flex()
@@ -5095,7 +5153,9 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                 }
             }),
         )
-        .when_some(sound_row(ui), |d, row| d.child(row))
+        .when(sharing, |d| {
+            d.when_some(sound_row(ui), |d, row| d.child(row))
+        })
         .child(line(
             estimate,
             text::XS,
@@ -5128,16 +5188,31 @@ fn share_menu(ui: &VoiceUi) -> Option<AnyElement> {
                 }
             }),
         ));
+    let Some(control) = ui.share_anchor.get() else {
+        // The Share control was not drawn yet: over the controls' middle until the next draw finds it.
+        return Some(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(m::MENU_BOTTOM))
+                .flex()
+                .justify_center()
+                .child(panel)
+                .into_any_element(),
+        );
+    };
+    let corner = share_panel_corner(control, viewport_w, px(m::MENU_W));
     Some(
-        div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .flex()
-            .justify_center()
-            .child(panel)
-            .into_any_element(),
+        deferred(
+            anchored()
+                .anchor(gpui::Anchor::BottomRight)
+                .position(corner)
+                .snap_to_window_with_margin(px(SHARE_PANEL_EDGE))
+                .child(panel),
+        )
+        .with_priority(1)
+        .into_any_element(),
     )
 }
 
@@ -5161,6 +5236,7 @@ fn sound_row(ui: &VoiceUi) -> Option<AnyElement> {
     };
     Some(
         div()
+            .debug_selector(|| "voice-share-sound".to_owned())
             .flex()
             .items_center()
             .gap(px(AUDIO_APP_GAP))
@@ -5235,6 +5311,21 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The portal's order (KDE share picker plan, Task 2): the panel before a share asks no sound question; once the
+    /// system dialog's pick is live, the panel opens by itself, once, for the share it was asked for only.
+    #[test]
+    fn the_panel_opens_after_the_portal_s_pick() {
+        use super::panel_after_pick as after;
+        assert!(after(false, true, Some(4), 4), "the asked share went live");
+        assert!(!after(false, true, None, 4), "own picker: nothing asked");
+        assert!(!after(false, true, Some(3), 4), "an older share's ask");
+        assert!(!after(true, true, Some(4), 4), "it was live already");
+        assert!(
+            !after(false, false, Some(4), 4),
+            "not live (yet, or cancelled)"
+        );
+    }
+
     /// Self-view review m5: a stream's counter that starts again (a quality change gives the share a new sent counter)
     /// keeps the last measured rate until a new one is measured, never "0 fps" for a second.
     #[test]
@@ -5330,16 +5421,19 @@ mod tests {
         let (a, m) = (app(1, "a"), app(2, "m"));
         assert_eq!(Unset.on_share().found(Some(a.clone())), Window(a.clone()));
         assert_eq!(
-            Person(Some(m.clone())).on_share().found(Some(a.clone())),
+            Person(Some(m.clone())).found(Some(a.clone())),
             Person(Some(m.clone()))
         );
-        // Off stays off.
-        assert_eq!(Person(None).on_share().found(Some(a.clone())), Person(None));
-        assert_eq!(Window(a.clone()).on_share(), Unset);
+        // A choice made during the share is not replaced by the window's lookup landing late.
+        assert_eq!(Person(None).found(Some(a.clone())), Person(None));
         assert_eq!(Unset.found(None), Unset);
+        // Review I4: every share starts fresh; nothing is remembered past a share.
+        assert_eq!(Window(a.clone()).on_share(), Unset);
+        assert_eq!(Person(Some(m.clone())).on_share(), Unset);
+        assert_eq!(Person(None).on_share(), Unset);
         assert_eq!(Window(a).ended(), Unset);
         assert_eq!(Person(None).ended(), Unset);
-        assert_eq!(Person(Some(m.clone())).ended(), Person(Some(m)));
+        assert_eq!(Person(Some(m)).ended(), Unset);
     }
 
     /// Wave 2 review I-G1, useCall.tsx `outgoingText` (VoiceView.wb2.test.tsx's cases): the ring's line before and after

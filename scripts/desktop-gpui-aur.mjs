@@ -75,6 +75,9 @@ package() {
   install -dm755 "$pkgdir/usr/bin"
   ln -s /opt/Dilla/dilla-desktop "$pkgdir/usr/bin/dilla-desktop"
   install -Dm644 chat.dilla.Dilla.desktop "$pkgdir/usr/share/applications/chat.dilla.Dilla.desktop"
+  # KWin 6.0-6.7 offers Dilla its window list and screencast (Dilla's own share picker on KDE) only when the installed
+  # entry's Exec names the running binary itself.
+  sed -i 's|^Exec=dilla-desktop %U$|Exec=/opt/Dilla/dilla-desktop %U|' "$pkgdir/usr/share/applications/chat.dilla.Dilla.desktop"
   install -Dm644 chat.dilla.Dilla.metainfo.xml "$pkgdir/usr/share/metainfo/chat.dilla.Dilla.metainfo.xml"
   local f
   for f in icons/hicolor/*/apps/*; do

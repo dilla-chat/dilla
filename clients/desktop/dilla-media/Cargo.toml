@@ -71,6 +71,11 @@ pipewire = "=0.9.2"
 # The X server's own record of a window's client process (XRes), for a shared window's sound (Task 44); already in the lock
 # through gpui.
 x11rb = { version = "=0.13.2", features = ["res"] }
+# Dilla's own share picker on KDE Plasma (Wayland): KWin's window list (`org_kde_plasma_window_management`) and its
+# screencast (`zkde_screencast_unstable_v1`), sources/desktop_kde.rs. Both already in the lock through gpui; the crate
+# carries the protocols at v18 and v4, below what KWin 6.8 offers (v21, v6) and enough for the requests used.
+wayland-client = "=0.31.15"
+wayland-protocols-plasma = { version = "=0.3.12", features = ["client"] }
 
 # Application audio on Windows (GPUI gaps Task 4): WASAPI process loopback. The `windows` 0.62.2 already in the lock
 # (tauri-winrt-notification's); only the modules app_audio/windows.rs calls are enabled. `windows-core` directly too:

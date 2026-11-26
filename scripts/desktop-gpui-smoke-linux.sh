@@ -47,9 +47,14 @@ says_version() {
   [[ $got == "Dilla $version ("*")" ]] || fail "$* --version printed '$got', not 'Dilla $version (...)'"
 }
 # The desktop entry registers the dilla: scheme (the app takes the link as %u): the OS hands an invite link to the app.
-scheme_registered() {  # <desktop file>
+# The deb, rpm and AUR entries name /opt/Dilla/dilla-desktop (KWin 6.0-6.7 trusts the installed binary by it, for
+# Dilla's own share picker on KDE); the AppImage's keeps `dilla-desktop`. Each lists KWin's protocols.
+scheme_registered() {  # <desktop file> [<Exec binary>]
+  local exec=${2:-/opt/Dilla/dilla-desktop}
   grep -qx 'MimeType=x-scheme-handler/dilla;' "$1" || fail "$1 does not register x-scheme-handler/dilla"
-  grep -qx 'Exec=dilla-desktop %U' "$1" || fail "$1 does not pass the link to the app (Exec=dilla-desktop %U)"
+  grep -qx "Exec=$exec %U" "$1" || fail "$1 does not pass the link to the app (Exec=$exec %U)"
+  grep -qx 'X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1' "$1" \
+    || fail "$1 does not list KWin's window list and screencast"
 }
 # An alpha.1 install left dev.dilla.desktop.desktop and its icons behind (KDE could not find that entry); the new package
 # owns chat.dilla.Dilla.* and must not leave the old names on disk.
@@ -100,7 +105,7 @@ case "$check" in
       (cd /tmp && says_version ./dilla.AppImage --appimage-extract-and-run)
       # The AppImage carries the same entry (appimaged and AppImageLauncher integrate it from the file).
       (cd /tmp && ./dilla.AppImage --appimage-extract chat.dilla.Dilla.desktop >/dev/null)
-      scheme_registered /tmp/squashfs-root/chat.dilla.Dilla.desktop
+      scheme_registered /tmp/squashfs-root/chat.dilla.Dilla.desktop dilla-desktop
     fi
     apt-get remove -y -q dilla
     [ ! -e /opt/Dilla ] && [ ! -e /usr/bin/dilla-desktop ] || fail "removing the package left files behind"

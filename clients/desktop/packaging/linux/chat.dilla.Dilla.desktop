@@ -10,3 +10,4 @@ StartupWMClass=chat.dilla.Dilla
 Categories=Network;InstantMessaging;Chat;
 Keywords=messaging;voice;video;encrypted;
 MimeType=x-scheme-handler/dilla;
+X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1

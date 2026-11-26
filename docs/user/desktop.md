@@ -288,16 +288,21 @@ what the client still does not do.
   lost. A deb, rpm, AUR or tar.gz install only says that a new version is available: update it with your package
   manager or from the release page. An alpha before the first signed one does not check: download the next alpha by
   hand. Linux has an AppImage, a tar.gz, a deb, an rpm and an AUR recipe (a release file, not on the AUR).
-- **Screen capture and camera:** sharing a screen or a window works. Share opens Dilla's picker with a thumbnail of
-  every screen and window (on Wayland the system's own dialog chooses). On macOS the first share asks for Screen
-  Recording permission (System Settings → Privacy & Security → Screen Recording); after you allow it, quit and reopen
-  Dilla. macOS 15 and newer may ask again from time to time whether Dilla may keep recording the screen. A share can
-  carry the sound of one application (the share menu's sound section) on Linux, on Windows 10 version 2004 (build
-  19041) or newer, and on macOS 14.2 or newer. On an older Windows or macOS the share has no application sound.
-  Sharing a window brings that window's application's sound by itself, and the sound section then reads "Sound from
-  {app}". You can switch it off there or choose another application. Sharing a whole screen brings no application's
-  sound unless you choose one. Nothing is chosen for you on Wayland (the system's dialog picks the window), when the
-  window's application isn't playing, or for Windows Store apps. Dilla's own sound is never shared. macOS may ask for
+- **Screen capture and camera:** sharing a screen or a window works. Share opens the share panel above the Share button
+  (quality and frame rate); Go live opens Dilla's picker with a thumbnail of every screen and window. On KDE Plasma
+  (Wayland) the picker is Dilla's own too: Plasma 6.8 or newer needs nothing, and Plasma 6.0 to 6.7 needs the deb, rpm
+  or AUR package installed (Plasma trusts the installed app; the AppImage and the tar.gz get the system's dialog there).
+  Elsewhere on Wayland (GNOME, and a Flatpak or Snap build) the system's own dialog chooses, every time; after you pick,
+  the share panel opens again so you can add an application's sound. On macOS the first share asks for Screen Recording
+  permission (System Settings → Privacy & Security → Screen Recording); after you allow it, quit and reopen Dilla. macOS
+  15 and newer may ask again from time to time whether Dilla may keep recording the screen. A share can carry the sound
+  of one application (the share menu's sound section) on Linux, on Windows 10 version 2004 (build 19041) or newer, and
+  on macOS 14.2 or newer. On an older Windows or macOS the share has no application sound. Sharing a window brings that
+  window's application's sound by itself, and the sound section then reads "Sound from {app}". You can switch it off
+  there or choose another application, for that share only: every new share starts again from what it shares. Sharing a
+  whole screen brings no application's sound unless you choose one. Nothing is chosen for you where the system's dialog
+  picks the window (Wayland outside KDE Plasma), when the window's application isn't playing, or for Windows Store apps.
+  The sound row is in the panel while you share, not before. Dilla's own sound is never shared. macOS may ask for
   permission to record system audio the first time. The camera works on Linux, Windows and macOS (the built-in camera,
   an external one, and Continuity Camera on macOS 14 or newer). Your own tiles show what you send: your share, and your
   camera mirrored as a mirror shows you (the others see it the right way round).

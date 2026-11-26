@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test, { after } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { aurRecipe, linuxPackageVersion, recipeArchive, verifyAurRecipe, writeAurRecipe } from './desktop-gpui-aur.mjs';
 
@@ -66,6 +67,36 @@ test('the recipe installs the desktop entry, metainfo and icons under chat.dilla
   assert.match(PKGBUILD, /install -Dm644 chat\.dilla\.Dilla\.desktop "\$pkgdir\/usr\/share\/applications\/chat\.dilla\.Dilla\.desktop"/);
   assert.match(PKGBUILD, /install -Dm644 chat\.dilla\.Dilla\.metainfo\.xml "\$pkgdir\/usr\/share\/metainfo\/chat\.dilla\.Dilla\.metainfo\.xml"/);
   assert.ok(!PKGBUILD.includes('dev.dilla.desktop'));
+});
+
+// KDE share picker plan, Task 3: KWin 6.0-6.7 offers its window list and screencast only to a client whose installed
+// desktop entry names its binary in Exec= (the canonical path of Exec's first word against /proc/<pid>/exe) and lists
+// them in X-KDE-Wayland-Interfaces. The recipe's package() runs here over a stand-in tarball directory.
+test('the installed entry names /opt/Dilla/dilla-desktop and lists the KWin protocols', () => {
+  const { PKGBUILD } = aurRecipe(V, SHA);
+  const work = mkdtempSync(join(tmpdir(), 'dilla-aur-package-'));
+  try {
+    const src = join(work, 'src', `dilla-${V}`);
+    const linux = join(dirname(fileURLToPath(import.meta.url)), '..', 'clients', 'desktop', 'packaging', 'linux');
+    mkdirSync(join(src, 'icons', 'hicolor', '48x48', 'apps'), { recursive: true });
+    mkdirSync(join(src, 'licenses'));
+    writeFileSync(join(src, 'dilla-desktop'), '#!/bin/sh\n');
+    copyFileSync(join(linux, 'chat.dilla.Dilla.desktop'), join(src, 'chat.dilla.Dilla.desktop'));
+    copyFileSync(join(linux, 'chat.dilla.Dilla.metainfo.xml'), join(src, 'chat.dilla.Dilla.metainfo.xml'));
+    writeFileSync(join(src, 'icons', 'hicolor', '48x48', 'apps', 'chat.dilla.Dilla.png'), 'png');
+    writeFileSync(join(src, 'licenses', 'LICENSE'), 'licence');
+    const pkgbuild = join(work, 'PKGBUILD');
+    writeFileSync(pkgbuild, PKGBUILD);
+    const r = spawnSync('bash', ['-ec', `srcdir="$1/src"; pkgdir="$1/pkg"; . "$1/PKGBUILD"; package`, 'bash', work], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    const entry = readFileSync(join(work, 'pkg', 'usr', 'share', 'applications', 'chat.dilla.Dilla.desktop'), 'utf8').split('\n');
+    assert.ok(entry.includes('Exec=/opt/Dilla/dilla-desktop %U'), entry.join('\n'));
+    assert.ok(entry.includes('X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1'), entry.join('\n'));
+    assert.ok(entry.includes('MimeType=x-scheme-handler/dilla;'));
+    assert.equal(entry.filter((l) => l.startsWith('Exec=')).length, 1);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 });
 
 test('the recipe archive is reproducible and holds exactly .SRCINFO and PKGBUILD', () => {

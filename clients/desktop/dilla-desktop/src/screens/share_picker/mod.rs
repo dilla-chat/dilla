@@ -2,7 +2,10 @@
 //! `ScreenSourcePicker` it drew): Share in a call opens it over the window, it lists the screens and windows with a
 //! thumbnail each (refreshed every 2 s, beta.5 `PICKER_REFRESH_MS`), and the person's choice starts the share of that
 //! source. Cancel, Escape, the scrim, the 2-minute deadline (`PICKER_DEADLINE_MS`) or the window going away share
-//! nothing. Linux on Wayland has no picker: the system portal's own dialog chooses (`dilla_media::sources::desktop::portal`).
+//! nothing. KDE Plasma on Wayland draws this same picker too (KDE share picker plan, D22), listing and capturing through
+//! KWin's own window list and screencast, so a shared window brings its sound (D21). Elsewhere on Wayland (GNOME, a
+//! sandboxed Dilla, an older KWin without the installed package's `.desktop` file) there is no picker: the system
+//! portal's own dialog chooses (`dilla_media::sources::desktop::portal`), and is not remembered.
 //! macOS draws this same picker since GPUI gaps Task 45 (D22), listing through ScreenCaptureKit: the first open in a
 //! process asks for Screen Recording, and without it the picker's empty state says how to allow it.
 //!
@@ -15,6 +18,7 @@ mod view;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dilla_desktop_ui::components::share_picker::TileKind;
@@ -57,13 +61,23 @@ impl From<Vec<Found>> for Listing {
     }
 }
 
-/// Lists the sources the picker offers (the real one: [`enumerate`]; the tests' fake).
-pub type Lister = Arc<dyn Fn() -> Listing + Send + Sync>;
+/// Set when the picker that started a listing closes (a pick, Cancel, Escape, the deadline, its window going): the
+/// listing then takes no further thumbnail (review I2: no stream outlives the picker but the chosen one).
+pub type Cancel = Arc<AtomicBool>;
+
+/// Lists the sources the picker offers (the real one: [`enumerate`]; the tests' fake), told when to stop.
+pub type Lister = Arc<dyn Fn(Cancel) -> Listing + Send + Sync>;
 
 /// Every screen, then every window, each with a 320 x 180 thumbnail; at most [`MAX_SOURCES`]
-/// (`desktop::snapshot`). Blocking: the refresh loop runs it on the background executor.
-pub fn enumerate() -> Listing {
-    let snapshot = desktop::snapshot(MAX_SOURCES, THUMB_W, THUMB_H);
+/// (`desktop::snapshot_until`), stopping at `cancel`. Blocking: the refresh loop runs it on the background executor.
+pub fn enumerate(cancel: &Cancel) -> Listing {
+    let snapshot = desktop::snapshot_until(MAX_SOURCES, THUMB_W, THUMB_H, &|| {
+        cancel.load(Ordering::Acquire)
+    });
+    listing(snapshot)
+}
+
+fn listing(snapshot: desktop::Snapshot) -> Listing {
     Listing {
         found: snapshot
             .sources
@@ -104,6 +118,14 @@ pub struct Picker {
     opened: Instant,
     generation: u64,
     enumerating: bool,
+    /// Its listings' stop: set when the picker goes ([`Drop`]), whichever way it goes.
+    cancel: Cancel,
+}
+
+impl Drop for Picker {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Release);
+    }
 }
 
 /// Every window's open picker, and where the sources come from.
@@ -122,11 +144,17 @@ pub fn set_lister(lister: Lister, cx: &mut App) {
     cx.default_global::<SharePickers>().lister = Some(lister);
 }
 
-/// Whether the system portal chooses the source instead of the picker (Linux on Wayland, and no test list).
+/// Whether the system portal chooses the source instead of the picker (Linux on Wayland without KWin's protocols, and
+/// no test list).
 pub fn portal(cx: &App) -> bool {
     cx.try_global::<SharePickers>()
         .is_none_or(|p| p.lister.is_none())
         && desktop::portal()
+}
+
+/// The stop of `window`'s open picker's listings (tests: a pick or a cancel sets it).
+pub fn listing_cancel(window: WindowId, cx: &App) -> Option<Cancel> {
+    picker_of(window, cx).map(|p| p.cancel.clone())
 }
 
 pub fn picker_of(window: WindowId, cx: &App) -> Option<&Picker> {
@@ -161,6 +189,7 @@ pub fn open(options: ShareOptions, window: &mut Window, cx: &mut App) -> bool {
             opened: Instant::now(),
             generation,
             enumerating: false,
+            cancel: Cancel::default(),
         },
     );
     refresh_loop(id, generation, cx);
@@ -293,31 +322,41 @@ fn refresh_loop(window: WindowId, generation: u64, cx: &mut App) {
                     return None;
                 }
                 let lister = pickers.lister.clone();
-                if let Some(p) = pickers.open.get_mut(&window) {
-                    if p.enumerating {
-                        return Some(None);
-                    }
-                    p.enumerating = true;
+                let p = pickers.open.get_mut(&window)?;
+                if p.enumerating {
+                    return Some(None);
                 }
-                Some(Some(lister))
+                p.enumerating = true;
+                Some(Some((lister, p.cancel.clone())))
             });
             match lister {
                 None => {
                     cx.update(|cx| refresh(window, cx));
                     return;
                 }
-                Some(Some(lister)) => {
+                Some(Some((lister, cancel))) => {
                     let ask = std::mem::take(&mut first);
+                    // Review m7: where thumbnails are slow (KDE: one KWin stream each), the first open shows the
+                    // tiles by name at once and their thumbnails when the listing has them.
+                    if ask && lister.is_none() {
+                        let quick = cx
+                            .background_executor()
+                            .spawn(async move { desktop::quick_titles(MAX_SOURCES) })
+                            .await;
+                        if let Some(quick) = quick {
+                            cx.update(|cx| first_names(window, generation, listing(quick), cx));
+                        }
+                    }
                     let listing = cx
                         .background_executor()
                         .spawn(async move {
                             match lister {
-                                Some(l) => l(),
+                                Some(l) => l(cancel),
                                 None => {
                                     if ask {
                                         desktop::request_access();
                                     }
-                                    enumerate()
+                                    enumerate(&cancel)
                                 }
                             }
                         })
@@ -356,6 +395,18 @@ fn refresh_loop(window: WindowId, generation: u64, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// The quick listing's tiles (names, no thumbnails), shown only while the picker (`generation`) has no listing yet.
+fn first_names(window: WindowId, generation: u64, quick: Listing, cx: &mut App) {
+    let pickers = cx.default_global::<SharePickers>();
+    if let Some(p) = pickers.open.get_mut(&window)
+        && p.generation == generation
+        && p.tiles.is_none()
+    {
+        p.tiles = Some(quick.found.into_iter().map(tile).collect());
+        refresh(window, cx);
+    }
 }
 
 fn tile(found: Found) -> Tile {

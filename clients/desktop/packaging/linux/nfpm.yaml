@@ -14,6 +14,10 @@
 # data. /usr/bin/dilla-desktop is a two-line script, not a link (usr-bin-dilla-desktop says why: beta.5's deb postrm
 # deletes a link there during the upgrade). scripts/desktop-gpui-smoke-linux.sh ubuntu-upgrade and fedora-upgrade
 # install this over beta.5.
+#
+# The desktop entry installed is the script's copy (`../chat.dilla.Dilla.desktop`) with `Exec=/opt/Dilla/dilla-desktop
+# %U`: KWin 6.0-6.7 offers its window list and screencast (Dilla's own share picker on KDE) only to a client whose
+# installed entry's Exec names the very binary it runs (/proc/<pid>/exe) and lists them in X-KDE-Wayland-Interfaces.
 name: dilla
 arch: amd64
 platform: linux
@@ -60,7 +64,7 @@ contents:
     packager: deb
     file_info:
       mode: 0644
-  - src: ./chat.dilla.Dilla.desktop
+  - src: ../chat.dilla.Dilla.desktop
     dst: /usr/share/applications/chat.dilla.Dilla.desktop
     file_info:
       mode: 0644

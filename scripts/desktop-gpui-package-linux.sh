@@ -68,6 +68,14 @@ install -m 0755 "$bin" "$stage/dilla-desktop"
 grep -qx 'MimeType=x-scheme-handler/dilla;' "$linux/chat.dilla.Dilla.desktop" && grep -qx 'Exec=dilla-desktop %U' "$linux/chat.dilla.Dilla.desktop" \
   || { echo "desktop-gpui-package-linux: the desktop entry does not register x-scheme-handler/dilla with Exec=dilla-desktop %U" >&2; exit 1; }
 install -m 0644 "$linux/chat.dilla.Dilla.desktop" "$linux/chat.dilla.Dilla.metainfo.xml" "$stage/"
+# The deb and rpm install the entry with the binary's own path in Exec= (nfpm.yaml's `../chat.dilla.Dilla.desktop`):
+# KWin 6.0-6.7 lets Dilla list and capture windows itself (its share picker on KDE) only when an installed entry's Exec
+# resolves to the running binary, /opt/Dilla/dilla-desktop (/usr/bin/dilla-desktop is a script that execs it), and
+# names the protocols in X-KDE-Wayland-Interfaces. The tarball and the AppImage keep `dilla-desktop` (no fixed path).
+grep -qx 'X-KDE-Wayland-Interfaces=org_kde_plasma_window_management,zkde_screencast_unstable_v1' "$linux/chat.dilla.Dilla.desktop" \
+  || { echo "desktop-gpui-package-linux: the desktop entry does not list KWin's window list and screencast" >&2; exit 1; }
+sed 's|^Exec=dilla-desktop %U$|Exec=/opt/Dilla/dilla-desktop %U|' "$linux/chat.dilla.Dilla.desktop" > "$work/chat.dilla.Dilla.desktop"
+chmod 0644 "$work/chat.dilla.Dilla.desktop"
 # The deb's /usr/share/doc/dilla/copyright and the deb and rpm's /usr/bin/dilla-desktop (nfpm.yaml's `../` sources),
 # outside the tarball's directory.
 install -m 0644 "$linux/copyright" "$work/copyright"
