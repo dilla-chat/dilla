@@ -409,8 +409,11 @@ func TestCommandCostIsFlatAt200Members600Devices(t *testing.T) {
 	// binary are not charged. The collector is off while a run is measured: its assists are charged to the allocating
 	// thread and scale with the live heap, which the 200-member world makes larger, so they measured the heap, not the
 	// command (PR #177's ratio 1.33). The allocation check above already pins the memory side per command. Each round
-	// builds both worlds before measuring either, collects before each run, and alternates which goes first; the best
-	// of five rounds per size discards a noisy neighbour on a shared runner.
+	// builds both worlds before measuring either, collects before each run, and alternates which goes first. The check
+	// is the median of the fifteen rounds' own ratios: both sizes of a round run back to back, so a noisy neighbour or a
+	// clock change hits a pair, and one outlier round on either side cannot move a median. Comparing each size's best
+	// run instead failed about one time in six at five rounds and one in sixty at fifteen, with equal allocations
+	// (a run is 2 ms here, 60 ms on CI: CI run 45730248214 measured 1.21, local runs 0.85-1.33, median 1.00).
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	run := func(lw *loadWorld) time.Duration {
@@ -423,21 +426,26 @@ func TestCommandCostIsFlatAt200Members600Devices(t *testing.T) {
 		}
 		return cpuTime() - start
 	}
-	cpuSmall, cpuLarge := time.Duration(1<<63-1), time.Duration(1<<63-1)
-	for round := range 5 {
+	const rounds = 15
+	ratios := make([]float64, 0, rounds)
+	var cpuSmall, cpuLarge time.Duration
+	for round := range rounds {
 		s, l := newLoadWorld(t, 20, true), newLoadWorld(t, 200, true)
 		if round%2 == 0 {
-			cpuSmall = min(cpuSmall, run(s))
-			cpuLarge = min(cpuLarge, run(l))
+			cpuSmall = run(s)
+			cpuLarge = run(l)
 		} else {
-			cpuLarge = min(cpuLarge, run(l))
-			cpuSmall = min(cpuSmall, run(s))
+			cpuLarge = run(l)
+			cpuSmall = run(s)
 		}
+		ratios = append(ratios, float64(cpuLarge)/float64(max(cpuSmall, 1)))
 	}
-	if float64(cpuLarge) > 1.2*float64(cpuSmall) {
-		t.Fatalf("CPU per 200 commands: %v at 200 members, %v at 20 (ratio %.2f > 1.2)", cpuLarge, cpuSmall, float64(cpuLarge)/float64(cpuSmall))
+	slices.Sort(ratios)
+	if median := ratios[rounds/2]; median > 1.2 {
+		t.Fatalf("CPU per 200 commands: median ratio %.2f > 1.2 at 200 members vs 20 (rounds %.2f)", median, ratios)
 	}
-	t.Logf("allocations per command %.0f (200 members) vs %.0f (20); CPU per 200 commands %v vs %v", allocLarge, allocSmall, cpuLarge, cpuSmall)
+	t.Logf("allocations per command %.0f (200 members) vs %.0f (20); CPU ratio median %.2f (range %.2f-%.2f)",
+		allocLarge, allocSmall, ratios[rounds/2], ratios[0], ratios[rounds-1])
 }
 
 // TestRelayedRemindAnswersWithin100ms: an op 64 for /remind, relayed on the delivery loop, is answered "Saved" by the
