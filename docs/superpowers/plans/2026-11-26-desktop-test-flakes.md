@@ -172,6 +172,24 @@ server-sdk-go.
 - [ ] **Step 5: Commit:** `bot: music starts skip the redundant group read, and /stop sends the current revision`.
 
 ### Task 4: docs and release note (review: sonnet)
+
+Jonas, 2026-11-26: "yes, there's no web client?". User docs and release notes never refer to a web or browser
+client:
+- Sweep `docs/user/*`, `README.md` and `docs/deploy/releases/unreleased.md` (about 30 hits, among them
+  desktop.md:6-7 "Keep using the browser client for everyday use").
+- Describe the behaviour directly, or say "the desktop app".
+- Historical release notes (`docs/deploy/releases/v*.md`) and `docs/superpowers/` stay as history.
+
+The release note also covers Tasks 5-11:
+- your own speaking indicator;
+- the full-resolution share preview;
+- the title bar in narrow windows;
+- the member list at startup;
+- the profile card;
+- AFK activity reports;
+- GIFs animate and send on click;
+- rounded pictures;
+- the preview closes on an outside click.
 - [ ] `docs/deploy/releases/unreleased.md`:
   - Bot music no longer cuts the last second of each track, and the next track follows without a gap.
   - Desktop: a Share pressed right after joining or moving calls no longer gets lost.
