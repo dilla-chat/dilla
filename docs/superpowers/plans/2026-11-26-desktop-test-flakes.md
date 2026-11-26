@@ -242,6 +242,41 @@ resolution always".
   `SELF_VIEW`), and adjust it.
 - [ ] **Step 4:** Commit: `media: your own share's preview is the sent frame at full size`.
 
+### Task 7: the title bar's call pill never overlaps the search (review: sonnet)
+
+Jonas, 2026-11-26: a screenshot of an ~890 px wide window where the green "Stark's Pond" voice chip draws over the
+search field's "Ctrl K" hint. He added it to this PR.
+
+**The cause:**
+- `clients/desktop/dilla-desktop/src/screens/titlebar.rs` ~507-523: the search slot is a fixed `SEARCH_SLOT` 420 px
+  with `flex_none`, and the field a fixed `SEARCH_W` 360 px.
+- The end group (~602-606) is `flex_1().min_w_0()`, and it also holds the window buttons. With too little room, its
+  `justify_end` contents overflow leftwards over the search.
+
+**Spec:** `packages/ui/src/TopBar/TopBar.css:4-28`:
+- `.d-topbar__center { flex: 0 1 420px; min-width: 0 }`.
+- `.d-topbar__search { width: 100%; max-width: 360px }`.
+- The text ellipsizes and the kbd is `flex: none`.
+
+**Files:** modify `titlebar.rs`; add the test beside the title bar's existing layout tests.
+
+- [ ] **Step 1: Write the failing test** `the_search_shrinks_before_the_end_group_overlaps_it`. Draw the bar in a call
+  with a long room name at window widths 1280, 890, 760 and 640, and assert three things at each width:
+  - the end group's left edge ≥ the search slot's right edge;
+  - the voice chip's bounds don't intersect the search field's;
+  - the search field's width = min(360, its slot).
+
+  Use the `bounds_probe` automation pattern, or GPUI test bounds, whichever the existing title-bar tests use. Run it
+  and verify it fails at 890.
+- [ ] **Step 2: Implement.**
+  - The search slot gets flex-basis 420 px, can shrink, and has `min_w_0`.
+  - The field is `w_full` with `max_w` 360.
+  - The end group keeps its content width (no `min_w_0`; its items are `flex_none`), except the voice chip, whose
+    room-name line truncates with an ellipsis at a sensible max width.
+  - The brand keeps `flex_1().min_w_0()`.
+- [ ] **Step 3:** Run the crate's title-bar and shell tests and clippy (`-D warnings`). Commit:
+  `desktop: in a narrow window the title bar's search shrinks instead of sliding under the call pill`.
+
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
