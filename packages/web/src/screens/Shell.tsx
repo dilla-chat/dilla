@@ -49,7 +49,6 @@ import type { watchUpdates } from '../update.ts';
 import type { createUpdateCheckpointStore } from '../update-checkpoint.ts';
 import { checkpointScope, updateTabId } from '../update-checkpoint.ts';
 import { clearUpgradeReload, desktopBridge, setDesktopGuard, upgradeRequired, type UpgradeRequiredSurface } from '../desktop.ts';
-import { mobileBridge } from '../mobile.ts';
 import { captureViewPlace, restoreViewPlace, validViewPlace, type ViewPlace } from '../update-view.ts';
 import { browser } from '../browser.ts';
 import { CommandProvider } from './commands/CommandContext.tsx';
@@ -1237,7 +1236,6 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
   const nativeUnread = Math.min(9999, Object.values(badges ?? {}).reduce((total, value) => total + value.unread, 0));
   useEffect(() => {
     void desktopBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {});
-    void mobileBridge()?.send({ type: 'badge', count: nativeUnread }).catch(() => {});
   }, [nativeUnread]);
 
   // Flow 07: the instance serves no role bits before the permissions read, so ownership stands in for ManageChannels until then.
@@ -1844,10 +1842,7 @@ export function Shell(props: { update?: ShellUpdateDeps; page?: ReactNode; comma
           {t(ownTrust === 'changed' ? 'privacy.ownChanged' : 'privacy.ownUnlisted')}
         </Banner>
       ) : null}
-      {offline && linkReason === 'version' && mobileBridge() !== undefined ? (
-        // The mobile app bundles its client: a reload cannot fetch a newer one, so the banner asks for an app update.
-        <Banner tone="warn">{t('mobile.shell.banner.clientTooOld')}</Banner>
-      ) : offline && linkReason === 'version' ? (
+      {offline && linkReason === 'version' ? (
         <Banner tone="warn" action={{ label: t('reload.action'), onAction: () => {
           // The update effect checkpoints the draft, route and files, then reloads; with no update flow or storage it is a plain reload.
           if (update === undefined || updateScope === null) browser.reload();

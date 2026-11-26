@@ -6,7 +6,7 @@ import { indexedDbKekStore } from '../account/kek';
 import type { CoreWasmModule } from '../core-port';
 import { Controller, type ControllerParts } from './controller';
 import { workerInstanceURL } from './instance-url';
-import { instanceStorageKey, storageBinding } from './storage-key';
+import { instanceStorageKey } from './storage-key';
 import { localRuntimeReadiness } from './runtime-readiness';
 
 type WasmModule = CoreWasmModule & { default(): Promise<unknown> };
@@ -39,8 +39,7 @@ export function startCoreWorker(scope: DedicatedWorkerGlobalScope, options: { te
   const kek = indexedDbKekStore(scope.indexedDB, scope.crypto.subtle, (a) => scope.crypto.getRandomValues(a));
   const origin = workerInstanceURL(options.instanceURL, scope.location.origin);
   // One function keys the lock (in the controller), the store and the KEK (boot, resetDevice): review C1, Task 6.
-  const binding = storageBinding(scope.location.origin, origin);
-  const storageKey = (instanceId: Uint8Array): Promise<string> => instanceStorageKey(instanceId, binding);
+  const storageKey = (instanceId: Uint8Array): Promise<string> => instanceStorageKey(instanceId, null);
   const controller = new Controller({
     origin,
     storageKey,

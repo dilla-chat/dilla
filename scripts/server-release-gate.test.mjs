@@ -313,7 +313,7 @@ test('an in-flight run that is not a server run on the tree is not waited for', 
 
 test('an unknown gated workflow is refused before any request', async () => {
   const gh = fakeGithub();
-  await assert.rejects(run(envFor({}), SHA, { ...clocked(gh).options, workflow: 'mobile' }), /Unknown gated workflow/);
+  await assert.rejects(run(envFor({}), SHA, { ...clocked(gh).options, workflow: 'other' }), /Unknown gated workflow/);
   assert.deepEqual(gh.seen, []);
 });
 

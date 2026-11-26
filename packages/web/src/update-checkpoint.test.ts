@@ -49,8 +49,8 @@ it('expires a checkpoint and removes it after restoration', async () => {
   expect(await first.load(scope)).toBeNull();
 });
 
-// Review round 2, item 1 (Task 6): in the mobile app instances share one origin and one IndexedDB. The scope uses the
-// worker's storage key (instance URL bound) there, so an instance asserting another's instanceId and userId finds nothing.
+// Review round 2, item 1 (Task 6): where several instances share one origin and one IndexedDB, the scope uses the
+// worker's storage key (instance URL bound), so an instance asserting another's instanceId and userId finds nothing.
 it('keys the scope on the storage key when the worker publishes one, and on the instance id otherwise', async () => {
   const id = 'ab'.repeat(16), user = 'cd'.repeat(16), tab = 'ef'.repeat(16);
   expect(checkpointScope({ id }, user, tab)).toEqual({ instance: id, user, tab });

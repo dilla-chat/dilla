@@ -116,7 +116,7 @@ test('aRunOfAnotherWorkflowNeverCovers', async () => {
   assert.equal(await decide(fakeGithub({ runs: [prRun({ name: 'server' })] })), true);
   // A workflow the release gates do not know is never decided from the API.
   const gh = fakeGithub();
-  assert.equal(await decide(gh, { workflowFile: 'mobile.yml' }), false);
+  assert.equal(await decide(gh, { workflowFile: 'other.yml' }), false);
   assert.equal(gh.seen.length, 0);
 });
 

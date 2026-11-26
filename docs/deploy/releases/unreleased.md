@@ -1,7 +1,20 @@
 # dilla, unreleased
 
-A draft for the next release. It describes what changes for someone who runs the Bot on their own server. Rename it to
-the release's tag when the tag is cut.
+A draft for the next release. It describes what changes for someone who runs the server or the Bot on their own server.
+Rename it to the release's tag when the tag is cut.
+
+## Before you upgrade
+
+**before upgrading, delete the `mobile_origins` line under `[http]` in dilla.toml, or dillad refuses to start (exit 78)**
+
+The Capacitor mobile app is removed from the repository, and with it the `http.mobile_origins` setting. A `dilla.toml`
+that still has it fails to load, so the server does not start. Delete that line, then upgrade `dillad` as usual.
+
+- This release carries no Android APK, and its `SHA256SUMS` does not list one.
+- The TestFlight preview ends: the iPhone preview is no longer updated. Use the web client in your phone's browser until
+  the native apps come (planned, no date yet).
+- The server no longer allows the app's origins (`capacitor://localhost` and `https://localhost`) to call `/v1/` and
+  `/i/` with a bearer token. The web client is served from the same origin and is not affected.
 
 ## The Bot's store moved to SQLite3 Multiple Ciphers
 

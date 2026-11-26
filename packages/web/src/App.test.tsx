@@ -739,9 +739,9 @@ describe('App settings and notifications', () => {
   });
 });
 
-// Review round 3 (Task 6): a checkpoint is removed under the scope it was saved under. On mobile that is the worker's
-// storage key (update-checkpoint.ts checkpointScope), not the raw instance id; desktop and the web keep the id.
-it('signing out removes the previous checkpoint under the storage key on mobile and under the instance id elsewhere', async () => {
+// Review round 3 (Task 6): a checkpoint is removed under the scope it was saved under. Where the worker publishes a
+// storage key (update-checkpoint.ts checkpointScope) that is the scope, not the raw instance id; the web keeps the id.
+it('signing out removes the previous checkpoint under the storage key when the worker publishes one and under the instance id otherwise', async () => {
   for (const storageKey of ['d9'.repeat(32), undefined]) {
     const fake = new FakeClient();
     const ready = account();

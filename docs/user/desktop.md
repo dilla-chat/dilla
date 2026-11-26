@@ -4,7 +4,7 @@ The desktop client is the native Rust/GPUI program in `clients/desktop`. On Linu
 (`desktop-gpui-v0.2.0-alpha.N`): an AppImage, a tar.gz, a deb, an rpm and an AUR recipe, [installed by
 hand](#install-the-linux-alpha). From the first signed alpha on it checks for updates itself (the tray's "Check for
 updates"). On macOS and Windows it is built from source. Keep
-using the browser client or the [mobile app](mobile.md) for everyday use.
+using the browser client for everyday use.
 
 **The Electron desktop app is discontinued.** Its last release is `desktop-v0.1.0-beta.5`. A copy you already
 installed keeps working against a compatible server, but it gets no further updates and no fixes. The browser
@@ -375,5 +375,5 @@ HTTPS instance URL and pasting the displayed code; no new deep-link format is ad
 The Electron client was a bundled copy of the React client with a local shell. Its last release is
 [`desktop-v0.1.0-beta.5`](https://github.com/dilla-chat/dilla/releases/tag/desktop-v0.1.0-beta.5); its source is at that
 tag under `packages/desktop`. It is no longer built, tested or released from this repository, and installed copies
-get no further updates. If you still run it, move to the browser client, the mobile app or a native build, and
+get no further updates. If you still run it, move to the browser client or a native build, and
 enrol the new device with your recovery key as described above.

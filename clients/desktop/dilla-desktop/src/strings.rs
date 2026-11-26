@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2223] = [
+pub static STRINGS: [(&str, &str); 2217] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -968,12 +968,6 @@ pub static STRINGS: [(&str, &str); 2223] = [
     ("mention.role", "@{name}"),
     ("mention.role.secondary", "role"),
     ("message.viaWebhook", "via webhook {name}"),
-    ("mobile.boot.error.detail", "Error {code}. Try again, or switch to another instance."),
-    ("mobile.boot.failed.detail", "The app could not read its saved instance. Try again, or switch to another instance."),
-    ("mobile.boot.timeout.detail", "The app stopped responding while starting. Try again, or switch to another instance."),
-    ("mobile.onboarding.error.network", "The connection dropped while creating your account. Try again to finish."),
-    ("mobile.retry", "Try again"),
-    ("mobile.shell.banner.clientTooOld", "This server needs a newer client. Update the app."),
     ("mobile.switchInstance", "Switch instance"),
     ("mod.ban.body", "{name} leaves every channel and call of {server} at once and cannot join again until the ban ends or is lifted. Messages they already received stay on their devices."),
     ("mod.ban.busy", "Banning…"),

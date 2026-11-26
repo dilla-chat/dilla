@@ -65,7 +65,7 @@ export function App(props: { fatal: UiError | null; reload?: (href: string) => v
         try {
           // eslint-disable-next-line no-restricted-globals -- only a random content-free tab identifier enters Web Storage
           const tab = updateTabId(sessionStorage, crypto);
-          // The scope the shell saved under (Shell.tsx): on mobile the worker's storage key, not the raw instance id.
+          // The scope the shell saved under (Shell.tsx): the worker's storage key where it differs from the raw instance id.
           return checkpointScope({ id: instanceId, storageKey: instanceStorageKey }, userId, tab);
         } catch { return null; }
       })() : null;

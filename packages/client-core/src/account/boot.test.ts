@@ -263,7 +263,7 @@ describe('opfsDirectoryExists', () => {
   });
 });
 
-// Review C1 (Task 6): the mobile worker passes its own storage key; the directory and the KEK record follow it.
+// Review C1 (Task 6): a worker that passes its own storage key; the directory and the KEK record follow it.
 describe('boot with a storage key', () => {
   it('opens dilla/<key> under the KEK record <key>, and without one keeps dilla/<instance hex>', async () => {
     const KEY = 'c3'.repeat(32);

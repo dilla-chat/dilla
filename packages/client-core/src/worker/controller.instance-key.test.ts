@@ -4,7 +4,7 @@ import type { CorePort } from '../core-port';
 import { INSTANCE_DOC, LOCK, cbor, world } from './world';
 import { instanceStorageKey } from './storage-key';
 
-// Review C1 (Task 6): in the mobile app instances A and B share one origin. B is hostile and reports A's instanceId.
+// Review C1 (Task 6): where instances A and B share one origin. B is hostile and reports A's instanceId.
 // The worker for B must neither take A's leader lock nor open A's store, so A's session token never reaches B.
 const A = 'https://a.example', B = 'https://b.example';
 
@@ -35,7 +35,7 @@ describe('two instances on one origin with the same instanceId', () => {
     expect(lockB.length).toBeGreaterThan(0);
     expect(lockB.every((name) => name === `dilla-core:${bootKeys[0]}`)).toBe(true);
     expect(lockB).not.toContain(LOCK);                       // A's lock in the desktop keying
-    expect(lockB).not.toContain(`dilla-core:${keyA}`);       // A's lock in the mobile keying
+    expect(lockB).not.toContain(`dilla-core:${keyA}`);       // A's lock in the bound keying
     expect(bootKeys).toHaveLength(1);
     expect(bootKeys[0]).not.toBe(keyA);
     expect(authorizations.length).toBeGreaterThan(0);
@@ -52,7 +52,7 @@ describe('two instances on one origin with the same instanceId', () => {
 
 // Review round 2, item 1: the page keys its update checkpoints (web/src/update-checkpoint.ts) on the same storage key.
 describe('the account slice names the storage key only where it is not the instanceId', () => {
-  it('a bound (mobile) key is published with the instance; the desktop and browser instance state is unchanged', async () => {
+  it('a bound key is published with the instance; the desktop and browser instance state is unchanged', async () => {
     const storageKey = (id: Uint8Array) => instanceStorageKey(id, A);
     const bound = world({ storageKey });
     bound.call(1, { m: 'start' });

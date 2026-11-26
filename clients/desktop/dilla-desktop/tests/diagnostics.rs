@@ -292,12 +292,23 @@ fn the_allow_list_matcher_reads_patterns() {
     assert_eq!(offenders(&seen), ["GET /v1/communities"]);
 }
 
-/// A dilla-testhost process on `listen`, serving `data`; `wire` is its `-wire` flag.
+/// A dilla-testhost process serving `data`; `wire` is its `-wire` flag. It binds the public listener itself, on `listen`
+/// (`127.0.0.1:0` for a port of the host's own pick, which `public` then names).
 struct TestHost {
     child: Child,
     public: String,
     control: String,
     invites: Vec<String>,
+}
+
+impl TestHost {
+    /// The public listener's address, as the host printed it (`public http://127.0.0.1:<port>`).
+    fn addr(&self) -> std::net::SocketAddr {
+        self.public
+            .trim_start_matches("http://")
+            .parse()
+            .expect("the host's public address")
+    }
 }
 
 impl Drop for TestHost {
@@ -307,7 +318,9 @@ impl Drop for TestHost {
     }
 }
 
-fn spawn_host(data: &Path, listen: &str, wire: Option<u64>) -> TestHost {
+/// One dilla-testhost start: the host once it printed its public and control addresses and its invite, or its stderr if it
+/// exited first. stderr is drained on a thread, so a chatty host never blocks on a full pipe.
+fn try_spawn_host(data: &Path, listen: &str, wire: Option<u64>) -> Result<TestHost, String> {
     let root = world::repo_root();
     let bin = std::env::var_os("DILLA_TESTHOST")
         .map_or_else(|| root.join("target/dilla-testhost"), PathBuf::from);
@@ -345,13 +358,27 @@ fn spawn_host(data: &Path, listen: &str, wire: Option<u64>) -> TestHost {
     }
     let mut child = cmd
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("start dilla-testhost");
+    let mut stderr = child.stderr.take().unwrap();
+    let (err_tx, err_rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut all = String::new();
+        let _ = stderr.read_to_string(&mut all);
+        let _ = err_tx.send(all);
+    });
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     let (mut public, mut control, mut invites) = (None, None, None);
     while public.is_none() || control.is_none() || invites.is_none() {
-        let line = lines.next().expect("dilla-testhost exited").unwrap();
+        let Some(line) = lines.next() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_default());
+        };
+        let line = line.unwrap();
         if let Some(rest) = line.strip_prefix("public ") {
             public = Some(rest.trim().to_owned());
         } else if let Some(rest) = line.strip_prefix("control ") {
@@ -363,20 +390,35 @@ fn spawn_host(data: &Path, listen: &str, wire: Option<u64>) -> TestHost {
         }
     }
     std::thread::spawn(move || for _ in lines {});
-    TestHost {
+    Ok(TestHost {
         child,
         public: public.unwrap(),
         control: control.unwrap(),
         invites: invites.unwrap(),
-    }
+    })
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// [`try_spawn_host`] that panics with the host's stderr when it exits.
+fn spawn_host(data: &Path, listen: &str, wire: Option<u64>) -> TestHost {
+    try_spawn_host(data, listen, wire)
+        .unwrap_or_else(|stderr| panic!("dilla-testhost exited:\n{stderr}"))
+}
+
+/// A host on the address a previous host had. The kernel may not have released it yet, or a parallel test's host may
+/// hold it for a moment: "address already in use" is retried a few times after a short wait; any other exit panics
+/// with the host's stderr, and so does the last "address already in use".
+fn respawn_host_on(data: &Path, listen: &str, wire: Option<u64>) -> TestHost {
+    let mut attempt = 1;
+    loop {
+        match try_spawn_host(data, listen, wire) {
+            Ok(host) => return host,
+            Err(stderr) if attempt < 10 && stderr.contains("address already in use") => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(stderr) => panic!("dilla-testhost exited (attempt {attempt}):\n{stderr}"),
+        }
+    }
 }
 
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -445,15 +487,14 @@ async fn online_with_channels(client: &Client) -> Arc<AppState> {
 async fn no_app_http_while_socket_up() {
     let data = scratch_dir("diag-http-data");
     let root = scratch_dir("diag-http-root");
-    let port = free_port();
     let host = tokio::task::spawn_blocking({
         let data = data.clone();
-        move || spawn_host(&data, &format!("127.0.0.1:{port}"), None)
+        move || spawn_host(&data, "127.0.0.1:0", None)
     })
     .await
     .unwrap();
     let (alice, _community) = alice_in_a_community(&host, &root).await;
-    let proxy = Proxy::start(format!("127.0.0.1:{port}").parse().unwrap());
+    let proxy = Proxy::start(host.addr());
     let client = start_via(&alice, proxy.url(), GatewayOptions::default()).await;
     let state = online_with_channels(&client).await;
     assert!(
@@ -521,15 +562,14 @@ async fn idle_socket_no_periodic_http() {
     const INTERVALS: u32 = 15;
     let data = scratch_dir("diag-idle-data");
     let root = scratch_dir("diag-idle-root");
-    let port = free_port();
     let host = tokio::task::spawn_blocking({
         let data = data.clone();
-        move || spawn_host(&data, &format!("127.0.0.1:{port}"), None)
+        move || spawn_host(&data, "127.0.0.1:0", None)
     })
     .await
     .unwrap();
     let (alice, _community) = alice_in_a_community(&host, &root).await;
-    let proxy = Proxy::start(format!("127.0.0.1:{port}").parse().unwrap());
+    let proxy = Proxy::start(host.addr());
     let options = GatewayOptions {
         heartbeat_max: BEAT,
         ..GatewayOptions::default()
@@ -568,16 +608,16 @@ async fn idle_socket_no_periodic_http() {
 async fn older_client_refused_banner_no_reconnect_keeps_draft() {
     let data = scratch_dir("diag-ver-data");
     let root = scratch_dir("diag-ver-root");
-    let port = free_port();
-    let listen = format!("127.0.0.1:{port}");
     let wire6 = tokio::task::spawn_blocking({
-        let (data, listen) = (data.clone(), listen.clone());
-        move || spawn_host(&data, &listen, None)
+        let data = data.clone();
+        move || spawn_host(&data, "127.0.0.1:0", None)
     })
     .await
     .unwrap();
     let (alice, _community) = alice_in_a_community(&wire6, &root).await;
-    let proxy = Proxy::start(listen.parse().unwrap());
+    let addr = wire6.addr();
+    let listen = addr.to_string();
+    let proxy = Proxy::start(addr);
     let client = start_via(&alice, proxy.url(), GatewayOptions::default()).await;
     let state = online_with_channels(&client).await;
     let channels = state.channels.len();
@@ -592,7 +632,7 @@ async fn older_client_refused_banner_no_reconnect_keeps_draft() {
     drop(wire6);
     let wire7 = tokio::task::spawn_blocking({
         let (data, listen) = (data.clone(), listen.clone());
-        move || spawn_host(&data, &listen, Some(7))
+        move || respawn_host_on(&data, &listen, Some(7))
     })
     .await
     .unwrap();
