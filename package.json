@@ -39,7 +39,6 @@
     "noise:test": "node --test experiments/noise/test/*.test.mjs experiments/noise/*.test.mjs",
     "noise:build": "DILLA_NOISE_MODE=evaluation npm run build -w @dilla/web",
     "noise:build:beta": "DILLA_NOISE_MODE=beta npm run build -w @dilla/web",
-    "test:noise-release": "node --test scripts/release-noise-mode.test.mjs experiments/noise/build-gate.test.mjs",
     "ci:local": "node scripts/ci-local.mjs",
     "ci:local:changed": "node scripts/ci-local.mjs --changed",
     "typecheck": "npm run typecheck --workspaces --if-present"

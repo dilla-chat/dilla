@@ -570,7 +570,7 @@ function assertWasmPackUsesTheSizeProfile(text, problems, file) {
  * cc) uses clang 23, the dev box's major. The runner's own clang made the same tree about 25 KB larger, so the
  * 3,450,000-byte budget measured different bytes in CI than on the box it was set on.
  *
- * The compiler comes from a third-party apt archive and its output ships (the core-harness build feeds the browser core suite), so the step is pinned: the archive key is checked by fingerprint on the very keyring
+ * The compiler comes from a third-party apt archive and its output is what CI measures and tests (the D5 wasm size budget, and the core-harness build the encrypted-core integration suite runs), so the step is pinned: the archive key is checked by fingerprint on the very keyring
  * apt is pointed at, every llvm-toolchain-23 package is installed at one exact version and read back with
  * dpkg-query, and cc gets absolute paths, which a PATH entry added by a later action cannot shadow. A newer
  * upload to apt.llvm.org removes the pinned build from the archive and fails the step closed; the fix is to
