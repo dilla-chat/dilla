@@ -480,6 +480,46 @@ fn a_press_for_an_earlier_call_does_not_carry_over(cx: &mut TestAppContext) {
     );
 }
 
+/// Security review S2: the person's leave cancels a share pressed in the call that the media session has not run yet,
+/// even when the rejoin of the same channel is the same call (its room has not finished): nothing opens there.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_leave_cancels_a_press_the_media_has_not_run(cx: &mut TestAppContext) {
+    let w = world("t-share-leave");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    hold_pickup(cx, wa, true);
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    pump(cx, &w, wa, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    });
+    press_and_pick(cx, &a);
+    cx.update(|cx| voice::leave(wa, cx));
+    pump(cx, &w, wa, "alice left the call", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    });
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    pump(cx, &w, wa, "alice is in the channel's call again", |s| {
+        s.voice.call.phase == CallPhase::In && s.voice.call.channel == Some(w.voice)
+    });
+    hold_pickup(cx, wa, false);
+    w.rt.block_on(until(&w.alice, "the rejoined call's media is up", |s| {
+        s.voice.call.ping_ms.is_some()
+    }));
+    for _ in 0..20 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(rec.opened(), 0, "the left call's press opened nothing");
+    assert!(
+        !w.alice.state().borrow().voice.share.screen,
+        "nothing is shared"
+    );
+}
+
 /// screen-capture.spec.ts "owner navigation releases its native broker": closing the window whose call shares the
 /// screen stops the capture at once (its media session goes, and with it the share's source).
 #[gpui::test]
@@ -537,13 +577,21 @@ fn another_instance_cannot_stop_or_reconfigure_a_capture(cx: &mut TestAppContext
     let session_b = cx
         .update(|cx: &mut App| voice::session_of(wb, cx))
         .expect("bob's session");
-    // Bob is in no call: his request names none.
+    // Bob's request even names alice's call: it still reaches only his own session.
+    let alices_call = w
+        .alice
+        .state()
+        .borrow()
+        .voice
+        .call
+        .call_id
+        .expect("alice's call id");
     session_b.quality(
         ShareOptions {
             resolution: ShareResolution::P720,
             fps: 15,
         },
-        [0; 16],
+        alices_call,
     );
     for _ in 0..20 {
         cx.run_until_parked();

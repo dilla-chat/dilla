@@ -104,12 +104,13 @@ const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
 /// What a share asks for.
 ///
 /// The share commands name the call they were made for (the UI's `call_id` while the call is `In`): the session keeps
-/// one that reaches it before it has taken up that call's media link, and runs it once it has; one for another call never
-/// carries into this one ([`Pending`]).
+/// a start that reaches it before it has taken up that call's media link, and runs it once it has; one for another call
+/// never carries into this one ([`Pending`]). A stop is never kept or dropped: it applies at once to whatever share runs,
+/// and cancels every kept start of its kind.
 pub enum Command {
-    /// A camera share starts or stops, or the screen share stops (a screen share starts with [`Command::ShareScreen`]),
-    /// in the call `[u8; 16]`.
-    Share(ShareKind, bool, ShareOptions, [u8; 16]),
+    /// A camera share starts or stops, or the screen share stops (a screen share starts with [`Command::ShareScreen`]).
+    /// A start names its call; a stop may name none (it applies whatever call runs).
+    Share(ShareKind, bool, ShareOptions, Option<[u8; 16]>),
     /// A screen share starts, together with its sound, in one command (Task 44 fix round 4), so no order of the loop's
     /// arms can see the start without it.
     ShareScreen {
@@ -130,9 +131,12 @@ pub enum Command {
     /// The stream quality changed while sharing in the call `[u8; 16]`: the running screen share goes on at it (the same
     /// source).
     Quality(ShareOptions, [u8; 16]),
-    /// The person's own choice in the call `[u8; 16]`: the running screen share carries the sound of this application
-    /// from now on (`None`: no sound), and so does a share still opening.
-    AppAudio(Option<dilla_media::app_audio::AppSource>, [u8; 16]),
+    /// The person's own choice in the call it names: the running screen share carries the sound of this application from
+    /// now on (`None`: no sound, a stop, which may name no call), and so does a share still opening.
+    AppAudio(Option<dilla_media::app_audio::AppSource>, Option<[u8; 16]>),
+    /// The window's call ended (the person left, or was taken out): no start kept from before runs any more, not even in
+    /// a rejoin of the same call id.
+    Forget,
 }
 
 /// Which of the kept commands a newer one replaces ([`Pending`]).
@@ -147,56 +151,86 @@ enum Slot {
 }
 
 impl Command {
-    /// The call the command was made for; `None` for the window's sound, which names its start by token instead.
+    /// The call the command was made for; `None` for the window's sound (it names its start by token instead), for a
+    /// stop that names no call, and for [`Command::Forget`].
     fn call(&self) -> Option<[u8; 16]> {
         match self {
-            Command::Share(_, _, _, call)
-            | Command::ShareScreen { call, .. }
-            | Command::Quality(_, call)
-            | Command::AppAudio(_, call) => Some(*call),
-            Command::WindowSound(..) => None,
+            Command::Share(_, _, _, call) | Command::AppAudio(_, call) => *call,
+            Command::ShareScreen { call, .. } | Command::Quality(_, call) => Some(*call),
+            Command::WindowSound(..) | Command::Forget => None,
         }
     }
 
-    fn slot(&self) -> Slot {
-        match self {
+    /// A share or its sound switched off: never kept, never dropped, run at once in whatever call runs.
+    fn is_stop(&self) -> bool {
+        matches!(
+            self,
+            Command::Share(_, false, ..) | Command::AppAudio(None, _)
+        )
+    }
+
+    /// `None` for [`Command::Forget`], which is never kept.
+    fn slot(&self) -> Option<Slot> {
+        Some(match self {
             Command::Share(ShareKind::Screen, ..) | Command::ShareScreen { .. } => Slot::Screen,
             Command::Share(ShareKind::Camera, ..) => Slot::Camera,
             Command::Quality(..) => Slot::Quality,
             Command::AppAudio(..) => Slot::AppAudio,
             Command::WindowSound(token, _) => Slot::WindowSound(*token),
-        }
+            Command::Forget => return None,
+        })
     }
 }
 
 /// The share commands that reached the session while it was not in their call: before it took up the call's media
 /// link (the client reports the call `In` first, and a move's old room may still be closing), or during the call a move
-/// left. Only the newest of each kind is kept (one screen start or stop, one camera, one quality, one sound choice), in
-/// the order they came; a window's sound only while the start it names is kept. A call's media takes those made for it
-/// ([`Pending::take_for`]) and the rest are dropped, so a press for one call never carries into another.
+/// left. Only the newest start of each kind is kept (one screen start, one camera, one quality, one sound choice), in
+/// the order they came; a window's sound only while the start it names is kept. A stop is never kept: it cancels the
+/// kept start of its kind (whatever call that names). A call's media takes those made for it ([`Pending::take_for`]) and
+/// the rest are dropped, so a press for one call never carries into another; the window's call ending
+/// ([`Command::Forget`]) and a new link ([`Pending::retain_current`]) drop them too.
 #[derive(Default)]
 struct Pending(Vec<Command>);
 
 impl Pending {
-    /// Keeps `command` (a newer one of its kind replaces the older), or drops a window's sound whose start is not kept.
+    /// Keeps `command` (a newer one of its kind replaces the older). A stop only cancels the kept start of its kind,
+    /// [`Command::Forget`] cancels everything, and a window's sound whose start is not kept is dropped.
     fn keep(&mut self, command: Command) {
-        if let Command::WindowSound(token, _) = command
-            && !self.starts(token)
-        {
-            return;
+        match command {
+            Command::Forget => {
+                self.0.clear();
+                return;
+            }
+            Command::WindowSound(token, _) if !self.starts(token) => return,
+            _ => {}
         }
+        self.cancel(&command);
+        if !command.is_stop() {
+            self.0.push(command);
+        }
+    }
+
+    /// Drops the kept command of `command`'s kind; for the screen also the window's sound of the start it replaces
+    /// (a newer start keeps its own).
+    fn cancel(&mut self, command: &Command) {
         let slot = command.slot();
         self.0.retain(|c| c.slot() != slot);
-        if slot == Slot::Screen {
-            let token = match &command {
+        if slot == Some(Slot::Screen) {
+            let token = match command {
                 Command::ShareScreen { token, .. } => Some(*token),
                 _ => None,
             };
-            // A newer screen start or stop: the replaced start's window sound goes with it.
             self.0
                 .retain(|c| !matches!(c, Command::WindowSound(t, _) if Some(*t) != token));
         }
-        self.0.push(command);
+    }
+
+    /// The link changed: only the commands for its call stay kept (none while there is no link).
+    fn retain_current(&mut self, call: Option<[u8; 16]>) {
+        match call {
+            Some(call) => self.0 = self.take_for(call),
+            None => self.0.clear(),
+        }
     }
 
     /// Whether the kept screen start is the one `token` names.
@@ -216,6 +250,10 @@ impl Pending {
     }
 
     /// The kept commands made for `call`, in order; every other one is dropped.
+    ///
+    /// Residual carry-over: a start pressed in a call, the person's leave and a rejoin of the same call id (its room had
+    /// not finished) all while this session's task never ran and the window's sync never saw the call end
+    /// ([`Command::Forget`]) still runs in the rejoin, since it names that same id.
     fn take_for(&mut self, call: [u8; 16]) -> Vec<Command> {
         let mut kept: Vec<Command> = Vec::new();
         for c in std::mem::take(&mut self.0) {
@@ -521,6 +559,11 @@ impl MediaSession {
         })
     }
 
+    /// The window's call ended: no share start kept from before runs any more ([`Command::Forget`]).
+    pub fn forget_kept(&self) {
+        self.send(Command::Forget);
+    }
+
     /// Test hook: while `hold` is set, the session waits before it takes up a call's media link, as a busy or starved
     /// session does (the client already reports the call `In` meanwhile).
     #[cfg(feature = "test-hooks")]
@@ -534,9 +577,10 @@ impl MediaSession {
         }
     }
 
-    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one), in the call
-    /// `call` (one the session has not taken up yet runs once it has).
-    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions, call: [u8; 16]) {
+    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one). A start runs in
+    /// the call `call` (one the session has not taken up yet runs once it has; a start with no call never runs); a stop
+    /// applies at once to whatever share runs.
+    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions, call: Option<[u8; 16]>) {
         self.send(Command::Share(kind, on, options, call));
     }
 
@@ -576,7 +620,11 @@ impl MediaSession {
 
     /// The person's choice: shares the sound of `source` with the running screen share (`None` stops it) at once, and
     /// with a screen share still opening once it is up.
-    pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>, call: [u8; 16]) {
+    pub fn app_audio(
+        &self,
+        source: Option<dilla_media::app_audio::AppSource>,
+        call: Option<[u8; 16]>,
+    ) {
         self.send(Command::AppAudio(source, call));
     }
 
@@ -878,6 +926,8 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
                     if r.is_err() {
                         return;
                     }
+                    // A start kept for a call that is not the new link's never runs.
+                    pending.retain_current(links.borrow().as_ref().map(|l| l.call_id));
                     break;
                 }
             }
@@ -1219,8 +1269,14 @@ async fn in_call(
                 // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
                 // A command for another call (the one a move goes to, pressed there while this call's loop still ran) is
                 // kept for it.
+                // A stop applies at once to whatever share runs, and cancels any kept start of its kind.
                 cmd = commands.recv() => match cmd {
                     None => break,
+                    Some(Command::Forget) => pending.keep(Command::Forget),
+                    Some(c) if c.is_stop() => {
+                        pending.cancel(&c);
+                        handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await;
+                    }
                     Some(c) if pending.wants(&c, link.call_id) => pending.keep(c),
                     Some(c) => handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await,
                 },
@@ -1338,6 +1394,8 @@ async fn handle_command(
         Command::WindowSound(token, app) => {
             perform(ctx, call, sound.window_found(token, app)).await;
         }
+        // The kept starts already went (the loop's own `Pending`).
+        Command::Forget => {}
         Command::Quality(options, _) => {
             if ctx.states.borrow().voice.share.screen
                 && let Err(e) = call.configure_video(ShareKind::Screen, options).await
@@ -1835,19 +1893,23 @@ mod tests {
 
     /// What a list of kept commands is, for the assertions: (kind, call's first byte or token).
     fn shape(commands: &[Command]) -> Vec<(&'static str, u64)> {
+        let byte = |call: &Option<[u8; 16]>| call.map_or(0, |c| u64::from(c[0]));
         commands
             .iter()
             .map(|c| match c {
                 Command::ShareScreen { token, .. } => ("start", *token),
-                Command::Share(ShareKind::Screen, on, _, call) => {
-                    (if *on { "screen" } else { "stop" }, u64::from(call[0]))
-                }
-                Command::Share(ShareKind::Camera, _, _, call) => ("camera", u64::from(call[0])),
+                Command::Share(ShareKind::Screen, _, _, call) => ("screen", byte(call)),
+                Command::Share(ShareKind::Camera, _, _, call) => ("camera", byte(call)),
                 Command::Quality(_, call) => ("quality", u64::from(call[0])),
-                Command::AppAudio(_, call) => ("sound", u64::from(call[0])),
+                Command::AppAudio(_, call) => ("sound", byte(call)),
                 Command::WindowSound(token, _) => ("window", *token),
+                Command::Forget => ("forget", 0),
             })
             .collect()
+    }
+
+    fn camera(on: bool, call: Option<[u8; 16]>) -> Command {
+        Command::Share(ShareKind::Camera, on, OPTIONS, call)
     }
 
     /// Share-drop flake: a share made for a call before the session took it up runs in that call, the newest of each
@@ -1856,11 +1918,10 @@ mod tests {
     fn kept_commands_run_only_in_their_call_newest_of_each_kind() {
         let mut p = Pending::default();
         p.keep(start(1, CALL_A));
-        p.keep(Command::Share(ShareKind::Camera, true, OPTIONS, CALL_A));
         p.keep(Command::Quality(OPTIONS, CALL_A));
         p.keep(start(2, CALL_A));
         p.keep(Command::Quality(OPTIONS, CALL_B));
-        p.keep(Command::Share(ShareKind::Camera, false, OPTIONS, CALL_A));
+        p.keep(camera(true, Some(CALL_A)));
         assert_eq!(
             shape(&p.take_for(CALL_A)),
             [("start", 2), ("camera", 1)],
@@ -1868,6 +1929,32 @@ mod tests {
         );
         assert!(p.take_for(CALL_A).is_empty(), "taken once");
         assert!(p.take_for(CALL_B).is_empty(), "the rest was dropped");
+    }
+
+    /// Security review S1: a stop is never kept (nor dropped for naming another call or none): it cancels the kept
+    /// start of its kind, whatever call that names, and the loop runs it at once.
+    #[test]
+    fn a_stop_cancels_the_kept_start_of_its_kind_and_is_never_kept() {
+        let mut p = Pending::default();
+        p.keep(camera(true, Some(CALL_A)));
+        p.keep(start(1, CALL_B));
+        p.keep(Command::AppAudio(None, Some(CALL_A)));
+        assert!(p.0.iter().all(|c| !c.is_stop()), "no stop kept");
+        p.keep(camera(false, None));
+        assert_eq!(shape(&p.0), [("start", 1)], "the camera start went");
+        p.keep(Command::Share(
+            ShareKind::Screen,
+            false,
+            OPTIONS,
+            Some(CALL_A),
+        ));
+        assert!(
+            p.0.is_empty(),
+            "a stop naming call A cancels call B's start too"
+        );
+        assert!(camera(false, None).is_stop());
+        assert!(Command::AppAudio(None, None).is_stop());
+        assert!(!camera(true, Some(CALL_A)).is_stop());
     }
 
     /// A window's sound follows the start it names: kept with it, gone when a newer start or a stop replaces it, and
@@ -1888,12 +1975,8 @@ mod tests {
             "the replaced start's sound went"
         );
         p.keep(Command::WindowSound(2, None));
-        p.keep(Command::Share(ShareKind::Screen, false, OPTIONS, CALL_A));
-        assert_eq!(
-            shape(&p.0),
-            [("stop", 1)],
-            "a stop takes the start and its sound"
-        );
+        p.keep(Command::Share(ShareKind::Screen, false, OPTIONS, None));
+        assert!(p.0.is_empty(), "a stop takes the start and its sound");
     }
 
     /// A call's loop takes its own commands and leaves the others for the call they name; a call whose media ended
@@ -1909,10 +1992,33 @@ mod tests {
         );
         p.keep(start(1, CALL_A));
         p.keep(Command::WindowSound(1, None));
-        p.keep(Command::Share(ShareKind::Camera, true, OPTIONS, CALL_B));
+        p.keep(camera(true, Some(CALL_B)));
         p.forget(CALL_A);
         assert_eq!(shape(&p.0), [("camera", 2)]);
         assert_eq!(shape(&p.take_for(CALL_B)), [("camera", 2)]);
+    }
+
+    /// Security review S2: a new link keeps only its own call's starts (none without a link), and the window's call
+    /// ending ([`Command::Forget`]) drops every kept start, so neither carries into a later call.
+    #[test]
+    fn a_new_link_or_the_call_s_end_drops_other_kept_starts() {
+        let mut p = Pending::default();
+        p.keep(start(1, CALL_A));
+        p.keep(Command::WindowSound(1, None));
+        p.keep(camera(true, Some(CALL_B)));
+        p.retain_current(Some(CALL_B));
+        assert_eq!(shape(&p.0), [("camera", 2)], "only the new link's call");
+        p.retain_current(None);
+        assert!(p.0.is_empty(), "no link, nothing kept");
+        p.keep(start(2, CALL_A));
+        p.keep(Command::Forget);
+        assert!(p.0.is_empty(), "the call's end drops the kept start");
+        p.keep(start(3, CALL_A));
+        assert_eq!(
+            shape(&p.take_for(CALL_A)),
+            [("start", 3)],
+            "a press after the end is kept"
+        );
     }
 
     /// Client review M1: the end of a share that a newer one replaced (the call holds a share of the kind when the end is

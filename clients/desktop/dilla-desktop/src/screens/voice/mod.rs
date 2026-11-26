@@ -1206,6 +1206,11 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     {
         // The call ended: push to talk lets go (review I1).
         release_ptt(window, cx);
+        // A share pressed in it that the media session has not run yet never runs (not even in a rejoin of the same
+        // call): the person's leave cancels it.
+        if let Some(s) = session_of(window, cx) {
+            s.forget_kept();
+        }
     }
     if ui_mut(window, cx).state.voice.call.phase != CallPhase::Idle
         && state.voice.call.phase == CallPhase::Idle
@@ -2076,8 +2081,9 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     };
     let (options, session) = (ui.share_options, ui.session.clone());
     let Some(session) = session else { return };
-    // The call the press is for: the session runs it in that call only (once it has taken the call up).
-    let call = ui.state.voice.call.call_id.unwrap_or_default();
+    // The call the press is for: the session runs a start in that call only (once it has taken the call up). A stop
+    // applies to whatever share runs, call or no call.
+    let call = ui.state.voice.call.call_id;
     if !on {
         session.share(kind, false, options, call);
         return;
@@ -2086,6 +2092,7 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     if !window.is_window_active() || ui.state.voice.call.phase != CallPhase::In {
         return;
     }
+    let Some(call) = call else { return };
     if kind == ShareKind::Screen && !crate::screens::share_picker::portal(cx) {
         crate::screens::share_picker::open(options, window, cx);
         return;
@@ -2101,7 +2108,7 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         session.share_screen(None, options, ui.share_seq, ui.share_sound.clone(), call);
         return;
     }
-    session.share(kind, true, options, call);
+    session.share(kind, true, options, Some(call));
 }
 
 /// The application sound of `window`'s running screen share (parity plan Package 3): the application the person chose
@@ -2121,7 +2128,7 @@ pub fn share_app_audio(
         return;
     }
     if let Some(s) = &ui.session {
-        s.app_audio(source, ui.state.voice.call.call_id.unwrap_or_default());
+        s.app_audio(source, ui.state.voice.call.call_id);
     }
 }
 
@@ -2136,7 +2143,7 @@ pub fn set_share_app(
     let (session, live, call) = (
         ui.session.clone(),
         ui.state.voice.call.phase == CallPhase::In,
-        ui.state.voice.call.call_id.unwrap_or_default(),
+        ui.state.voice.call.call_id,
     );
     ui_mut(window, cx).share_sound = ShareSound::Person(source.clone());
     if live && let Some(s) = session {
@@ -2157,7 +2164,9 @@ pub fn share_source(
         return;
     }
     let session = ui.session.clone();
-    let call = ui.state.voice.call.call_id.unwrap_or_default();
+    let Some(call) = ui.state.voice.call.call_id else {
+        return;
+    };
     let ui = ui_mut(window, cx);
     ui.share_seq += 1;
     let seq = ui.share_seq;
@@ -5189,11 +5198,11 @@ fn share_menu(ui: &VoiceUi, viewport_w: gpui::Pixels) -> Option<AnyElement> {
                 let w = wid(window);
                 let Some(ui) = ui_of(w, cx) else { return };
                 let (options, session) = (ui.share_options, ui.session.clone());
-                let call = ui.state.voice.call.call_id.unwrap_or_default();
+                let call = ui.state.voice.call.call_id;
                 ui_mut(w, cx).share_menu = false;
                 if sharing {
                     // Apply: the running share goes on at the new quality, from the same source.
-                    if let Some(s) = session {
+                    if let (Some(s), Some(call)) = (session, call) {
                         s.quality(options, call);
                     }
                     window.refresh();
