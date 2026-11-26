@@ -4414,7 +4414,7 @@ fn dm_video(image: Arc<RenderImage>) -> dilla_desktop_ui::picture::RoundedPictur
     dilla_desktop_ui::picture::rounded_picture(
         ImageSource::Render(image),
         radius::MD,
-        px(0.0),
+        gpui::Pixels::ZERO,
         gpui::ObjectFit::Contain,
     )
 }
@@ -5424,6 +5424,8 @@ mod tests {
                 (self.0)()
             }
         }
+        const PROBE_W: f32 = 160.0;
+        const PROBE_H: f32 = 90.0;
         let frame = || {
             let f = image::Frame::new(image::ImageBuffer::from_pixel(
                 160,
@@ -5453,8 +5455,8 @@ mod tests {
                 cx,
                 Box::new(move || {
                     div()
-                        .w(px(160.0))
-                        .h(px(90.0))
+                        .w(px(PROBE_W))
+                        .h(px(PROBE_H))
                         .child(super::stage_video(image.clone(), edge))
                         .into_any_element()
                 }),
@@ -5470,8 +5472,8 @@ mod tests {
             cx,
             Box::new(move || {
                 div()
-                    .w(px(160.0))
-                    .h(px(90.0))
+                    .w(px(PROBE_W))
+                    .h(px(PROBE_H))
                     .child(super::dm_video(image.clone()))
                     .into_any_element()
             }),

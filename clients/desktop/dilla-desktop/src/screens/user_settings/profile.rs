@@ -279,7 +279,7 @@ mod tests {
     fn the_preview_band_follows_the_card_s_inner_corners() {
         let mut b = super::band("Ada");
         let r = b.style().corner_radii.clone();
-        let inner: Option<AbsoluteLength> = Some(px(9.).into());
+        let inner: Option<AbsoluteLength> = Some((super::radius::XL - px(super::EDGE)).into());
         assert_eq!(r.top_left, inner);
         assert_eq!(r.top_right, inner);
         assert_eq!(r.bottom_left, None);
