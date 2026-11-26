@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -216,6 +217,9 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				// A fresh identify (a new or restarted socket session): what changed while it was away is read again.
 				r.requestPass(installation)
 			case gatewayclient.OpMessageCT:
+				if message := delivery.Frame.MessageCT; message != nil {
+					r.groupHinted(installation, delivery, message.Seq)
+				}
 				// Outgoing ciphertext is already processed by the native sender.
 				// Its gateway echo must not start another full intake sweep.
 				if message := delivery.Frame.MessageCT; message == nil || message.UploaderDevice != device {
@@ -242,6 +246,12 @@ func (r *botGatewayRuntime) Ensure(installation, community, device, user id.ID, 
 				r.notify()
 				r.requestPass(installation)
 			case gatewayclient.OpMessagePlain, gatewayclient.OpHandshake, gatewayclient.OpEpochChanged, gatewayclient.OpVoiceState:
+				switch frame := delivery.Frame; {
+				case frame.Op == gatewayclient.OpHandshake && frame.Handshake != nil:
+					r.groupHinted(installation, delivery, frame.Handshake.Seq)
+				case frame.Op == gatewayclient.OpEpochChanged && frame.EpochChanged != nil:
+					r.groupHinted(installation, delivery, frame.EpochChanged.Seq)
+				}
 				if op := delivery.Frame.Op; (op == gatewayclient.OpHandshake || op == gatewayclient.OpEpochChanged) && delivery.Frame.GroupID != nil {
 					// A playing room in this call group applies the commit and re-keys now (Bot v2 Task 19 fix round 1, C1).
 					musicSignals.callGroupChanged(installation, *delivery.Frame.GroupID)
@@ -384,6 +394,33 @@ func (r *botGatewayRuntime) Drop(installation id.ID) {
 		e.cancel()
 		<-e.done
 	}
+}
+
+// groupHinted records the frame of a group at seq that delivery carried (musicEvents.groupHinted), on the connection
+// it arrived on.
+func (r *botGatewayRuntime) groupHinted(installation id.ID, delivery gatewayclient.Delivery, seq uint64) {
+	if delivery.Frame.GroupID == nil || seq == math.MaxUint64 {
+		return
+	}
+	musicSignals.groupHinted(installation, *delivery.Frame.GroupID, seq+1, delivery.ConnectionID(), r.clock())
+}
+
+func (r *botGatewayRuntime) clock() time.Time {
+	if r.now == nil {
+		return time.Now()
+	}
+	return r.now()
+}
+
+// musicGroupHeads is installation's hinted call-group heads on its live gateway connection (Task 3).
+func (r *botGatewayRuntime) musicGroupHeads(installation id.ID) *musicGroupHeads {
+	return &musicGroupHeads{events: musicSignals, installation: installation, now: r.clock,
+		connection: func() uint64 {
+			if e := r.entry(installation); e != nil && e.client != nil {
+				return e.client.ConnectionID()
+			}
+			return 0
+		}}
 }
 
 func (r *botGatewayRuntime) SubscribeGroups(ctx context.Context, installation id.ID, groups []id.ID) {

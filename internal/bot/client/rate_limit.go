@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -369,14 +370,56 @@ func (c *Client) waitRate(ctx context.Context, token, method, path string) error
 	case "hint":
 		limiter = b.hint
 	}
-	if err := waitLimiter(ctx, limiter); err != nil {
-		return err
-	}
+	started := time.Now()
+	err = waitLimiter(ctx, limiter)
 	// Read admission must finish before spending the scarcer per-target token.
-	if keypackage != nil {
-		return waitLimiter(ctx, keypackage)
+	if err == nil && keypackage != nil {
+		err = waitLimiter(ctx, keypackage)
 	}
-	return nil
+	if waited := time.Since(started); waited > rateWaitLogged {
+		c.logRateWait(ctx, class, path, waited)
+	}
+	return err
+}
+
+// rateWaitLogged is the shortest limiter wait the client logs: a longer one sits on someone's path (Task 3: the G3
+// repeat start waited on the read bucket's 125 ms cadence, unseen).
+const rateWaitLogged = 20 * time.Millisecond
+
+// logRateWait logs one wait with its class, route template and priority, never an id from the path.
+func (c *Client) logRateWait(ctx context.Context, class, path string, waited time.Duration) {
+	logger := c.log
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.InfoContext(ctx, "bot rate limiter wait", "class", class, "route", routeTemplate(path), "priority", RequestPriority(ctx), "wait_ms", waited.Milliseconds())
+}
+
+// routeTemplate is path without its query, each segment that is not a route word (lower-case letters, '-' and '_')
+// replaced by {id}: groups/{id}/info, never the group itself.
+func routeTemplate(path string) string {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	for i, part := range parts {
+		if !routeWord(part) {
+			parts[i] = "{id}"
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
+func routeWord(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func waitLimiter(ctx context.Context, limiter *priorityLimiter) error {

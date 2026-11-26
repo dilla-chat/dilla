@@ -626,6 +626,15 @@ async fn bot_repeated_track_starts_within_500_ms_at_p95() {
         p95 <= 500.0,
         "repeated track p95 {p95:.0} ms over 500 ms: {runs:?}"
     );
+    // Task 3: no drift across the session. A start that waits on a read bucket the earlier cycles drained grows run
+    // by run (CI: 296 ms mean in runs 1-10, 419 ms in runs 11-20); the later half's median stays within 1.25 times the
+    // earlier half's, plus 50 ms.
+    let (early, late) = runs.split_at(REPEAT_RUNS / 2);
+    let (early, late) = (percentile(early, 50.0), percentile(late, 50.0));
+    assert!(
+        late <= 1.25 * early + 50.0,
+        "repeated track starts drift: median {late:.0} ms in runs 11-20 over 1.25 x {early:.0} ms + 50 ms: {runs:?}"
+    );
 }
 
 /// e2e/voice/bot-music.spec.ts "a device that joins while the Bot plays hears it" (fix round 1, C1/I4): the join's

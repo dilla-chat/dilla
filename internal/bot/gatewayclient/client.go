@@ -122,6 +122,32 @@ type connection struct {
 	// incarnation names the dillad process this connection reached: hello instance id and generation, and the ready's
 	// boot id. A resumed connection is the same process, so it carries the previous one's.
 	incarnation string
+	// id is unique to this connection in the process (connectionIDs): ConnectionID and Delivery.ConnectionID.
+	id uint64
+}
+
+// connectionIDs numbers every connection of every Client in the process from 1, so an id never names two sockets.
+var connectionIDs atomic.Uint64
+
+// ConnectionID is the socket the client is connected on now, 0 while it has none (connecting, backing off, stopped).
+// Every connection, a resumed one too, has a new id: a consumer that keeps what one connection's frames said compares
+// it with Delivery.ConnectionID to know the stream it came from is still the live one (Task 3: the Bot's hinted
+// call-group heads).
+func (c *Client) ConnectionID() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.current == nil {
+		return 0
+	}
+	return c.current.id
+}
+
+// ConnectionID is the connection the frame arrived on (Client.ConnectionID); 0 when unknown.
+func (d Delivery) ConnectionID() uint64 {
+	if d.conn == nil {
+		return 0
+	}
+	return d.conn.id
 }
 
 // deliver hands an answer to the request waiting on this connection; an answer nobody waits for is dropped.
@@ -473,7 +499,7 @@ func (c *Client) runConnection(parent context.Context, token string) (fresh bool
 	}
 	cx, cancel := context.WithCancel(parent)
 	conn := &connection{ws: ws, ctx: cx, cancel: cancel, writes: make(chan outbound, 32), maxFrame: h.MaxFrameBytes, heartbeat: boundedMilliseconds(h.HeartbeatMS),
-		pending: make(map[uint64]chan ResponseFrame)}
+		pending: make(map[uint64]chan ResponseFrame), id: connectionIDs.Add(1)}
 	conn.ackDeadline = c.heartbeatAckTimeout
 	// Bot v2: an answer to a request frame may be as large as the route's response; DecodeServerFrame still holds every
 	// other frame to the hello's bound.

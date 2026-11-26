@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -53,6 +54,8 @@ type Config struct {
 	RateLimits        RateLimits
 	// SocketRoutes overrides the package's SocketRoutes (tests); nil keeps them.
 	SocketRoutes []string
+	// Logger takes the client's own diagnostics (a long rate-limiter wait); nil uses slog.Default.
+	Logger *slog.Logger
 }
 
 type Client struct {
@@ -72,6 +75,7 @@ type Client struct {
 	socketRoutes socketRouteTable
 	transportMu  sync.Mutex
 	transports   map[string]Transport
+	log          *slog.Logger
 }
 
 type Runtime struct {
@@ -135,8 +139,12 @@ func New(cfg Config) (*Client, error) {
 	if routes == nil {
 		routes = SocketRoutes
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Client{base: u, http: &hcopy, instance: cfg.InstanceID, timeout: timeout, allowLoopback: cfg.AllowLoopbackHTTP, rates: rates, buckets: make(map[string]*deviceLimiter), devices: make(map[string]string),
-		socketRoutes: compileSocketRoutes(routes)}, nil
+		socketRoutes: compileSocketRoutes(routes), log: logger}, nil
 }
 
 func (c *Client) Runtime(token string) (*Runtime, error) {

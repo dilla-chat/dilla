@@ -111,6 +111,19 @@ func withSealedPlay(ctx context.Context) context.Context {
 
 func sealedPlay(ctx context.Context) bool { v, _ := ctx.Value(sealedPlayKey{}).(bool); return v }
 
+type currentRevisionKey struct{}
+
+// withCurrentRevision marks ctx as a sealed control that acts on the room's state as it is (Task 3): the handler takes
+// the revision of the snapshot it reads as the request's. The commit is still a compare-and-swap on that revision.
+func withCurrentRevision(ctx context.Context) context.Context {
+	return context.WithValue(ctx, currentRevisionKey{}, true)
+}
+
+func atCurrentRevision(ctx context.Context) bool {
+	v, _ := ctx.Value(currentRevisionKey{}).(bool)
+	return v
+}
+
 // nowPlayingText is the established /nowplaying copy (web bot-handlers.ts): "Now playing: T — A."
 func nowPlayingText(state music.State) string {
 	if state.Current == nil {
@@ -309,6 +322,10 @@ func (h MusicInteractions) handle(ctx context.Context, actor InteractionActor, r
 		return InteractionResult{Status: 0, Revision: &revision, Data: data}, nil
 	}
 	reason = "client_revision_stale"
+	if op != protocol.OpMusicEnqueue && !immediate && atCurrentRevision(ctx) {
+		current := snapshot.Revision
+		req.Revision = &current
+	}
 	if op != protocol.OpMusicEnqueue && !immediate && (req.Revision == nil || *req.Revision != snapshot.Revision) {
 		revision := snapshot.Revision
 		return InteractionResult{Status: interactionStatusConflict, Revision: &revision}, nil

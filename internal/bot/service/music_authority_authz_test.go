@@ -1,7 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -197,4 +200,45 @@ type staticMusicResolver struct{}
 
 func (staticMusicResolver) Resolve(context.Context, string) ([]music.Track, error) {
 	return []music.Track{{ID: "x", Provider: music.ProviderYouTube, CanonicalID: "abcdefghijk", Title: "Song", Artist: "Band", DurationMS: 1000}}, nil
+}
+
+// Task 3 (G3 repeat-start drift): a sealed /stop is built at the room's current revision, not at revision 0. Built at 0
+// it was refused client_revision_stale once a /play had saved (revision 1 and up) and only the retry ran it: every
+// /stop paid a refused handler run (its call read and state read) before it stopped anything.
+func TestSealedStopAfterAPlayRunsOnceAtTheCurrentRevision(t *testing.T) {
+	r := newAuthzRig(t)
+	n := &playlistAcceptanceNative{binding: native.Binding{Instance: id.New(), Community: r.community, Installation: r.authority.InstallationID}, rows: map[string]native.StateValue{}}
+	stateStore, err := persistence.New(n, r.community)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	h := MusicInteractions{Store: stateStore, Authority: r.authority, InstallationID: r.authority.InstallationID, CommunityID: r.community,
+		Resolver: staticMusicResolver{}, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	handlers := h.Handlers()
+	stopRuns := 0
+	stop := handlers[protocol.OpMusicStop]
+	inner := stop.Handle
+	stop.Handle = func(ctx context.Context, actor InteractionActor, req protocol.Request) (InteractionResult, error) {
+		stopRuns++
+		return inner(ctx, actor, req)
+	}
+	handlers[protocol.OpMusicStop] = stop
+	d := &SealedDispatcher{Community: r.community, Handlers: handlers}
+	dispatch := func(op protocol.Operation, args ...any) intake.Answer {
+		req := protocol.SealedRequest{RequestID: id.New(), CommunityID: r.community, ChannelID: r.channel, Operation: uint64(op),
+			Args: args, SentAt: uint64(time.Now().Unix()), UserID: r.dj, DeviceID: id.New()}
+		var last intake.Answer
+		d.Dispatch(t.Context(), req, func(a intake.Answer) { last = a })
+		return last
+	}
+	if got := dispatch(protocol.OpMusicEnqueue, "song"); got.Status != intake.StatusOK {
+		t.Fatalf("/play = %d %q", got.Status, got.Body)
+	}
+	if got := dispatch(protocol.OpMusicStop); got.Status != intake.StatusOK || string(got.Body) != "Music stopped." {
+		t.Fatalf("/stop = %d %q", got.Status, got.Body)
+	}
+	if stopRuns != 1 || strings.Contains(logs.String(), "client_revision_stale") {
+		t.Fatalf("/stop ran %d times (want 1); logs:\n%s", stopRuns, logs.String())
+	}
 }

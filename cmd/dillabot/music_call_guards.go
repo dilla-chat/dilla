@@ -59,6 +59,41 @@ type musicCallCatchUp struct {
 	// Task 3): helper.ErrClosed once the helper this catch-up uses is closed, unusable or no longer the registered one.
 	// Nil checks nothing.
 	helperNow func() error
+	// heads, when set, is the gateway's hinted head of the group (Task 3): a helper already at it skips the remote read,
+	// which otherwise waits for a read token once a busy room drained the Bot's read bucket. Nil always reads.
+	heads *musicGroupHeads
+}
+
+// musicGroupHeads is one installation's hinted call-group heads (musicEvents.hintedHead) on its live gateway
+// connection.
+type musicGroupHeads struct {
+	events       *musicEvents
+	installation id.ID
+	// connection is the installation's live gateway connection now (gatewayclient.Client.ConnectionID); 0 for none.
+	connection func() uint64
+	now        func() time.Time
+}
+
+// current is group's hinted next sequence while it stands on the live connection.
+func (h *musicGroupHeads) current(group id.ID) (uint64, bool) {
+	if h == nil || h.events == nil || h.connection == nil || h.now == nil {
+		return 0, false
+	}
+	return h.events.hintedHead(h.installation, group, h.connection(), h.now())
+}
+
+// beginRead starts a remote read of group's head; done records its answer when the connection that was live at the
+// start is still the live one.
+func (h *musicGroupHeads) beginRead(group id.ID) (done func(next uint64)) {
+	if h == nil || h.events == nil || h.connection == nil || h.now == nil {
+		return func(uint64) {}
+	}
+	conn := h.connection()
+	return func(next uint64) {
+		if conn != 0 && h.connection() == conn {
+			h.events.groupRead(h.installation, group, next, conn, h.now())
+		}
+	}
 }
 
 const musicCatchUpPasses = 16
@@ -102,11 +137,18 @@ func (c musicCallCatchUp) catchUp(ctx context.Context, group id.ID) error {
 		if err != nil {
 			return err
 		}
+		// Every handshake and message of the group reaches the Bot's live gateway connection as it is accepted: a helper
+		// at the head that connection's hints showed is current without asking dillad (Task 3).
+		if hinted, ok := c.heads.current(group); ok && hinted <= local.NextSequence {
+			return nil
+		}
+		read := c.heads.beginRead(group)
 		remote, err := c.remote(ctx, group)
 		if err != nil {
 			return err
 		}
 		if remote.NextSequence != 0 && remote.NextSequence <= local.NextSequence {
+			read(remote.NextSequence)
 			return nil
 		}
 	}
