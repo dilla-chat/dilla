@@ -3330,21 +3330,16 @@ fn measure_rate(rate: &mut (std::time::Instant, u64, u32), frames: u64, now: std
     }
 }
 
-/// `frame`'s RGBA rows as the BGRA gpui draws, mirrored left to right with `mirror` (the own camera's self-view only:
-/// what is sent is never mirrored).
-fn bgra_of(frame: &RemoteFrame, mirror: bool) -> Vec<u8> {
-    let mut bgra = frame.rgba.as_ref().clone();
+/// `frame`'s BGRA rows (dilla-media converts to the order gpui draws, so nothing is swapped), mirrored left to right
+/// with `mirror` (the own camera's self-view only: what is sent is never mirrored). The bytes are taken over when
+/// nobody else holds them; while the call's frame maps still hold them they are copied once (a memcpy, no per-pixel
+/// pass), and the producer's buffer is free again for its next frame (final review I1).
+fn bgra_of(frame: RemoteFrame, mirror: bool) -> Vec<u8> {
     let row = frame.width as usize * 4;
-    if row == 0 {
-        return bgra;
-    }
-    for line in bgra.chunks_exact_mut(row) {
-        let pixels = line.as_chunks_mut::<4>().0;
-        if mirror {
-            pixels.reverse();
-        }
-        for px in pixels {
-            px.swap(0, 2);
+    let mut bgra = Arc::unwrap_or_clone(frame.bgra);
+    if mirror && row != 0 {
+        for line in bgra.chunks_exact_mut(row) {
+            line.as_chunks_mut::<4>().0.reverse();
         }
     }
     bgra
@@ -3380,7 +3375,7 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
     ui.heights = videos
         .iter()
         .filter(|(k, _)| Some(*k) != mirrored.as_ref())
-        // The stream's own height: a self-view frame is scaled down, its stat says what is sent.
+        // The stream's own height, what its stat says (a self-view frame is the sent frame at its own size).
         .map(|(k, f)| (k.clone(), f.stream_height))
         .collect();
     ui.images.retain(|k, (_, image)| {
@@ -3390,17 +3385,19 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
         }
         keep
     });
-    for (k, f) in &videos {
-        if ui.images.get(k).is_some_and(|(n, _)| *n == f.frames) {
+    for (k, f) in videos {
+        if ui.images.get(&k).is_some_and(|(n, _)| *n == f.frames) {
             continue;
         }
-        let bgra = bgra_of(f, Some(k) == mirrored.as_ref());
-        if let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, bgra) {
+        let (width, height, frames) = (f.width, f.height, f.frames);
+        let bgra = bgra_of(f, Some(&k) == mirrored.as_ref());
+        // gpui's RenderImage holds BGRA bytes in an RgbaImage's buffer.
+        if let Some(buf) = image::RgbaImage::from_raw(width, height, bgra) {
             let frame = image::Frame::new(buf);
-            if let Some((_, old)) = ui.images.insert(
-                k.clone(),
-                (f.frames, Arc::new(RenderImage::new(vec![frame]))),
-            ) {
+            if let Some((_, old)) = ui
+                .images
+                .insert(k, (frames, Arc::new(RenderImage::new(vec![frame]))))
+            {
                 stale.push(old);
             }
         }
@@ -5495,6 +5492,26 @@ mod tests {
             !after(false, false, Some(4), 4),
             "not live (yet, or cancelled)"
         );
+    }
+
+    /// Final review I1: a frame's bytes are already BGRA (dilla-media converts to libyuv's ARGB), so the stage passes
+    /// them through as they are; only the own camera is mirrored, pixel by pixel, never channel-swapped. Synthetic
+    /// two-pixel rows only.
+    #[test]
+    fn a_frame_s_bgra_is_drawn_as_it_is_and_only_mirrored() {
+        let frame = || dilla_media::RemoteFrame {
+            width: 2,
+            height: 1,
+            bgra: std::sync::Arc::new(vec![1, 2, 3, 4, 5, 6, 7, 8]),
+            frames: 1,
+            stream_height: 1,
+        };
+        assert_eq!(super::bgra_of(frame(), false), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(super::bgra_of(frame(), true), vec![5, 6, 7, 8, 1, 2, 3, 4]);
+        // Nobody else holds the bytes: taken over, not copied.
+        let only = frame();
+        let at = only.bgra.as_ptr();
+        assert_eq!(super::bgra_of(only, false).as_ptr(), at, "the very bytes");
     }
 
     /// Self-view review m5: a stream's counter that starts again (a quality change gives the share a new sent counter)

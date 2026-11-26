@@ -666,7 +666,7 @@ fn the_own_share_s_sent_frames_reach_its_window_until_it_stops(cx: &mut TestAppC
         session
             .local_videos()
             .get(&kind)
-            .map(|f| (f.width, f.height, f.rgba.len()))
+            .map(|f| (f.width, f.height, f.bgra.len()))
     };
     wait(cx, "alice's own share frame", || {
         sent(ShareKind::Screen).is_some()

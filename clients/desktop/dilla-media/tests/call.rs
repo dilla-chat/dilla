@@ -1115,7 +1115,7 @@ fn the_local_tap_yields_the_sent_frames_while_publishing_and_none_after() {
         .expect("a self-view frame within 10 s")
         .expect("the call is live")
         .get(&dilla_media::ShareKind::Camera)
-        .map(|f| (f.width, f.height, f.rgba.len(), f.frames));
+        .map(|f| (f.width, f.height, f.bgra.len(), f.frames));
         let (w, h, len, frames) = shown.expect("the camera's frame");
         assert_eq!((w, h, len), (320, 240, 320 * 240 * 4), "the sent size");
         assert!(frames >= 1);

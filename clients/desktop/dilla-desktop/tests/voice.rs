@@ -128,23 +128,23 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
     cx.run_until_parked();
 }
 
-/// A synthetic sent frame (never a screen's content): its left half one colour, its right half another, so a mirrored
-/// image reads the right half first.
+/// A synthetic sent frame (never a screen's content), BGRA as dilla-media makes it: its left half red, its right half
+/// blue, so a mirrored image reads the right half first.
 fn sent_frame(w: u32, h: u32, frames: u64) -> dilla_media::RemoteFrame {
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    let mut bgra = Vec::with_capacity((w * h * 4) as usize);
     for _ in 0..h {
         for x in 0..w {
-            rgba.extend_from_slice(if x < w / 2 {
-                &[250, 10, 10, 255]
-            } else {
+            bgra.extend_from_slice(if x < w / 2 {
                 &[10, 10, 250, 255]
+            } else {
+                &[250, 10, 10, 255]
             });
         }
     }
     dilla_media::RemoteFrame {
         width: w,
         height: h,
-        rgba: Arc::new(rgba),
+        bgra: Arc::new(bgra),
         frames,
         stream_height: h,
     }
