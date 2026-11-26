@@ -17,6 +17,22 @@ that still has it fails to load, so the server does not start. Delete that line,
 - The server no longer allows the app's origins (`capacitor://localhost` and `https://localhost`) to call `/v1/` and
   `/i/` with a bearer token. The desktop app is not affected.
 
+## Browser client removed from the server
+
+`dillad` no longer serves the browser client. Nothing needs doing when you upgrade.
+
+- **Old client addresses go to the download page.** `/`, `/welcome`, `/c/…` and every other former client path answer a
+  redirect to `/download`. The API (`/v1/…`), the gateway, `/i/<code>`, `/desktop-auth`, webhooks, metrics and health
+  answer as before. `/app-version.json` is gone, and the gateway sends no build hint.
+- **The invite page is desktop-only.** It offers "Open Dilla desktop" and a download link, and no browser link.
+- **Signing in through OIDC from a browser is refused.** It answers 403 "sign in from Dilla desktop". The desktop app's
+  OIDC sign-in is unchanged.
+- **`--desktop-downloads` is deprecated and harmless.** The download page is always served. The flag is still accepted,
+  so an `ExecStart` that carries it keeps starting; it logs one warning. Remove it or leave it, both work.
+  `--desktop-downloads-channel` is unchanged.
+- No `dilla.toml` setting changed. A source build needs no web build first
+  ([Build dillad from source](../README.md#build-dillad-from-source)).
+
 ## The Bot's store moved to SQLite3 Multiple Ciphers
 
 The Bot keeps its state in an encrypted database. This build opens and writes that database with SQLite3 Multiple Ciphers

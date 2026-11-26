@@ -2019,81 +2019,33 @@ refused, so an unset token never leaves the endpoint open.
 
 ## Web client and content manifest
 
-The instance serves the browser client from its own origin. The client therefore needs no CORS
-(the instance sends none) and passes the gateway's same-host `Origin` rule (`02` § Gateway frames,
-Connecting). The served tree is embedded in the binary when it is built; a binary built without the
-client serves a one-page placeholder that names itself with `<meta name="dilla-web"
-content="placeholder">`.
+**Retired (2026-11-26).** The instance no longer serves a browser client, so this section, the content
+manifest and the client's CSP no longer describe a served surface. What the instance answers now:
 
-**Which requests the client answers.** A request for which the instance has a route — every route
-of this document and of `02`, `GET /gateway`, `/rtc`, `GET /i/{code}` and the operational
-endpoints — is answered by that route when its method is routed. A path equal to or below one of the
-reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/hooks/`, `/healthz`, `/readyz`, `/metrics` and `/debug/`
-(each also without its trailing `/`) is never answered by the client: an unknown one is
-`404` with the body `404 page not found`, a known one asked with the wrong method `405` with
-`Allow`. Every other request is the client's, in this order:
+- A request for which the instance has a route is answered by that route, as before. A path equal to or
+  below one of the reserved prefixes `/v1/`, `/gateway`, `/rtc`, `/i/`, `/hooks/`, `/desktop-auth/`, `/healthz`,
+  `/readyz`, `/metrics` and `/debug/` is never answered by the download pages: an unknown one is `404` with the body
+  `404 page not found`, a known one asked with the wrong method `405` with `Allow`.
+- Any other extensionless path (`/`, `/welcome`, `/c/<community>/<channel>`, `/index.html`) is `302` with
+  `Location: /download`, `Cache-Control: no-store` and no body. The target is fixed: no query string or `Host` is
+  echoed. Any other path is `404`, and a method other than `GET` or `HEAD` is `405`.
+- `GET /download` is the Download Dilla page. It and its assets (`/desktop-download.css`,
+  `/desktop-download-brand.png` and the embedded font `/jetbrains-mono.woff2`) are served `no-cache` with an
+  `ETag`, under `Content-Security-Policy: default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self';
+  base-uri 'none'; form-action 'none'; frame-ancestors 'none'` and a `Permissions-Policy` that turns every feature
+  off. `/download/{platform}` redirects to the current desktop release.
+- `/app-version.json` does not exist, and there is no `dilla-manifest.json`. The gateway sends no `app_build` in
+  `ready`/`resumed` (`02` § Gateway frames), so a client has no web build to verify.
+- Browser sign-in through OIDC is refused. `GET /v1/auth/oidc/start` without a `desktop_request` is `403 E_FORBIDDEN`
+  ("this server serves no browser client: sign in from Dilla desktop") once OIDC is configured and enabled; the
+  desktop flow (`/desktop-auth`) is unchanged. The callback accepts only the desktop cookie.
 
-1. A method other than `GET` or `HEAD` is `405` with `Allow: GET, HEAD`.
-2. A path containing `..` or a NUL byte is `404`. `/` is `index.html`.
-3. A path naming a file of the manifest is that file.
-4. A path whose last segment contains no `.` is `index.html` with `200`: the client's own routes
-   (`/welcome`, `/c/<community>/<channel>`) are resolved in the browser.
-5. Anything else is `404`.
+A test-only seam, `dilla-testhost -web-root` (`dilladtest` `WebRoot`, `Options.Web`), still serves a given directory
+tree, verified against its manifest, for the desktop's test harness; `dillad serve` has no way to set it.
 
-**Headers.** Every file is served with an explicit `Content-Type` chosen by extension and never
-sniffed: `.html` `text/html; charset=utf-8`, `.js` `text/javascript; charset=utf-8`, `.css`
-`text/css; charset=utf-8`, `.wasm` `application/wasm`, `.json` `application/json`, `.woff2`
-`font/woff2`, `.woff` `font/woff`, `.svg` `image/svg+xml`, `.png` `image/png`, `.ico` `image/x-icon`,
-`.txt` `text/plain; charset=utf-8`; a tree holding a file of any other extension is refused at
-start. `ETag` is the file's quoted SHA-256 from the manifest, and a request whose `If-None-Match`
-names it is `304` (which carries no `Content-Type`). Files under `/assets/` (content-hashed by the
-build) are `Cache-Control: public, max-age=31536000, immutable`; every other file, `index.html`
-included, is `Cache-Control: no-cache`.
-
-Every `200` and every `304` of every file, whatever its extension, carries the same set of headers:
-
-    X-Content-Type-Options: nosniff
-    Referrer-Policy: no-referrer
-    X-Frame-Options: DENY
-    Permissions-Policy: camera=(self), microphone=(self), display-capture=(self), geolocation=()
-    Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self' ws://HOST wss://HOST; worker-src 'self'; media-src blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
-
-The policy is on every file, not only on HTML, because a dedicated worker loaded from a URL takes
-its policy from its own script response, not from the document that started it, and the client's
-worker holds its keys and does its network calls. The client renders the images it decrypted from
-`blob:` URLs it mints in the page, which is what `img-src blob:` admits. The camera, the
-microphone and screen capture are granted to the instance's own origin only, for calls (§ Voice),
-and to no frame of another origin. `media-src blob:` admits the inline audio and video players,
-which play decrypted attachments from `blob:` URLs the page mints; call audio uses `srcObject`
-and WebAudio, which `media-src` does not govern, and the client's sounds are synthesised, so no
-other media source is admitted. The media worker and the noise-suppression worklet are same-origin
-files, which `worker-src 'self'` and `script-src 'self' 'wasm-unsafe-eval'` already admit. Later
-changes widen these headers with their own row in `07`. `HOST` is the request's `Host` header when it is a host name or IPv4 address
-of at most 253 characters, or a bracketed IPv6 literal, either with an optional port; for any other
-`Host` the two `ws` sources are left out. The client's own `404` and `405` answers carry only
-`X-Content-Type-Options: nosniff` from Go's `http.Error`; they carry no CSP, ETag, Cache-Control or
-policy headers. No `Strict-Transport-Security`, `Cross-Origin-Opener-Policy`,
-`Cross-Origin-Embedder-Policy` or `Access-Control-*` header is sent: TLS termination and HSTS belong
-to the operator's proxy, and the client needs no cross-origin isolation. Behind a proxy that
-rewrites `Host`, the CSP names the rewritten host and the browser refuses the gateway connection;
-such a proxy must forward the original `Host`.
-
-**The content manifest.** The root of the tree holds `dilla-manifest.json`, one JSON object on one
-line followed by a newline:
-
-    {"v":1,"files":[{"path":"assets/index-AbC123.js","sha256":"<64 lowercase hex>","size":12345},{"path":"index.html","sha256":"…","size":678}]}
-
-`files` lists every regular file of the tree except the manifest itself, by its `/`-separated path
-relative to the root, in strictly ascending byte order of `path`, with the SHA-256 of its bytes as
-64 lowercase hex digits and its length in bytes. The instance verifies the tree against it when it
-starts and refuses to start when `v` is not `1`, when an entry is malformed or out of order, when
-`index.html` is not listed, when a listed file is missing, differs in size or digest, or is not a
-regular file, or when a file is present that is not listed; it then serves only the bytes it
-verified. The manifest is the per-file integrity record a later client-side or third-party check
-can be built on; it is not itself served.
-
-**The invite landing page.** The invite landing page (`GET /i/{code}`, `text/html`) links to
-`/welcome?invite=<code>` on its own origin; the client prefills its invite field from it.
+**The invite landing page.** The invite landing page (`GET /i/{code}`, `text/html`) is desktop-only. It shows an
+"Open Dilla desktop" link to a `dilla://` invite URL when one can be made, a link to `/download`, and the text
+"Connect to … and paste this invite code". It links to no browser client.
 
 ## Flags
 

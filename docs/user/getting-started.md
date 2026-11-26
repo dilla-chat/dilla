@@ -584,17 +584,15 @@ There are three ways back, in this order of ease:
 An invite is a code or a link. A link to an instance looks like `https://chat.example.org/i/<code>`.
 Opening it shows a page from the instance, in the light or dark scheme your device asks for:
 
-![The invite page in the dark scheme: "You have been invited to Midgard Crew on dilla.test", the invite code, when it
-expires and how many uses are left, and the button "Open dilla in this browser"](screenshots/invite-landing.png)
-
-![The same page in the light scheme](screenshots/invite-landing-light.png)
+(The screenshots of the old invite page, with its "Open dilla in this browser" button, are retired with the browser client; the page is shown here in words.)
 
 It names the server the invite is for (the page calls it a community) and the instance, and shows the code, when the
 invite expires and how many more times it can be used ("Expires on {date} (UTC) · {n} uses left"). The page has no
 form and no script; it never asks for a password ("This page never asks for a password."). Opening the page does not
-use the invite. When the instance offers the desktop app, the page has **Open Dilla desktop**, which opens the app on the invite. "Or paste the code into a
-dilla client for {instance}." You can also go to the instance's address and paste the code or the whole link in the
-first step.
+use the invite. The page is for Dilla desktop only: **Open Dilla desktop** opens the app on the invite, a "Download
+Dilla desktop" link goes to the download page, and "Connect to {instance} and paste this invite code." covers the
+rest. There is no browser button: an instance serves no browser client. You can also open the app and paste the code or
+the whole link in the first step.
 
 ## 2. Sign up: six steps
 

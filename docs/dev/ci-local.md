@@ -18,7 +18,7 @@ npm run ci:local -- --doctor              # check the prerequisites and exit
 ## How it works
 
 ci-local doesn't keep its own list of commands. `scripts/ci-local-plan.mjs` reads the workflows and builds the jobs
-from them. A job several carry (`changes`, `rust-native`, `rust-wasi`, `web-build`) runs once: it runs when any
+from them. A job several carry (`changes`, `rust-native`, `rust-wasi`) runs once: it runs when any
 workflow's gate holds, and its steps must be the same in every file. Matrix jobs are expanded into one job per leg, `needs:` and the job and step `if:` area gates are respected, and each
 job's `run:` steps run as written in the order they appear, with `bash -eo pipefail`, `CI=true` and the
 `timeout-minutes` from the workflow. Jobs that don't depend on each other run in parallel within a CPU budget
@@ -31,7 +31,7 @@ Steps that only make sense on GitHub are mapped to local equivalents:
 | --- | --- |
 | `actions/checkout`, `actions/cache*` | nothing: the working tree is the checkout, and `target/` and `~/.cargo` persist |
 | `actions/setup-node`, `actions/setup-go` | prerequisite checks against `.nvmrc` and `go.mod` |
-| `actions/upload-artifact` / `download-artifact` | a copy through `target/ci-local/artifacts/<name>/` into the path the later job reads (`internal/mlswasi/testdata`, `artifacts/`, `packages/web/dist`, …) |
+| `actions/upload-artifact` / `download-artifact` | a copy through `target/ci-local/artifacts/<name>/` into the path the later job reads (`internal/mlswasi/testdata`, `artifacts/`, …) |
 | the clang 23 apt step | a check that `/usr/bin/clang-23`, or a `clang`/`llvm-ar` on PATH from the same LLVM line, exists; the local one stands in |
 | `ci-apt-cache.sh`, `playwright install --with-deps` | the browsers are installed with `npx playwright install` (once per run); the system libraries are a prerequisite |
 | `ci-audio-server.sh` | a check that `pactl info` reaches a running PipeWire-Pulse or PulseAudio server |
@@ -42,7 +42,7 @@ Steps that only make sense on GitHub are mapped to local equivalents:
 
 The node job's `npm run test:ci-check` runs in a fresh copy of the tracked and untracked files
 (`target/ci-local/clean-tree/node`), as on a runner's checkout. ci-areas.test.mjs's reader scan skips paths that
-aren't tracked, so a local `packages/web/dist` doesn't trip it either way.
+aren't tracked.
 
 Steps that several jobs share run once per run: `npm ci` (before any job, so it never removes `node_modules` from
 under a running job), the `install-ci-tool.sh` installs, the `wasm-pack build`s and the Playwright installs. The pinned
@@ -112,11 +112,8 @@ throwaway container. `CI=true` and the `GITHUB_*`/`RUNNER_*` variables are set a
 - The exit status is non-zero when any job failed or was cancelled.
 
 The jobs run on the working tree as it is. go-sqlc and the vectors checks require a clean tree, as CI sees the pushed
-commit, so commit before the run that gates your push. go-release runs alone because it replaces the placeholder in
-`internal/web/dist` with the real client. ci-local copies that directory aside first and puts it back afterwards
-(copied beside it, then swapped in by rename), once every process the job started is gone, Ctrl-C included. If a run
-is killed outright during go-release, the next run puts the directory back from the pending snapshot before it does
-anything else.
+commit, so commit before the run that gates your push. go-release builds the release binaries; they embed no
+browser client, so it needs no `internal/web/dist` and has no snapshot step.
 
 ## Prerequisites
 

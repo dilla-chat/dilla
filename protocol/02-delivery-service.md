@@ -450,14 +450,7 @@ factor, Bot and rate checks pass for the retry itself, an `idem` reused for a di
 60 s), and an answer that asks the client to come back is not recorded, so the retry runs: `401`, `426`,
 `429` (a route's rate refusal, or `E_BUSY`) and every `5xx`.
 
-`app_build` follows ready/resumed and names the entry from the verified, currently served web
-handler. It is at most 512 characters, matches `/assets/[A-Za-z0-9_./-]+.js`, and contains no `..`.
-It is a hint: the page verifies `/app-version.json` once, deduplicates notices and in-flight
-checks, and defers automatic reload throughout a live or recovering call. The existing draft/file
-checkpoint precedes any automatic update. No staged file or unverified directory is advertised.
-The current web app never polls versions periodically, including before login and on older or
-disconnected sockets. Startup, foreground, online and reconnect still reconcile. An unresolved
-new hint retries with bounded exponential backoff; successful verification stops retries.
+**Retired (2026-11-26).** `app_build` was the web build entry of a served browser client. `dillad` serves no browser client any more, so it sends no `app_build` in `ready`/`resumed`; a client that receives one ignores it (`09` § Web client and content manifest).
 Malformed hints are ignored. Frames
 56–58 never consume replay numbers or appear in the replay ring.
 
