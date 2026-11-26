@@ -1040,7 +1040,7 @@ func (s *Supervisor) advanceOnInputEnd(p Playback, budget *startBudget) bool {
 	inputErr := input.InputErr()
 	s.mu.Lock()
 	if s.closed || s.playback != p || s.pausedPlayback ||
-		(inputErr != nil && !(errors.Is(inputErr, encode.ErrInvalidOpus) && endDetail(inputErr) == "invalid" && s.endedAtDurationLocked(p))) {
+		(inputErr != nil && (!errors.Is(inputErr, encode.ErrInvalidOpus) || endDetail(inputErr) != "invalid" || !s.endedAtDurationLocked(p))) {
 		s.mu.Unlock()
 		return false
 	}

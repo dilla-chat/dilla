@@ -185,7 +185,7 @@ func drainingFixture(t *testing.T) (*music.Supervisor, *gatedStarter, uint64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err = s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
+	_, err = s.Apply(t.Context(), state.Revision, music.Operation{Kind: music.OpResume})
 	if err != nil {
 		t.Fatal(err)
 	}

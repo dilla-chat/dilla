@@ -204,7 +204,7 @@ func testOggStream(packets int) []byte {
 		if i == packets-1 {
 			flags = 0x04
 		}
-		out.Write(testOggPage(uint32(i+2), flags, uint64(i+1)*960, []byte{0xfc, byte(i), 0xaa})) //nolint:gosec // G115: test sizes
+		out.Write(testOggPage(uint32(i+2), flags, uint64(i+1)*960, []byte{0xfc, byte(i), 0xaa}))
 	}
 	return out.Bytes()
 }
