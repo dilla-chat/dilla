@@ -1043,10 +1043,13 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
         if !query.is_empty() {
             input.update(cx, |s, cx| s.set_value(query, window, cx));
         }
+        // The focus the picker took it from (the message box): a pick gives it back.
+        let back = window.focused(cx);
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         if let Some(g) = ui::ui(cx).gif.as_mut() {
             g.search = Some(input);
+            g.return_focus = back;
         }
     }
     let input = ui::ui(cx).gif.as_ref()?.search.clone()?;

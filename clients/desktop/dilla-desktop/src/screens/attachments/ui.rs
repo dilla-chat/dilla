@@ -162,9 +162,11 @@ pub struct GifState {
     pub turn: u64,
     /// The search field, made when the picker first draws.
     pub search: Option<gpui::Entity<gpui_component::input::InputState>>,
-    /// The client that searches and attaches the pick, and the window the picker is drawn in.
+    /// The client that searches and sends the pick, and the window the picker is drawn in.
     pub client: Option<Rc<Client>>,
     pub owner: Option<WindowId>,
+    /// What had the focus when the picker took it (the message box): a pick gives it back.
+    pub return_focus: Option<FocusHandle>,
 }
 
 /// A tray entry's picture, kept by its tray id (Attachments.tsx `trayPreviews`).
@@ -1566,8 +1568,10 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
     .detach();
 }
 
-/// Picks a GIF: its full file is fetched through the instance and attached as an ordinary attachment (the worker's
-/// note: "a GIF crosses back as a Blob and the page sends it with attachFiles").
+/// Picks a GIF (a click or Enter on a result): its full file is fetched through the instance and sent at once, alone,
+/// as its own message (Jonas, 2026-11-26: "Click sends at once"; the old app put it in the tray and waited for Enter).
+/// The picker closes, the focus goes back to the message box and "gif sent." is read out; the draft and the tray's
+/// other files stay as they are ([`send_gif`]).
 pub fn pick_gif(index: usize, cx: &mut App) {
     let Some(g) = ui(cx).gif.as_mut() else { return };
     if g.picking.is_some() {
@@ -1602,13 +1606,12 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                         item.title.clone()
                     };
                     let name = format!("{}.gif", safe_name(&title, "gif"));
-                    ui(cx).gif = None;
-                    attach(
-                        to,
-                        vec![NewFile::from_bytes(&name, "image/gif", bytes)],
-                        vec![Some(TrayPreview::Gif)],
-                        cx,
-                    );
+                    let back = ui(cx).gif.as_mut().and_then(|g| g.return_focus.take());
+                    close_gifs(cx);
+                    if let (Some(back), Some(owner)) = (back, shown_in) {
+                        in_window(owner, cx, move |window, cx| window.focus(&back, cx));
+                    }
+                    send_gif(to, name, bytes, cx);
                 }
                 _ => {
                     if let Some(g) = ui(cx).gif.as_mut() {
@@ -1617,6 +1620,124 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                     dilla_desktop_ui::components::toast::show_toast_in(
                         shown_in,
                         t("gif.pickFailed"),
+                        cx,
+                    );
+                }
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// Runs `f` in the window `owner`, if it is still open (deferred: never inside another update of it).
+fn in_window(owner: WindowId, cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.defer(move |cx| {
+        if let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == owner) {
+            let _ = handle.update(cx, |_, window, cx| f(window, cx));
+        }
+    });
+}
+
+/// Sends the GIF `name` (`bytes`) to `to`'s channel at once, as its own message with no text: it goes through the
+/// channel's tray (sealed and uploaded as any file, its card showing meanwhile), then only its own entry is taken
+/// (`Tray::take`), so the draft and the tray's other files stay. A GIF that could not be sent is left in the tray, so
+/// nothing is lost: Enter sends it with the rest; the toast says it was not sent.
+pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
+    let (Some(client), Some(channel)) = (to.client.clone(), to.channel) else {
+        return;
+    };
+    let shown_in = to.window;
+    let tray = tray_of(&client, channel, cx);
+    let owner = owner_of(&client);
+    let kept = bytes.clone();
+    let ids = match client
+        .attachments()
+        .attach(&tray, vec![NewFile::from_bytes(&name, "image/gif", bytes)])
+    {
+        Ok(ids) => ids,
+        Err(_) => {
+            dilla_desktop_ui::components::toast::show_toast_in(
+                shown_in,
+                t("shell.message.failed"),
+                cx,
+            );
+            return;
+        }
+    };
+    for id in &ids {
+        ui(cx)
+            .tray_previews
+            .insert((owner, channel, id.clone()), TrayPreview::Gif);
+    }
+    cx.refresh_windows();
+    cx.spawn(async move |cx| {
+        // The tray seals and uploads on the client's runtime; its entry's phase says when that is done.
+        let done = |tray: &Tray| {
+            let entries = tray.entries();
+            ids.iter().all(|id| {
+                entries.iter().find(|e| &e.id == id).is_none_or(|e| {
+                    matches!(
+                        e.phase,
+                        dilla_client::state::attachments::TrayPhase::Ready
+                            | dilla_client::state::attachments::TrayPhase::Failed
+                    )
+                })
+            })
+        };
+        while !done(&tray) {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+        }
+        // Removed meanwhile (its × or a send from the message box took it), or its client was released (Forget, sign
+        // out): nothing more to do, and nothing is sent for a released account.
+        let entries = tray.entries();
+        let released = cx.update(|cx| ui(cx).released.contains(&owner));
+        if released || !ids.iter().all(|id| entries.iter().any(|e| &e.id == id)) {
+            return;
+        }
+        let taken = tray.take(&ids);
+        let sent = match taken {
+            Ok(files) => {
+                let rx = cx.update(|cx| {
+                    for id in &ids {
+                        ui(cx).tray_previews.remove(&(owner, channel, id.clone()));
+                    }
+                    client
+                        .attachments()
+                        .send(channel, String::new(), files, None)
+                });
+                match rx.await {
+                    Ok(Ok(_)) => Ok(()),
+                    // Taken but not sent: it goes back into the tray.
+                    _ => Err(true),
+                }
+            }
+            // Its upload failed: its card stays in the tray, failed.
+            Err(_) => Err(false),
+        };
+        cx.update(|cx| {
+            match sent {
+                Ok(()) => {
+                    if let Some(owner) = shown_in {
+                        in_window(owner, cx, |window, cx| {
+                            dilla_desktop_ui::a11y::announce(t("gif.sent"), window, cx)
+                        });
+                    }
+                }
+                Err(put_back) => {
+                    if put_back {
+                        attach(
+                            to,
+                            vec![NewFile::from_bytes(&name, "image/gif", kept)],
+                            vec![Some(TrayPreview::Gif)],
+                            cx,
+                        );
+                    }
+                    dilla_desktop_ui::components::toast::show_toast_in(
+                        shown_in,
+                        t("shell.message.failed"),
                         cx,
                     );
                 }

@@ -521,6 +521,63 @@ mod two_accounts {
         drop(w);
     }
 
+    /// Task 11 ("Click sends at once", Jonas 2026-11-26): a picked GIF goes out at once, alone, as its own message with
+    /// no text; a file already in the tray stays there, and so does the draft (the GIF never passes the message box).
+    /// The pick's Giphy fetch is left out (no network in tests): `send_gif` is what `pick_gif` runs on its bytes.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn a_picked_gif_is_sent_alone_at_once(cx: &mut TestAppContext) {
+        // The client's runtime answers the send from its own thread.
+        cx.executor().allow_parking();
+        let w = world("t11-gifsend");
+        let channel = w.general;
+        // The picker is drawn in an open conversation: its channel is open.
+        w._rt
+            .block_on(w.alice.open_channel(channel))
+            .unwrap()
+            .unwrap();
+        let to = Target {
+            client: Some(w.alice.clone()),
+            channel: Some(channel),
+            window: None,
+        };
+        cx.update(|cx| ui::attach(to.clone(), vec![file("draft.bin")], vec![None], cx));
+        let gif = include_bytes!("../src/screens/attachments/testdata/two-frames.gif").to_vec();
+        cx.update(|cx| ui::send_gif(to.clone(), "cat.gif".to_owned(), gif, cx));
+        // The upload runs on the client's runtime; the wait for it, the take and the send on the UI's (test) executor,
+        // whose timers move only with its clock.
+        let posted = |s: &dilla_client::state::AppState| {
+            s.timelines.get(&channel).is_some_and(|t| {
+                t.items
+                    .iter()
+                    .any(|i| i.attachments.iter().any(|a| a.mime == "image/gif"))
+            })
+        };
+        let start = std::time::Instant::now();
+        while !posted(&w.alice.state().borrow()) {
+            assert!(start.elapsed() < WAIT, "the GIF's message");
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let posted = w.alice.state().borrow().clone();
+        let items: Vec<_> = posted.timelines[&channel]
+            .items
+            .iter()
+            .filter(|i| !i.attachments.is_empty())
+            .cloned()
+            .collect();
+        assert_eq!(items.len(), 1, "one message");
+        assert!(items[0].body.is_empty(), "no text");
+        assert_eq!(items[0].attachments.len(), 1, "the GIF alone");
+        cx.update(|cx| {
+            let left = ui::tray_of(&w.alice, channel, cx).entries();
+            assert_eq!(left.len(), 1, "the other file stays in the tray");
+            assert_eq!(left[0].name, "draft.bin");
+        });
+        drop(w);
+    }
+
     /// Review M4 (the security half of each window's target): with two clients in two windows on the same channel, a
     /// paste or a drop in each window goes through that window's own client.
     #[gpui::test]

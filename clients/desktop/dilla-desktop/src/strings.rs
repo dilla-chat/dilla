@@ -4,7 +4,7 @@
 
 /// Every string, sorted by key.
 #[rustfmt::skip]
-pub static STRINGS: [(&str, &str); 2217] = [
+pub static STRINGS: [(&str, &str); 2218] = [
     ("activity.dm", "Direct message"),
     ("activity.empty", "Nothing new. Mentions and direct messages show up here."),
     ("activity.emptyTitle", "Nothing new"),
@@ -837,6 +837,7 @@ pub static STRINGS: [(&str, &str); 2217] = [
     ("gif.rating.r", "r"),
     ("gif.search", "search gifs"),
     ("gif.search.placeholder", "Search Giphy"),
+    ("gif.sent", "gif sent."),
     ("gif.settings.cancel", "cancel"),
     ("gif.settings.error", "could not save ({code})"),
     ("gif.settings.forbidden", "only people who manage this server can change this"),

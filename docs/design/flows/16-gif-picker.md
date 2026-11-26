@@ -25,9 +25,9 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | more results | the `gif.more` button under the grid |
 | no results | `gif.empty` in the status line |
 | the instance refused the search (key removed, busy, rate limit) | `gif.error` in the status line; typing again retries |
-| a GIF picked | the picker shows `gif.picking` and ignores further picks; the full GIF is downloaded through the instance, then added to the file tray like a chosen file; the picker closes and focus goes to the message box |
+| a GIF picked | the picker shows `gif.picking` and ignores further picks; the full GIF is downloaded through the instance, then the picker closes, focus goes to the message box and the GIF is sent at once as its own message with no text (Jonas, 2026-11-26: "Click sends at once"); the draft and the tray's other files stay as they are |
 | the pick failed | the picker stays open with `gif.pickFailed` |
-| the GIF is in the tray | the tray shows it as an image file named `giphy-{id}.gif`; Enter in the message box sends it, with or without text; the tray's remove button drops it |
+| the GIF is being sent | the tray shows it as an image file while it is sealed and uploaded, then it leaves the tray with its own message; if it cannot be sent it stays in the tray (nothing is lost) and `shell.message.failed` shows; Enter in the message box then sends it with the rest, or the tray's remove button drops it |
 | a reader | sees an ordinary image attachment; nothing marks it as a GIF from a service; it plays in the conversation for five minutes after it is first seen, as any GIF does (flow 04) |
 | the picker footer | `gif.powered` |
 | a phone | the picker is the width of the screen above the composer; results and buttons are 44px targets |
@@ -55,7 +55,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 - Opening the picker focuses the search box; the DM notice initially focuses Not now
 - Not now or Escape closes the notice and returns to the GIF button; accepting moves to search after the local save
 - Escape returns focus to the `gif` button
-- A pick moves focus to the message box, with the GIF in the tray
+- A pick moves focus to the message box; the GIF is sent at once
 - A pointer down outside the picker closes it, except on the `gif` button, which toggles
 - Saving a key, removing it or cancelling a replace puts focus on the row's next control (`gif.settings.replace`, `gif.settings.key`)
 
@@ -63,7 +63,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 
 - The status line is a polite status: it speaks `gif.loading`, `gif.empty`, `gif.picking` and `gif.pickFailed`
 - A search failure speaks `gif.error` once
-- A GIF added to the tray speaks `gif.added` through the shell announcer
+- A GIF sent speaks `gif.sent` through the shell announcer
 - The settings row says `gif.settings.saved`, `gif.settings.removed` or `gif.settings.ratingSaved` through the shell announcer (the settings body keeps no status region of its own); a refusal is an alert
 
 ## Copy

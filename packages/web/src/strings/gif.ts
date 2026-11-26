@@ -14,6 +14,7 @@ export const gif = {
   'gif.picking': 'adding the gif',
   'gif.pickFailed': 'could not add that gif',
   'gif.added': 'gif added. press enter to send.',
+  'gif.sent': 'gif sent.',
   'gif.settings.title': 'GIFs (Giphy)',
   'gif.settings.hint': 'Members can search and send GIFs in this server’s channels. The key stays on this instance, is never shown again and is used only to ask Giphy for GIFs. Direct-message GIFs use a shared server only after a privacy notice and consent.',
   'gif.settings.getKey': 'get a key at developers.giphy.com',
