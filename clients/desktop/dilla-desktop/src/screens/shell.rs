@@ -538,6 +538,15 @@ impl ShellView {
                 self.focus_channel(first, cx);
             }
         }
+        // A selection that settled somewhere else than the head (the server list landing after a `Root` start, a
+        // deleted server) is the route itself: the member list draws on a channel route. `replace`, so Back doesn't
+        // land on an empty root.
+        let settled = self.current_route();
+        if matches!(self.history.current(), Route::Root | Route::Channel { .. })
+            && *self.history.current() != settled
+        {
+            self.history.replace(settled);
+        }
         let target: SharedString = self
             .channel
             .and_then(|c| self.state.channel(c))
@@ -2629,6 +2638,54 @@ mod tests {
             assert!(s.in_no_server());
             assert!(s.home_shown());
         });
+    }
+
+    /// A running client's first state has no servers yet: once the list lands and the shell opens the first text
+    /// channel, that channel is the route, so the member list (open by default) is drawn and the Members toggle closes
+    /// it.
+    #[gpui::test]
+    fn the_first_channel_opened_after_the_server_list_lands_is_the_route(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::install);
+        let (shell, vcx) = cx.add_window_view(move |window, cx| {
+            ShellView::new(
+                Arc::new(AppState::default()),
+                None,
+                None,
+                Clock::Fixed { now: 0, utc: true },
+                window,
+                cx,
+            )
+        });
+        vcx.run_until_parked();
+        shell.update(vcx, |s, cx| s.set_state(world(), cx));
+        vcx.run_until_parked();
+        let at = Route::Channel {
+            community: CommunityId([1; 16]),
+            channel: Some(ChannelId([2; 16])),
+        };
+        shell.read_with(vcx, |s, _| {
+            assert_eq!(
+                s.channel,
+                Some(ChannelId([2; 16])),
+                "the server opens on its first channel"
+            );
+            assert_eq!(s.route(), &at, "the settled channel is the route, not Root");
+        });
+        let drawn = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                window.refresh();
+                let route = shell.read(cx).route().clone();
+                crate::slots::aside(&route, window, cx).is_some()
+            })
+        };
+        vcx.run_until_parked();
+        assert!(drawn(vcx), "the member list is open by default");
+        vcx.update(|window, cx| {
+            crate::screens::members::toggle_pane(window.window_handle().window_id(), cx);
+        });
+        assert!(!drawn(vcx), "Members closes it");
     }
 
     /// `/dm` with no server draws the no-server state, not an empty column: the shell's main column asks the no-server
