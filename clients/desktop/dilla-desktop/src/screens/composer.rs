@@ -1332,6 +1332,50 @@ mod tests {
         });
     }
 
+    /// A focused composer paints its caret: 1px wide, a line high, in the text colour (not the Light theme's near-black).
+    #[gpui::test]
+    fn a_focused_composer_paints_a_light_caret(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        let field = composer.read_with(vcx, |c, cx| c.input.read(cx).focus_handle(cx));
+        vcx.update(|window, cx| {
+            window.activate_window();
+            window.focus(&field, cx);
+        });
+        draw(vcx);
+        draw(vcx);
+        // A caret is 1 logical px wide and a text line high (the font's line box, a little under the 20px slot).
+        let carets: Vec<_> = vcx.update(|window, _| {
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .filter(|q| {
+                    let (w, h) = (
+                        q.bounds.size.width.0 / scale,
+                        q.bounds.size.height.0 / scale,
+                    );
+                    (w - 1.0).abs() < 0.01 && h > FIELD_LINE * 0.6 && h <= FIELD_LINE
+                })
+                .collect()
+        });
+        assert!(
+            carets
+                .iter()
+                .any(|q| q.background.as_solid() == Some(color::FG)),
+            "no 1px caret in the text colour; 1px quads were {:?}",
+            carets
+                .iter()
+                .map(|q| q.background.as_solid())
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// The web's `:focus-within` follows real focus: a press on the box's blank area (GPUI focuses the tracked box itself)
     /// leaves the ring off, as the web's press blurs the textarea.
     #[gpui::test]
