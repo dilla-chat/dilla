@@ -612,12 +612,20 @@ pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
 
 /// Attachments.tsx `attachFiles`: the files join the tray (a toast for a file over 25 MB, the tray's own refusal of
 /// an eleventh file), each picture with its preview.
-pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>>, cx: &mut App) {
+///
+/// Whether the files landed in the tray: `false` when there was nothing to attach or the tray refused them (its own
+/// toast says why).
+pub fn attach(
+    to: Target,
+    files: Vec<NewFile>,
+    previews: Vec<Option<TrayPreview>>,
+    cx: &mut App,
+) -> bool {
     let (Some(client), Some(channel), shown_in) = (to.client, to.channel, to.window) else {
-        return;
+        return false;
     };
     if files.is_empty() {
-        return;
+        return false;
     }
     let tray = tray_of(&client, channel, cx);
     let owner = owner_of(&client);
@@ -629,7 +637,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
             cx,
         );
     }
-    match client.attachments().attach(&tray, files) {
+    let landed = match client.attachments().attach(&tray, files) {
         Ok(ids) => {
             let u = ui(cx);
             for (id, p) in ids.into_iter().zip(previews) {
@@ -637,6 +645,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
                     u.tray_previews.insert((owner, channel, id), p);
                 }
             }
+            true
         }
         Err(e) => {
             let text = if e.code() == "E_ATTACHMENT_COUNT" {
@@ -645,9 +654,11 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
                 tf("shell.banner.commandError", &[("code", &e.code())])
             };
             dilla_desktop_ui::components::toast::show_toast_in(shown_in, text, cx);
+            false
         }
-    }
+    };
     cx.refresh_windows();
+    landed
 }
 
 /// A file from disk, with its preview when it is a still picture (a GIF gets the GIF card).
@@ -1694,7 +1705,8 @@ fn in_window(owner: WindowId, cx: &mut App, f: impl FnOnce(&mut Window, &mut App
 /// and the person's own send meanwhile neither waits for it ("not ready") nor carries it. Until it is sent or failed the
 /// composer says "Sending GIF…" ([`gif_sending`]), read out politely once; typing and sending go on. Sent, "gif sent."
 /// is read out. Not sent, it goes into the composer's tray ([`attach`], with that tray's own refusals), so nothing is
-/// lost: Enter sends it with the rest; the toast says it is there. A client released meanwhile gets nothing, and its GIF
+/// lost: Enter sends it with the rest, and the toast says it is there; a tray that refuses it (full) shows its own
+/// refusal instead, never "it's in your attachments". A client released meanwhile gets nothing, and its GIF
 /// is not posted (the release cancels it).
 pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
     let (Some(client), Some(channel)) = (to.client.as_ref(), to.channel) else {
@@ -1742,12 +1754,7 @@ pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
                     }
                 }
                 _ => {
-                    dilla_desktop_ui::components::toast::show_toast_in(
-                        shown_in,
-                        t("gif.notSent"),
-                        cx,
-                    );
-                    attach(
+                    let landed = attach(
                         Target {
                             client: Some(client),
                             channel: Some(channel),
@@ -1757,6 +1764,14 @@ pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
                         vec![Some(TrayPreview::Gif)],
                         cx,
                     );
+                    // "it's in your attachments" only when it is: a refusal keeps the tray's own toast.
+                    if landed {
+                        dilla_desktop_ui::components::toast::show_toast_in(
+                            shown_in,
+                            t("gif.notSent"),
+                            cx,
+                        );
+                    }
                 }
             }
         });

@@ -343,9 +343,10 @@ func (p *isolatedPCM) failure(cause error) *ProcessError {
 		}
 		cause = errors.Join(ErrSandboxUnavailable, p.ctxErr, deadline)
 	} else if p.exitCode == 75 {
-		// Wait may close stdout before its reader observes EOF, or finish
-		// before the launcher selects readiness. Retain the worker's limit
-		// status in all paths rather than reporting an extraction failure.
+		// The worker's stdout is our own os.Pipe, so Wait never closes it under
+		// the reader; the process can still finish before the launcher selects
+		// readiness. Retain the worker's limit status in all paths rather than
+		// reporting an extraction failure.
 		switch {
 		case errors.Is(cause, ErrExtractFailed):
 			cause = errors.Join(ErrMetadataTooLarge, p.ctxErr)

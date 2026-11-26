@@ -784,14 +784,36 @@ impl ProfileCard {
     }
 }
 
-/// The bio's scroll position and its focus handle, kept for the card `id` while it is drawn.
+/// How many extra frames a bio asks for while it has no layout yet (one is enough to lay it out; a few more are slack).
+const ABOUT_LAYOUT_RETRIES: u8 = 3;
+
+/// Whether the bio asks for one more frame: only until it was laid out (`laid_out`), and at most
+/// [`ABOUT_LAYOUT_RETRIES`] times, so a bio that is drawn at zero height (a collapsed card) cannot request frames
+/// for ever. A laid-out bio resets the count.
+fn wants_another_frame(laid_out: bool, tries: &Cell<u8>) -> bool {
+    if laid_out {
+        tries.set(0);
+        return false;
+    }
+    if tries.get() >= ABOUT_LAYOUT_RETRIES {
+        return false;
+    }
+    tries.set(tries.get() + 1);
+    true
+}
+
+/// The bio's scroll position, its focus handle and its layout retries, kept for the card `id` while it is drawn.
 fn about_state(
     id: &ElementId,
     window: &mut Window,
     cx: &mut App,
-) -> (gpui::ScrollHandle, FocusHandle) {
+) -> (gpui::ScrollHandle, FocusHandle, Rc<Cell<u8>>) {
     let state = window.use_keyed_state((id.clone(), "about"), cx, |_, cx| {
-        (gpui::ScrollHandle::new(), cx.focus_handle())
+        (
+            gpui::ScrollHandle::new(),
+            cx.focus_handle(),
+            Rc::new(Cell::new(0)),
+        )
     });
     state.read(cx).clone()
 }
@@ -891,10 +913,11 @@ impl RenderOnce for ProfileCard {
             // `.d-profile-card__about { max-height: 8rem; overflow-y: auto }`, the bio `pre-wrap`. A bio that overflows
             // is a tab stop the keyboard scrolls (ProfileCard.tsx `tabIndex={overflowing ? 0 : undefined}`; final review
             // R4d), placed before the buttons as in the web's order.
-            let (scroll, handle) = about_state(&self.id, window, cx);
+            let (scroll, handle, tries) = about_state(&self.id, window, cx);
             let laid_out = scroll.bounds().size.height > Pixels::ZERO;
-            if !laid_out {
-                // Whether it overflows is known once it was laid out: one more frame draws the tab stop.
+            if wants_another_frame(laid_out, &tries) {
+                // Whether it overflows is known once it was laid out: one more frame draws the tab stop (a bounded
+                // number: a bio drawn at zero height never lays out).
                 window.on_next_frame(|window, _| window.refresh());
             }
             let overflows = scroll.max_offset().y > Pixels::ZERO;
@@ -1111,6 +1134,18 @@ mod tests {
         assert!(role_tint(Some(0x10_1010), 1.0).is_none());
         assert!(role_tint(None, 1.0).is_none());
         assert!(role_tint(Some(0), 1.0).is_none());
+    }
+
+    #[test]
+    fn a_bio_drawn_at_zero_height_stops_asking_for_frames() {
+        let tries = Cell::new(0);
+        let asked = (0..100)
+            .filter(|_| wants_another_frame(false, &tries))
+            .count();
+        assert_eq!(asked, usize::from(ABOUT_LAYOUT_RETRIES));
+        // Laid out at last: no frame, and a later collapse gets its retries again.
+        assert!(!wants_another_frame(true, &tries));
+        assert!(wants_another_frame(false, &tries));
     }
 }
 

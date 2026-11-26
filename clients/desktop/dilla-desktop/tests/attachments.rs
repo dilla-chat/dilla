@@ -730,6 +730,43 @@ mod two_accounts {
         drop(w);
     }
 
+    /// A GIF whose send failed and which a full tray refuses is not "in your attachments": the toast is the tray's own
+    /// refusal, and the tray keeps only its ten files.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn a_gif_the_full_tray_refuses_does_not_say_it_is_in_the_attachments(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let w = world("t11-giffull");
+        let nowhere = ChannelId([9; 16]);
+        let to = Target {
+            client: Some(w.alice.clone()),
+            channel: Some(nowhere),
+            window: None,
+        };
+        let files: Vec<NewFile> = (0..10).map(|i| file(&format!("f{i}.bin"))).collect();
+        let none = vec![None; 10];
+        assert!(cx.update(|cx| ui::attach(to.clone(), files, none, cx)));
+        cx.update(|cx| ui::send_gif(to, "cat.gif".to_owned(), gif_bytes(), cx));
+        let start = std::time::Instant::now();
+        while cx.update(|cx| ui::gif_sending(&w.alice, nowhere, cx)) {
+            assert!(start.elapsed() < WAIT, "the failed send ends");
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|cx| ui::tray_of(&w.alice, nowhere, cx).entries().len()),
+            10
+        );
+        let toast = cx.read(dilla_desktop_ui::components::toast::current);
+        assert_eq!(
+            toast.as_deref(),
+            Some(dilla_desktop::strings::t("shell.tray.tooMany"))
+        );
+        drop(w);
+    }
+
     /// Final review R2 (Jonas 2026-11-26, "Show sending GIF"): from the pick until the GIF is sent, its composer says
     /// "Sending GIF…" (the line over the message box) and it is read out politely once; sent, the line goes and
     /// "gif sent." is read out. The draft's tray meanwhile stays usable (Enter is never blocked: see
