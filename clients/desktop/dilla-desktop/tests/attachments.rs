@@ -697,6 +697,10 @@ mod two_accounts {
             window: None,
         };
         cx.update(|cx| ui::send_gif(to, "cat.gif".to_owned(), gif_bytes(), cx));
+        assert!(
+            cx.update(|cx| ui::gif_sending(&w.alice, nowhere, cx)),
+            "the composer says the GIF is on its way"
+        );
         let start = std::time::Instant::now();
         while cx.update(|cx| ui::tray_of(&w.alice, nowhere, cx).entries().is_empty()) {
             assert!(start.elapsed() < WAIT, "the GIF went into the tray");
@@ -712,6 +716,108 @@ mod two_accounts {
                 .collect()
         });
         assert_eq!(names, ["cat.gif"]);
+        // Final review R2 (Jonas 2026-11-26): the sending line goes, and the toast says where the GIF is.
+        assert!(!cx.update(|cx| ui::gif_sending(&w.alice, nowhere, cx)));
+        assert_eq!(
+            cx.read(dilla_desktop_ui::components::toast::current)
+                .as_deref(),
+            Some(dilla_desktop::strings::t("gif.notSent")),
+        );
+        assert_eq!(
+            dilla_desktop::strings::t("gif.notSent"),
+            "GIF not sent: it's in your attachments."
+        );
+        drop(w);
+    }
+
+    /// Final review R2 (Jonas 2026-11-26, "Show sending GIF"): from the pick until the GIF is sent, its composer says
+    /// "Sending GIF…" (the line over the message box) and it is read out politely once; sent, the line goes and
+    /// "gif sent." is read out. The draft's tray meanwhile stays usable (Enter is never blocked: see
+    /// [`enter_during_a_gif_upload_sends_the_draft_alone`]).
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn a_gif_on_its_way_says_sending_until_it_is_sent(cx: &mut TestAppContext) {
+        let (w, to) = with_a_file_in_the_tray(cx, "r2-gifsending");
+        let channel = w.general;
+        let window = cx.add_window(|_, _| Blank);
+        let id = window.window_id();
+        let to = Target {
+            window: Some(id),
+            ..to
+        };
+        cx.update(|cx| ui::send_gif(to, "cat.gif".to_owned(), gif_bytes(), cx));
+        cx.run_until_parked();
+        assert!(cx.update(|cx| ui::gif_sending(&w.alice, channel, cx)));
+        let read = |cx: &mut TestAppContext| {
+            window
+                .update(cx, |_, win, cx| {
+                    dilla_desktop_ui::a11y::last_announcement(win, cx).map(|s| s.to_string())
+                })
+                .unwrap()
+        };
+        assert_eq!(read(cx).as_deref(), Some("Sending GIF…"));
+        // The line is drawn over the message box while it goes: the tray slot has it even with the tray's own file.
+        let drawn = |cx: &mut TestAppContext| {
+            let ctx = dilla_desktop::slots::SlotCx {
+                state: w.alice.state().borrow().clone(),
+                client: Some(w.alice.clone()),
+                channel: Some(channel),
+                ..Default::default()
+            };
+            window
+                .update(cx, |_, win, cx| {
+                    dilla_desktop::screens::attachments::tray(&ctx, win, cx).is_some()
+                })
+                .unwrap()
+        };
+        assert!(drawn(cx));
+        // Another channel of the same client says nothing.
+        assert!(!cx.update(|cx| ui::gif_sending(&w.alice, ChannelId([9; 16]), cx)));
+        pump(cx, &w, "the GIF's message", |s| {
+            posts(s, channel)
+                .iter()
+                .any(|(_, files)| files == &["cat.gif".to_owned()])
+        });
+        let start = std::time::Instant::now();
+        while cx.update(|cx| ui::gif_sending(&w.alice, channel, cx)) {
+            assert!(
+                start.elapsed() < WAIT,
+                "the sending line goes once it is sent"
+            );
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        cx.run_until_parked();
+        assert_eq!(read(cx).as_deref(), Some("gif sent."));
+        drop(w);
+    }
+
+    /// Final review R5: a GIF picked before a sign-out or Forget released its client is never posted, though its upload
+    /// was already running; the sending line goes with the release.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn a_gif_picked_before_a_release_is_never_posted(cx: &mut TestAppContext) {
+        let (w, to) = with_a_file_in_the_tray(cx, "r5-gifrelease");
+        let channel = w.general;
+        cx.update(|cx| ui::send_gif(to, "cat.gif".to_owned(), gif_bytes(), cx));
+        assert!(cx.update(|cx| ui::gif_sending(&w.alice, channel, cx)));
+        cx.update(|cx| ui::release(&w.alice, cx));
+        assert!(
+            !cx.update(|cx| ui::gif_sending(&w.alice, channel, cx)),
+            "the release takes the sending line"
+        );
+        // Long enough for the upload and its post (a few hundred ms against the test host), had it gone on.
+        for _ in 0..150 {
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let gifs = posts(&w.alice.state().borrow(), channel)
+            .into_iter()
+            .filter(|(_, files)| files == &["cat.gif".to_owned()])
+            .count();
+        assert_eq!(gifs, 0, "the released client's GIF was posted");
         drop(w);
     }
 

@@ -388,11 +388,7 @@ and you can join again straight away.
 
 ### You see people speaking but hear nothing
 
-If the call panel says "Your browser paused call audio.", press **turn on audio**: the system held call sound back until
-you press something in the app. The line and its button sit above the call panel's buttons; one press starts the call's
-sound and the line goes. Nothing else about the call changes.
-
-If there is no such line, check that you are not deafened, the output device in Settings → Voice, and the person's
+Check that you are not deafened, the output device in Settings → Voice, and the person's
 volume. The stage's toolbar also says "hearing {attached} of {expected}", for example "hearing 2 of 3": it counts audio streams,
 not people. {expected} is how many audio streams should reach you, and {attached} how many you hear (a shared
 screen's sound is its own). A person whose volume you set to 0 counts as not heard. When the two numbers differ for

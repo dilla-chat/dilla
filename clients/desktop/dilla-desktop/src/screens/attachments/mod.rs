@@ -487,10 +487,14 @@ pub fn raises_over_cap_toast(sizes: &[u64], in_tray: usize) -> bool {
     sizes.iter().any(|&s| over_the_cap(s)) && in_tray + sizes.len() <= MAX_ATTACHMENTS
 }
 
-/// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar).
+/// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar), under the "Sending GIF…"
+/// line while a picked GIF of this client goes to this channel ([`gif_status`]).
 pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let channel = ctx.channel?;
     let client = ctx.client.clone();
+    let sending = client
+        .as_deref()
+        .is_some_and(|c| ui::gif_sending(c, channel, cx));
     let items = ctx.state.attachments.tray(channel).to_vec();
     let entries = items
         .into_iter()
@@ -536,7 +540,35 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
             }
         })
         .collect();
-    tray_view::tray(entries, cx)
+    let tray = tray_view::tray(entries, cx);
+    if !sending {
+        return tray;
+    }
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .child(gif_status())
+            .children(tray)
+            .into_any_element(),
+    )
+}
+
+/// Jonas 2026-11-26 ("Show sending GIF"): the small line over the composer while a picked GIF is sealed and uploaded
+/// (`gif.sending`). It is read out politely once, as it starts ([`ui::send_gif`]); it never blocks typing or sending.
+fn gif_status() -> AnyElement {
+    let h = dilla_desktop_ui::text::root_line_height(text::SM).max(20.0);
+    div()
+        .id("composer-gif-sending")
+        .debug_selector(|| "composer-gif-sending".to_owned())
+        .pb(px(tray_view::GAP))
+        .child(dilla_desktop_ui::text::line(
+            t("gif.sending"),
+            text::SM,
+            h,
+            color::FG_2,
+        ))
+        .into_any_element()
 }
 
 /// A 26x24 tool of the composer's foot (`.d-composer__tool`).

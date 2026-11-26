@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use dilla_client::Client;
 use dilla_client::features::attachments::{
-    ATTACHMENT_CAP, AttachmentKind, NewFile, Tray, attachment_kind, safe_name,
+    ATTACHMENT_CAP, AttachmentKind, NewFile, SendCancel, Tray, attachment_kind, safe_name,
 };
 use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
@@ -244,6 +244,9 @@ pub struct AttachmentsUi {
     /// client was released is not shown (final review I5). Never pruned: one serial per released client for the
     /// process's life, like the lazily pruned per-client registries of final review M9 (ids only, no client).
     pub released: BTreeSet<u64>,
+    /// The picked GIFs being sealed, uploaded and posted ([`send_gif`]): the composer of their client and channel says
+    /// "Sending GIF…" until each is sent or failed, and a release cancels its client's before they post.
+    pub gif_sends: Vec<GifSend>,
     /// `gifStatus` per server: `None` while asked.
     pub gif_on: HashMap<CommunityId, Option<bool>>,
     /// Per window, what its composer last drew for: where a paste, a drop or a pick in that window goes. Keyed by
@@ -255,6 +258,24 @@ pub struct AttachmentsUi {
     pub fullscreen: Option<Fullscreen>,
     /// The video in the picture-in-picture window, if any (one at a time, as in Chromium).
     pub pip: Option<Pip>,
+}
+
+/// One picked GIF on its way ([`AttachmentsUi::gif_sends`]): its client (by serial), its channel, and the switch that
+/// stops it before it posts.
+pub struct GifSend {
+    pub owner: u64,
+    pub channel: ChannelId,
+    pub cancel: SendCancel,
+}
+
+/// Whether `client` is sending a picked GIF to `channel` now: its composer says "Sending GIF…".
+pub fn gif_sending(client: &Client, channel: ChannelId, cx: &App) -> bool {
+    let owner = owner_of(client);
+    cx.try_global::<AttachmentsUi>().is_some_and(|u| {
+        u.gif_sends
+            .iter()
+            .any(|g| g.owner == owner && g.channel == channel)
+    })
 }
 
 /// A window's composer target: its client and its open channel, and the window (its toasts show there).
@@ -405,6 +426,13 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     u.trays.retain(|(c, _), _| *c != owner);
     u.tray_previews.retain(|(c, _, _), _| *c != owner);
     u.released.insert(owner);
+    // Final review R5: a GIF still uploading for this client never posts (a sign-out or Forget came first).
+    u.gif_sends.retain(|g| {
+        if g.owner == owner {
+            g.cancel.cancel();
+        }
+        g.owner != owner
+    });
     if picker {
         close_gifs(cx);
     }
@@ -1663,24 +1691,42 @@ fn in_window(owner: WindowId, cx: &mut App, f: impl FnOnce(&mut Window, &mut App
 
 /// Sends the GIF `name` (`bytes`) to `to`'s channel at once, as its own message with no text
 /// (`Attachments::send_alone`): it is sealed and uploaded in a tray of its own, so the composer's tray never holds it,
-/// and the person's own send meanwhile neither waits for it ("not ready") nor carries it. Sent, "gif sent." is read
-/// out. Not sent, it goes into the composer's tray ([`attach`], with that tray's own refusals), so nothing is lost:
-/// Enter sends it with the rest; the toast says it was not sent. A client released meanwhile gets nothing.
+/// and the person's own send meanwhile neither waits for it ("not ready") nor carries it. Until it is sent or failed the
+/// composer says "Sending GIF…" ([`gif_sending`]), read out politely once; typing and sending go on. Sent, "gif sent."
+/// is read out. Not sent, it goes into the composer's tray ([`attach`], with that tray's own refusals), so nothing is
+/// lost: Enter sends it with the rest; the toast says it is there. A client released meanwhile gets nothing, and its GIF
+/// is not posted (the release cancels it).
 pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
     let (Some(client), Some(channel)) = (to.client.as_ref(), to.channel) else {
         return;
     };
     let shown_in = to.window;
     let kept = bytes.clone();
-    let rx = client
-        .attachments()
-        .send_alone(channel, NewFile::from_bytes(&name, "image/gif", bytes));
+    let cancel = SendCancel::default();
+    ui(cx).gif_sends.push(GifSend {
+        owner: owner_of(client),
+        channel,
+        cancel: cancel.clone(),
+    });
+    if let Some(owner) = shown_in {
+        in_window(owner, cx, |window, cx| {
+            dilla_desktop_ui::a11y::announce(t("gif.sending"), window, cx)
+        });
+    }
+    let rx = client.attachments().send_alone(
+        channel,
+        NewFile::from_bytes(&name, "image/gif", bytes),
+        cancel.clone(),
+    );
     // Held weakly while the upload runs: a released client is not kept alive by it.
     let client = Rc::downgrade(client);
     drop(to);
+    cx.refresh_windows();
     cx.spawn(async move |cx| {
         let sent = rx.await;
         cx.update(|cx| {
+            ui(cx).gif_sends.retain(|g| !g.cancel.same(&cancel));
+            cx.refresh_windows();
             let Some(client) = client
                 .upgrade()
                 .filter(|c| !ui(cx).released.contains(&owner_of(c)))
@@ -1698,7 +1744,7 @@ pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
                 _ => {
                     dilla_desktop_ui::components::toast::show_toast_in(
                         shown_in,
-                        t("shell.message.failed"),
+                        t("gif.notSent"),
                         cx,
                     );
                     attach(
@@ -1713,7 +1759,6 @@ pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
                     );
                 }
             }
-            cx.refresh_windows();
         });
     })
     .detach();

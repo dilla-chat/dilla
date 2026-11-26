@@ -25,9 +25,9 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | more results | the `gif.more` button under the grid |
 | no results | `gif.empty` in the status line |
 | the instance refused the search (key removed, busy, rate limit) | `gif.error` in the status line; typing again retries |
-| a GIF picked | the picker shows `gif.picking` and ignores further picks; the full GIF is downloaded through the instance, then the picker closes, focus goes to the message box and the GIF is sent at once as its own message with no text (Jonas, 2026-11-26: "Click sends at once"); the draft and the tray's other files stay as they are |
+| a GIF picked | the picked tile is marked busy and further picks are ignored; the full GIF is downloaded through the instance, then the picker closes, focus goes to the message box and the GIF is sent at once as its own message with no text (Jonas, 2026-11-26: "Click sends at once"); the draft and the tray's other files stay as they are |
 | the pick failed | the picker stays open with `gif.pickFailed` |
-| the GIF is being sent | it is sealed and uploaded on its own, never in the message box's tray, so the person's own Enter meanwhile sends the draft (and the tray's files) at once, without it; if the GIF cannot be sent it goes into the tray (nothing is lost) and `shell.message.failed` shows; Enter in the message box then sends it with the rest, or the tray's remove button drops it |
+| the GIF is being sent | `gif.sending` shows in a small line over the message box until it is sent or failed (Jonas, 2026-11-26: "Show sending GIF"); typing and sending are never blocked; it is sealed and uploaded on its own, never in the message box's tray, so the person's own Enter meanwhile sends the draft (and the tray's files) at once, without it; if the GIF cannot be sent it goes into the tray (nothing is lost) and the toast `gif.notSent` says so; Enter in the message box then sends it with the rest, or the tray's remove button drops it |
 | a reader | sees an ordinary image attachment; nothing marks it as a GIF from a service; it plays in the conversation for five minutes after it is first seen, as any GIF does (flow 04) |
 | the picker footer | `gif.powered` |
 | a phone | the picker is the width of the screen above the composer; results and buttons are 44px targets |
@@ -61,7 +61,8 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 
 ## Announcements
 
-- The status line is a polite status: it speaks `gif.loading`, `gif.empty`, `gif.picking` and `gif.pickFailed`
+- The status line is a polite status: it speaks `gif.loading`, `gif.empty` and `gif.pickFailed`
+- A picked GIF speaks `gif.sending` once, politely, as its upload starts
 - A search failure speaks `gif.error` once
 - A GIF sent speaks `gif.sent` through the shell announcer
 - The settings row says `gif.settings.saved`, `gif.settings.removed` or `gif.settings.ratingSaved` through the shell announcer (the settings body keeps no status region of its own); a refusal is an alert
@@ -78,9 +79,12 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 `gif.loading='searching'`
 `gif.empty='no gifs for that'`
 `gif.error='could not reach the gif service'`
-`gif.picking='adding the gif'`
+`gif.picking='adding the gif'` (the retired browser client's; the desktop marks the picked tile instead)
 `gif.pickFailed='could not add that gif'`
-`gif.added='gif added. press enter to send.'`
+`gif.added='gif added. press enter to send.'` (the retired browser client's; a picked GIF is sent at once)
+`gif.sent='gif sent.'`
+`gif.sending='Sending GIF…'`
+`gif.notSent='GIF not sent: it's in your attachments.'`
 `gif.settings.title='GIFs (Giphy)'`
 `gif.settings.hint='Members can search and send GIFs in this server’s channels. The key stays on this instance, is never shown again and is used only to ask Giphy for GIFs. Direct-message GIFs use a shared server only after a privacy notice and consent.'`
 `gif.settings.getKey='get a key at developers.giphy.com'`
