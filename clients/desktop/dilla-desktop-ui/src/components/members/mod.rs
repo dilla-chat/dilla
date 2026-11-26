@@ -108,6 +108,9 @@ pub fn grayscale(c: Hsla, amount: f32) -> Hsla {
 }
 
 type OnId = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+/// A row's open: its member's id, and the row's laid-out bounds when the keyboard opened it (`None` for a click, which
+/// has the pointer).
+type OnOpen = Rc<dyn Fn(&str, Option<Bounds<Pixels>>, &mut Window, &mut App)>;
 type OnMenu = Rc<dyn Fn(&str, Point<Pixels>, &mut Window, &mut App)>;
 type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
 /// Draws an extra child into the element named by its id (the app's automation bounds probe).
@@ -127,7 +130,7 @@ pub struct MemberList {
     empty_label: SharedString,
     bot_label: SharedString,
     open_id: Option<SharedString>,
-    on_open: Option<OnId>,
+    on_open: Option<OnOpen>,
     on_menu: Option<OnMenu>,
     on_close: Option<OnClose>,
     probe: Option<Probe>,
@@ -197,6 +200,16 @@ impl MemberList {
     }
 
     pub fn on_open(mut self, f: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
+        self.on_open = Some(Rc::new(move |id, _, window, cx| f(id, window, cx)));
+        self
+    }
+
+    /// [`MemberList::on_open`], told where the row is when the keyboard opened it (Enter on the row): the card goes
+    /// beside the row then, not at a pointer that may be anywhere (final review R4b).
+    pub fn on_open_from(
+        mut self,
+        f: impl Fn(&str, Option<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
+    ) -> Self {
         self.on_open = Some(Rc::new(f));
         self
     }
@@ -232,7 +245,7 @@ fn row(
     m: &ListMember,
     kind: GroupKind,
     bot_label: &SharedString,
-    on_open: Option<OnId>,
+    on_open: Option<OnOpen>,
     on_menu: Option<OnMenu>,
     probe: Option<&Probe>,
     focus: RowFocus,
@@ -358,7 +371,7 @@ fn row(
         .children(probe.map(|p| p(&id)))
         .on_click(move |_: &ClickEvent, window, cx| {
             if let Some(f) = &on_open {
-                f(&open_id, window, cx);
+                f(&open_id, None, window, cx);
             }
         })
         .on_mouse_down(MouseButton::Right, {
@@ -392,7 +405,7 @@ fn row(
                 cx.stop_propagation();
             } else if key.key == "enter" && !key.modifiers.modified() {
                 if let Some(f) = &on_open_key {
-                    f(&key_id, window, cx);
+                    f(&key_id, laid_out.get(), window, cx);
                 }
                 cx.stop_propagation();
             }
@@ -771,6 +784,18 @@ impl ProfileCard {
     }
 }
 
+/// The bio's scroll position and its focus handle, kept for the card `id` while it is drawn.
+fn about_state(
+    id: &ElementId,
+    window: &mut Window,
+    cx: &mut App,
+) -> (gpui::ScrollHandle, FocusHandle) {
+    let state = window.use_keyed_state((id.clone(), "about"), cx, |_, cx| {
+        (gpui::ScrollHandle::new(), cx.focus_handle())
+    });
+    state.read(cx).clone()
+}
+
 /// A card button's tab stop and its keyboard ring, when the card has focus handles.
 fn stop(el: gpui::Stateful<Div>, handle: Option<&FocusHandle>) -> gpui::Stateful<Div> {
     match handle {
@@ -863,8 +888,17 @@ impl RenderOnce for ProfileCard {
                 color::FG_2,
             ));
         if !self.bio.is_empty() {
-            // `.d-profile-card__about { max-height: 8rem; overflow-y: auto }`, the bio `pre-wrap`.
-            body = body.child(
+            // `.d-profile-card__about { max-height: 8rem; overflow-y: auto }`, the bio `pre-wrap`. A bio that overflows
+            // is a tab stop the keyboard scrolls (ProfileCard.tsx `tabIndex={overflowing ? 0 : undefined}`; final review
+            // R4d), placed before the buttons as in the web's order.
+            let (scroll, handle) = about_state(&self.id, window, cx);
+            let laid_out = scroll.bounds().size.height > Pixels::ZERO;
+            if !laid_out {
+                // Whether it overflows is known once it was laid out: one more frame draws the tab stop.
+                window.on_next_frame(|window, _| window.refresh());
+            }
+            let overflows = scroll.max_offset().y > Pixels::ZERO;
+            let mut about =
                 div()
                     .id("profile-about")
                     .debug_selector(|| "profile-about".into())
@@ -872,13 +906,43 @@ impl RenderOnce for ProfileCard {
                     .min_w_0()
                     .max_h(space::CARD_BIO_MAX_H)
                     .overflow_y_scroll()
-                    .child(flow_paragraph(
-                        self.bio.clone(),
-                        text::UI,
-                        crate::text::root_line_height(text::UI),
-                        color::FG_STRONG,
-                    )),
-            );
+                    .track_scroll(&scroll)
+                    .child(div().debug_selector(|| "profile-about-text".into()).child(
+                        flow_paragraph(
+                            self.bio.clone(),
+                            text::UI,
+                            crate::text::root_line_height(text::UI),
+                            color::FG_STRONG,
+                        ),
+                    ));
+            if overflows {
+                let line = px(crate::text::root_line_height(text::UI));
+                about = about
+                    .track_focus(&handle.tab_stop(true))
+                    .focus_visible(|s| s.shadow(crate::metrics::focus_ring()))
+                    .on_key_down(move |e: &KeyDownEvent, window, cx| {
+                        if e.keystroke.modifiers.modified() {
+                            return;
+                        }
+                        let page = scroll.bounds().size.height;
+                        let by = match e.keystroke.key.as_str() {
+                            "down" => -line,
+                            "up" => line,
+                            "pagedown" | "space" => -page,
+                            "pageup" => page,
+                            "home" => px(f32::MAX),
+                            "end" => px(-f32::MAX),
+                            _ => return,
+                        };
+                        let max = scroll.max_offset().y;
+                        let mut at = scroll.offset();
+                        at.y = (at.y + by).clamp(-max, Pixels::ZERO);
+                        scroll.set_offset(at);
+                        cx.stop_propagation();
+                        window.refresh();
+                    });
+            }
+            body = body.child(about);
         }
         if !self.roles.is_empty() {
             body = body.child(
@@ -1211,6 +1275,37 @@ mod card_tests {
         let vcx = draw(cx, "Ada", lines(20), 900.);
         let about = vcx.debug_bounds("profile-about").expect("the bio");
         assert_eq!(about.size.height, px(128.));
+    }
+
+    /// Final review R4d (ProfileCard.tsx: an overflowing bio is a tab stop): a bio longer than its 8rem box takes the
+    /// keyboard and its arrows scroll it; a bio that fits is no tab stop.
+    #[gpui::test]
+    fn an_overflowing_bio_is_a_tab_stop_the_keyboard_scrolls(cx: &mut TestAppContext) {
+        let vcx = draw(cx, "Ada", lines(20), 900.);
+        vcx.update(|window, cx| window.focus_next(cx));
+        vcx.run_until_parked();
+        assert!(
+            vcx.update(|window, cx| window.focused(cx).is_some()),
+            "the bio takes the focus"
+        );
+        let top = |vcx: &mut VisualTestContext| {
+            vcx.debug_bounds("profile-about-text")
+                .expect("the bio's text")
+                .top()
+        };
+        let before = top(vcx);
+        vcx.simulate_keystrokes("down down");
+        vcx.run_until_parked();
+        vcx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(top(vcx) < before, "Down scrolls the bio");
+
+        let short = draw(cx, "Ada", lines(2), 900.);
+        short.update(|window, cx| window.focus_next(cx));
+        short.run_until_parked();
+        assert!(
+            short.update(|window, cx| window.focused(cx).is_none()),
+            "a bio that fits is no tab stop"
+        );
     }
 
     #[gpui::test]

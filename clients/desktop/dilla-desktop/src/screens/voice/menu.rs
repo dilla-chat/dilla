@@ -442,21 +442,13 @@ pub fn move_to(w: WindowId, channel: ChannelId, room: &str, cx: &mut App) {
     );
 }
 
-/// Message (Shell.tsx `startDm`): opens (or makes) the DM with `user` and goes there.
+/// Message (Shell.tsx `startDm`): opens (or makes) the DM with `user` and goes there; a DM that could not be opened
+/// says so (final review R4e).
 fn message(w: WindowId, user: UserId, window: &mut Window, cx: &mut App) {
     let Some(client) = client_of(w, cx) else {
         return;
     };
-    let answer = client.dms().open_dm(user);
-    let handle = window.window_handle();
-    cx.spawn(async move |cx| {
-        if let Ok(Ok(channel)) = answer.await {
-            let _ = gpui::AppContext::update_window(cx, handle, |_, window, cx| {
-                crate::screens::dms::navigate(crate::screens::dms::Nav::Dm(channel), window, cx);
-            });
-        }
-    })
-    .detach();
+    crate::screens::members::open_dm(&client, user, window, cx);
 }
 
 /// The caption's volume chip (CallTile.tsx `d-call-tile__chip`): "{n} %" on another person's tile while it is not 100.
@@ -496,7 +488,18 @@ pub fn profile_card(
         ui_mut(w, cx).menu.card = None;
         return None;
     };
-    let card = crate::screens::members::profile_card(w, &ctx, channel.community_id, key.user)?;
+    let (community, user) = (channel.community_id, key.user);
+    // Every action closes this card too (MemberCardHost.tsx `onAction`), Message and Compare included (final review
+    // R4a): the member list's own action path closes only the member list's card.
+    let card = crate::screens::members::profile_card(w, &ctx, community, user)?.on_action(
+        move |id, window, cx| {
+            if ui_of(w, cx).is_some() {
+                ui_mut(w, cx).menu.card = None;
+            }
+            crate::screens::members::choose(w, community, user, id, window, cx);
+            cx.refresh_windows();
+        },
+    );
     let viewport = window.viewport_size();
     let gap = px(CARD_GAP);
     let card_w = dilla_desktop_ui::components::members::space::CARD_OUTER_W;

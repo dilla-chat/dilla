@@ -502,6 +502,95 @@ fn profile_opens_the_card_under_the_tile(cx: &mut TestAppContext) {
     );
 }
 
+/// Final review R4a (MemberCardHost.tsx `onAction`): the stage's profile card closes when its Message or Compare is
+/// chosen, as every action closes it, and the DM opens.
+#[gpui::test]
+fn the_stage_s_profile_card_closes_on_message_and_compare(cx: &mut TestAppContext) {
+    use dilla_client::state::dms::{DM_KIND_PAIR, DmState, DmSummary};
+    use dilla_desktop::screens::dms::{self, Nav};
+    const DM: ChannelId = ChannelId([5; 16]);
+    let mut s = (*state(3)).clone();
+    s.communities.push(dilla_client::state::Community {
+        id: COMMUNITY,
+        name: "Midgard".into(),
+        owner: UserId([0; 16]),
+        policy_version: 0,
+    });
+    s.dms = DmState {
+        list: Some(vec![DmSummary {
+            id: DM,
+            kind: DM_KIND_PAIR,
+            members: vec![UserId([0; 16]), UserId([1; 16])],
+            name: "person1".into(),
+            group: ChannelGroupState::Unsupported,
+        }]),
+    };
+    let s = Arc::new(s);
+    let cx = host(cx, s.clone());
+    let went: Rc<std::cell::RefCell<Vec<Nav>>> = Rc::default();
+    let log = went.clone();
+    cx.update(|window, cx| {
+        let w = voice::wid(window);
+        dilla_desktop::screens::members::sync(
+            w,
+            &dilla_desktop::slots::SlotCx {
+                state: s.clone(),
+                community: Some(COMMUNITY),
+                ..Default::default()
+            },
+            cx,
+        );
+        dms::set_navigator(w, Rc::new(move |nav, _, _| log.borrow_mut().push(nav)), cx);
+    });
+    let open_card = |cx: &mut VisualTestContext| {
+        let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
+        let person1 = tiles
+            .iter()
+            .find(|k| !k.screen && k.device == DeviceId([101; 16]))
+            .cloned()
+            .expect("person 1's tile");
+        let tile = area(cx, |ui| ui.menu.bounds.borrow().get(&person1).copied()).unwrap();
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Right,
+            position: tile.center(),
+            modifiers: gpui::Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+        let item = cx
+            .debug_bounds("menu-item-profile")
+            .expect("Profile")
+            .center();
+        cx.simulate_click(item, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("voice-profile-card").is_some(), "the card");
+    };
+    open_card(cx);
+    let message = cx
+        .debug_bounds("profile-action-message")
+        .expect("Message")
+        .center();
+    cx.simulate_click(message, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("voice-profile-card").is_none(),
+        "Message closes the card"
+    );
+    assert_eq!(*went.borrow(), vec![Nav::Dm(DM)]);
+    open_card(cx);
+    let compare = cx
+        .debug_bounds("profile-action-compare")
+        .expect("Compare")
+        .center();
+    cx.simulate_click(compare, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("voice-profile-card").is_none(),
+        "Compare closes the card"
+    );
+}
+
 /// Package 8c (VoiceChannelRow.tsx): a bot in a voice channel's row says "playback only" after its name; a person does not.
 #[gpui::test]
 fn a_bot_s_voice_row_says_playback_only(cx: &mut TestAppContext) {

@@ -1214,6 +1214,120 @@ mod card {
         assert_eq!(user, Some(ADA));
     }
 
+    /// The pointer far from the list (bottom left): what a keyboard open must not follow.
+    fn pointer_away(cx: &mut VisualTestContext) {
+        let h = cx.update(|window, _| window.viewport_size().height);
+        cx.simulate_mouse_move(point(px(4.), h - px(4.)), None, Modifiers::none());
+        cx.run_until_parked();
+    }
+
+    /// Ada's row bounds, and the list's tab stop focused on it (Tab into the pane from nowhere: its head's close ×,
+    /// then the list, whose stop is its first row, Ada's).
+    fn focus_ada_row(cx: &mut VisualTestContext) -> gpui::Bounds<gpui::Pixels> {
+        for _ in 0..2 {
+            cx.update(|window, cx| window.focus_next(cx));
+            cx.run_until_parked();
+        }
+        let selector: &'static str =
+            Box::leak(format!("member-row-{}", ADA.hex()).into_boxed_str());
+        cx.debug_bounds(selector).expect("Ada's row")
+    }
+
+    fn card(cx: &mut VisualTestContext) -> gpui::Bounds<gpui::Pixels> {
+        cx.debug_bounds("members-profile-card").expect("the card")
+    }
+
+    fn activate(cx: &mut VisualTestContext) {
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").unwrap(),
+        });
+        cx.run_until_parked();
+    }
+
+    /// Final review R4b: Enter on a row opens the card beside that row (the row's laid-out bounds), wherever the pointer
+    /// was left.
+    #[gpui::test]
+    fn a_keyboard_opened_card_sits_beside_its_row_not_at_the_pointer(cx: &mut TestAppContext) {
+        let (cx, _, _, _) = host(cx);
+        pointer_away(cx);
+        let row = focus_ada_row(cx);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let card = card(cx);
+        assert_eq!(
+            card.top(),
+            row.top(),
+            "level with its row: {card:?} / {row:?}"
+        );
+        assert!(
+            card.right() <= row.left() || card.left() >= row.right(),
+            "beside the row, not over it: {card:?} / {row:?}"
+        );
+    }
+
+    /// Final review R4b and R4c: Profile from the person menu the keyboard opened places the card at the row, and
+    /// closing it gives the focus back to the row (the menu item that opened it is gone).
+    #[gpui::test]
+    fn profile_from_the_keyboard_menu_sits_at_the_row_and_gives_the_focus_back_to_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (cx, _, _, _) = host(cx);
+        pointer_away(cx);
+        let row = focus_ada_row(cx);
+        let row_focus = cx
+            .update(|window, cx| window.focused(cx))
+            .expect("the row has the focus");
+        cx.simulate_keystrokes("shift-f10");
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("menu-item-profile").is_some(),
+            "the person menu"
+        );
+        // Profile is the menu's first item, where the focus starts.
+        activate(cx);
+        let card = card(cx);
+        assert!(
+            card.top() <= row.bottom() && card.bottom() >= row.top(),
+            "at the row: {card:?} / {row:?}"
+        );
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        assert!(!open(cx));
+        assert!(
+            cx.update(|window, _| row_focus.is_focused(window)),
+            "the focus is back on the row"
+        );
+    }
+
+    /// Final review R4e: a DM that could not be opened says so (the command error toast with its code) instead of
+    /// nothing; one that opened is gone to.
+    #[gpui::test]
+    fn a_dm_that_could_not_be_opened_says_so(cx: &mut TestAppContext) {
+        let (cx, w, went, _) = host(cx);
+        cx.update(|window, cx| {
+            members::dm_opened(
+                w,
+                Ok(Err(dilla_client::ClientError::Sync("E_TEST_DM".into()))),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            cx.update(|_, cx| dilla_desktop_ui::components::toast::current(cx))
+                .as_deref(),
+            Some(
+                dilla_desktop::strings::tf("shell.banner.commandError", &[("code", "E_TEST_DM")])
+                    .as_str()
+            )
+        );
+        assert!(went.borrow().is_empty(), "nowhere to go");
+        cx.update(|window, cx| members::dm_opened(w, Ok(Ok(DM)), window, cx));
+        cx.run_until_parked();
+        assert_eq!(*went.borrow(), vec![Nav::Dm(DM)]);
+    }
+
     #[gpui::test]
     fn the_card_takes_the_focus_and_tab_reaches_its_keyboard_close(cx: &mut TestAppContext) {
         let (cx, w, went, elsewhere) = host(cx);
