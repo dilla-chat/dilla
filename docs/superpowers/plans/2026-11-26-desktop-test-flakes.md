@@ -345,6 +345,48 @@ chose web parity for closing and to fix the smaller differences too. Spec:
 - [ ] **Step 3:** Run the crates' tests, the parity check for those two shots, and clippy. Commit:
   `desktop: the profile card closes like the web's, its banner follows the round corners, Message and Compare work`.
 
+### Task 10: the desktop reports call activity, so a live conversation isn't moved to AFK (review: opus)
+
+Jonas, 2026-11-26: two people talking in Stark's Pond, both moved to AFK ("but we got moved to afk").
+
+**The cause:** the desktop never calls `SendAfkActivity` (`POST /v1/communities/{id}/afk/activity`,
+`clients/desktop/dilla-client/src/http/routes.rs:627`). The server's AFK clock only refreshes on those reports.
+
+**Spec:** `packages/web/src/screens/Shell.tsx` ~606-680. Sends go through client-core `afkActivity` (body: the
+channel, or `[channel, true]` for exempt).
+- Reports only while in a call on a community voice channel that isn't that community's AFK channel, and only when
+  the community has an AFK channel.
+- One report on joining (the tracking key `community:channel:afkChannel` changes).
+- While in the call:
+  - every 5 s while own speaking is on (Task 5's own detector, `voice.speaking` contains the own device);
+  - on pointer move, pointer down, key down or touch while the window is visible;
+  - never more than one report per 5 s.
+- Reports are fire-and-forget; errors are ignored.
+- The exempt report is for phones and coarse pointers only, so the desktop never sends it.
+
+**Files:**
+- `dilla-client`: an `afk_activity(community, channel)` feature call over the existing route.
+- `dilla-desktop`: a small `screens/voice/afk.rs` (or the closest existing home), holding the tracker: its state,
+  the throttle and the triggers.
+- Wiring: the voice sync (`screens/voice/mod.rs`) and the window's input hooks.
+
+`shell.rs` belongs to Task 8 until it commits. Wire the input hooks without it if possible; otherwise wait for
+Task 8's commit.
+
+- [ ] **Step 1: Write the failing tests**, unit tests on the tracker with a fake clock:
+  - `joining_a_call_reports_once`;
+  - `own_speech_reports_every_5_s`;
+  - `input_while_visible_reports_but_not_more_than_once_per_5_s`;
+  - `input_while_hidden_does_not_report`;
+  - `the_afk_channel_and_a_community_without_one_never_report`;
+  - `a_new_call_resets_the_throttle`.
+
+  Add a live or integration test: a desktop client in a call on a community with a short AFK timeout, speaking (or
+  with input), is not moved. Use the testhost's AFK settings, if they allow a short timeout. Verify the tests fail.
+- [ ] **Step 2: Implement.**
+- [ ] **Step 3:** Run the crates' tests (unit and the live voice tests) and clippy. Commit:
+  `desktop: report call activity so a conversation is not moved to AFK`.
+
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
