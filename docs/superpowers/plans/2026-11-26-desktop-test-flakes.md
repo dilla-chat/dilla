@@ -457,6 +457,87 @@ He placed all of them in this PR. Spec: `docs/superpowers/specs/2026-11-26-gif-a
   - `desktop: pictures follow their container's rounded corners`;
   - `desktop: a click outside the picture closes the preview`.
 
+### Task 12: dillad no longer serves the browser client (three sub-tasks; review: opus for 12a, sonnet for 12b/12c)
+
+Jonas decided this on 2026-11-18 ("drop the browser client from dillad"), and it was never built. On 2026-11-26
+("why ist the web still active on the servER?!") he put it into this PR. Spec and map:
+`docs/superpowers/specs/2026-11-26-drop-browser-client-recon.md`.
+
+**Jonas's decisions (2026-11-26):**
+- Browser OIDC: "Refuse it".
+- Old browser-client URLs: "Send to the download page".
+- Font: "Embed the font".
+- Browser-only e2e: "Delete them now".
+
+**What stays:**
+- the API and the gateway;
+- `/download`;
+- the invite landing page, now desktop-only;
+- `/desktop-auth`, including `internal/desktopauth/browser.js`, which is still built from
+  `packages/web/src/desktop-auth-browser.ts` and checked by `npm run check:desktop-auth`;
+- webhooks, metrics and health.
+
+The TypeScript packages stay in the repo as the behaviour reference and as generator inputs.
+
+**Global for Task 12:**
+- No `dilla.toml` key changes, so no exit 78.
+- `--desktop-downloads` stays accepted as a **deprecated no-op**, with a warning log naming only the flag. CT 144
+  runs with it, and removing it would put dillad into a restart loop (exit 2).
+- `dilla-testhost -web-root`, `dilladtest` `WebRoot` and `Options.Web` stay as a test-only seam. The desktop's GPUI
+  tests serve harness and string trees through it, and `main.go` ~173-176 derives the LiveKit URL from it. The
+  seam must not need an embedded SPA.
+
+**12a, Go serving (opus):**
+- `internal/web`:
+  - remove the `//go:embed all:dist` SPA (`Embedded`), its history fallback, `/app-version.json` and the SPA CSP;
+  - remove `dist/` and the placeholder and webdist tests;
+  - keep `downloads.go` without `/browser-migration` and its cookie;
+  - embed the JetBrains Mono woff2 (about 40 KB) for the download and invite pages.
+- `internal/dillad/server.go` ~132-139 and ~724-740, and `options.go` ~86-97: no SPA mount by default.
+  - `/`, `/welcome`, `/c/…` and the other former client paths redirect (302) to `/download`.
+  - `/v1/…`, `/i/…`, `/desktop-auth/…` and every other server route keep their own answers and 404s.
+- `internal/api/invites.go` ~75-81: the landing page always points to Dilla desktop. It shows "Open Dilla desktop"
+  when a `dilla://` invite URL can be made, and a download link plus "paste this invite code" otherwise. Drop the
+  `/welcome?invite=` branch.
+- Browser OIDC: the flow that returns to `https://<domain>/#assertion` (`internal/api/auth.go` ~1306) answers a
+  clear refusal. The `/desktop-auth` IdP flow is unchanged.
+- Tests:
+  - every redirect path → `/download`, and an unknown `/v1/x` stays 404;
+  - the invite page has no browser link in both branches;
+  - browser OIDC is refused, and desktop OIDC still works;
+  - `--desktop-downloads` is accepted, logs one deprecation warning and changes nothing;
+  - the download page serves the embedded font;
+  - `dilla-testhost -web-root` still serves a given tree.
+- Update or remove the Go tests that expected the SPA.
+
+**12b, CI and release (sonnet):**
+- Remove `web-build` from `.github/workflows/server.yml` and `release.yml`.
+- In both `go-release` jobs, drop the dist fetch, the placeholder guard and the webdist test.
+- In `desktop-ci.yml`, cut `web-build` down to the core-harness build and rename it to what it does.
+- Update `needs:` of `server-ok`, `desktop-ok` and their work-complete jobs. The required check names stay
+  unchanged, so ruleset 25709839 still matches.
+- Update `scripts/ci-areas.mjs`, `ci-local-plan.mjs`, `check-ci-workflow.mjs`, `ci-rerun-starved.mjs` and their
+  tests. `npm run test:ci-check` must be green.
+- Delete the browser-only e2e suites and tooling (web, music, demo, native-interop) and their npm scripts. List the
+  full paths in the report, and keep the e2e tooling the desktop or server CI still uses.
+
+**12c, Docs (sonnet):**
+- `docs/deploy/README.md`:
+  - remove "Build dillad with the web client" (~365-391);
+  - mark the desktop-downloads flag section (~455-485) deprecated;
+  - change the bootstrap-invite "open it in a browser" (~557-558) to the desktop flow;
+  - fix the upgrade and app-version text (~13, ~70-149).
+- `docs/dev/ci-local.md` (~21, ~115), `CONTRIBUTING.md` (~56), the README "what works" table, and
+  `getting-started.md` ~588 (the invite page text and screenshot reference).
+- In the protocol docs, mark section 09 "Web client and content manifest" (~2020-2122) retired, and add a
+  protocol/07 changelog row.
+- Release note in `docs/deploy/releases/unreleased.md`: dillad no longer serves the browser client, old URLs go to
+  the download page, and `--desktop-downloads` is deprecated (harmless).
+
+**Order:** 12a and 12b in parallel (Go vs CI/YAML/scripts/e2e), then 12c.
+
+### Task 13: the composer shows its text caret (diagnosis pending)
+
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
