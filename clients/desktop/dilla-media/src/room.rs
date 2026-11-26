@@ -354,7 +354,7 @@ pub struct RemoteFrame {
     /// Frames decoded on this stream so far.
     pub frames: u64,
     /// The stream's own frame height, what a tile's stat says: `height` for a remote frame; for a self-view frame, which
-    /// is scaled down ([`SELF_VIEW_MAX_SIDE`]), the height that is sent.
+    /// is the sent frame at its own size, the same height.
     pub stream_height: u32,
 }
 
@@ -475,12 +475,7 @@ type SharedSource = Arc<Mutex<Option<Box<dyn CaptureSource>>>>;
 pub type LocalVideos = BTreeMap<ShareKind, RemoteFrame>;
 
 /// The self-view's frame cap: at most this many sent frames a second are copied for the own tile.
-pub const SELF_VIEW_FPS: u32 = 15;
-
-/// The self-view's longest side, in pixels: a larger sent frame is scaled down to it (keeping its aspect) before it is
-/// copied, so the copy, the colour swap and the mirror cost a tile's worth of pixels, not the sent frame's (a 1080p or
-/// 4K screen share).
-pub const SELF_VIEW_MAX_SIDE: u32 = 640;
+pub const SELF_VIEW_FPS: u32 = 30;
 
 /// One share's place in [`LocalVideos`]: live from its publish until its share stops ([`SelfViewTap::stop`]). A frame
 /// is kept only while the tap is live, checked under the map's lock, so a stopped share never leaves a frame behind,
@@ -511,10 +506,10 @@ impl SelfViewTap {
     }
 }
 
-/// A feeder's side of its [`SelfViewTap`]: copies a sent frame at most [`SELF_VIEW_FPS`] times a second, scaled to at
-/// most [`SELF_VIEW_MAX_SIDE`], while a receiver of the map is alive (the desktop holds one for the whole call, so in
-/// practice while the share runs). Never blocks: the copy is a libyuv scale and conversion of a frame already sent, and
-/// the map's lock is held only to swap one entry.
+/// A feeder's side of its [`SelfViewTap`]: copies a sent frame at most [`SELF_VIEW_FPS`] times a second, at the sent
+/// frame's own size (the stage stretches it, so a downscale would show), while a receiver of the map is alive (the
+/// desktop holds one for the whole call, so in practice while the share runs). Never blocks: the copy is a libyuv
+/// conversion of a frame already sent, and the map's lock is held only to swap one entry.
 struct SelfView {
     tap: SelfViewTap,
     every: Duration,
@@ -530,10 +525,9 @@ impl SelfView {
         }
     }
 
-    /// `i420` was just sent, the share's `frames`th frame. A frame larger than the tile needs is scaled first
-    /// ([`SELF_VIEW_MAX_SIDE`]): the scale makes a new buffer (libyuv reads the sent one, never writes it), so what is
-    /// sent is untouched. `&mut` only because the binding's `scale` takes it.
-    fn offer(&mut self, i420: &mut I420Buffer, frames: u64, now: std::time::Instant) {
+    /// `i420` was just sent, the share's `frames`th frame. It is converted to RGBA at its own size into a new buffer
+    /// (libyuv reads the sent one, never writes it), so what is sent is untouched.
+    fn offer(&mut self, i420: &I420Buffer, frames: u64, now: std::time::Instant) {
         use livekit::webrtc::video_frame::VideoBuffer as _;
         use livekit::webrtc::video_frame::VideoFormatType;
         use livekit::webrtc::video_frame::native::VideoFrameBufferExt as _;
@@ -550,25 +544,15 @@ impl SelfView {
         if w == 0 || h == 0 || w > MAX_VIDEO_W || h > MAX_VIDEO_H {
             return;
         }
-        let sent_height = h;
-        let max = SELF_VIEW_MAX_SIDE;
-        let scaled = (w.max(h) > max).then(|| {
-            let (sw, sh) = fit(w, h, Some((max, max)));
-            (i420.scale(sw as i32, sh as i32), sw, sh)
-        });
-        let (view, w, h) = match &scaled {
-            Some((buffer, sw, sh)) => (buffer, *sw, *sh),
-            None => (&*i420, w, h),
-        };
         let mut rgba = vec![0u8; (w * h * 4) as usize];
-        view.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
+        i420.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
         self.last = Some(now);
         let next = RemoteFrame {
             width: w,
             height: h,
             rgba: Arc::new(rgba),
             frames,
-            stream_height: sent_height,
+            stream_height: h,
         };
         let (kind, live) = (self.tap.kind, &self.tap.live);
         self.tap.videos.send_if_modified(move |v| {
@@ -899,7 +883,7 @@ async fn feed(
             }
         };
         let size = fit(frame.width, frame.height, bound);
-        let Some(mut i420) = to_i420(&frame, size) else {
+        let Some(i420) = to_i420(&frame, size) else {
             log::warn!("dilla-media: a malformed {kind:?} frame dropped");
             continue;
         };
@@ -910,7 +894,7 @@ async fn feed(
             buffer: &i420,
         });
         let frames = sent.fetch_add(1, Ordering::Relaxed) + 1;
-        self_view.offer(&mut i420, frames, std::time::Instant::now());
+        self_view.offer(&i420, frames, std::time::Instant::now());
         resend
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1461,8 +1445,7 @@ impl Call {
 
     /// What this device sends, for its own tile's self-view ([`LocalVideos`]): each running share's newest sent frame,
     /// gone once the share stops. Frames are copied only while a receiver of this is alive (the desktop's media session
-    /// holds one for the whole call, so in practice for every share), scaled to the tile's size first
-    /// ([`SELF_VIEW_MAX_SIDE`]).
+    /// holds one for the whole call, so in practice for every share), at the sent frame's own size.
     pub fn local_videos(&self) -> watch::Receiver<LocalVideos> {
         self.local_videos.subscribe()
     }
@@ -2589,17 +2572,17 @@ mod self_view_tests {
         let tap = SelfViewTap::new(ShareKind::Screen, tx);
         let mut view = SelfView::new(tap.clone());
         let t0 = Instant::now();
-        view.offer(&mut sent(64, 32), 1, t0);
+        view.offer(&sent(64, 32), 1, t0);
         assert_eq!(
             shown(&rx, ShareKind::Screen),
             Some((64, 32, 64 * 32 * 4, 1))
         );
         // Under the cap: the frame is not copied again.
-        view.offer(&mut sent(64, 32), 2, t0 + Duration::from_millis(5));
+        view.offer(&sent(64, 32), 2, t0 + Duration::from_millis(5));
         assert_eq!(shown(&rx, ShareKind::Screen).map(|s| s.3), Some(1));
         // A cap's interval later the newest frame replaces it, carrying the sent count.
         let next = t0 + Duration::from_micros(1_000_000 / u64::from(SELF_VIEW_FPS));
-        view.offer(&mut sent(48, 16), 3, next);
+        view.offer(&sent(48, 16), 3, next);
         assert_eq!(
             shown(&rx, ShareKind::Screen),
             Some((48, 16, 48 * 16 * 4, 3))
@@ -2608,7 +2591,7 @@ mod self_view_tests {
         // The share stops: the frame goes, and a late frame of the stopped feeder is not kept.
         tap.stop();
         assert_eq!(shown(&rx, ShareKind::Screen), None);
-        view.offer(&mut sent(64, 32), 4, next + Duration::from_secs(1));
+        view.offer(&sent(64, 32), 4, next + Duration::from_secs(1));
         assert!(rx.borrow().is_empty(), "a stopped share shows nothing");
     }
 
@@ -2618,45 +2601,54 @@ mod self_view_tests {
         let old = SelfViewTap::new(ShareKind::Camera, tx.clone());
         old.stop();
         let mut newer = SelfView::new(SelfViewTap::new(ShareKind::Camera, tx));
-        newer.offer(&mut sent(32, 32), 1, Instant::now());
+        newer.offer(&sent(32, 32), 1, Instant::now());
         // The old feeder's source ends after the newer share started: its stop is a no-op the second time.
         old.stop();
         assert_eq!(shown(&rx, ShareKind::Camera).map(|s| s.3), Some(1));
     }
 
-    /// Self-view review m1: a large sent frame is scaled down to the tile's size (its long side at most
-    /// [`SELF_VIEW_MAX_SIDE`]) before the RGBA copy; a small one is copied as it is. The frame that was sent keeps its
-    /// size: the scaling makes a new buffer, it never touches what is sent.
+    /// Task 6: the self-view is the sent frame at its own size, 1080p and 4K included (the stage stretches it, so a
+    /// downscale shows as blur). The frame that was sent keeps its size: the copy never touches it.
     #[test]
-    fn a_large_sent_frame_is_scaled_down_before_it_is_copied() {
+    fn a_sent_frame_reaches_the_self_view_at_its_own_size() {
         let next = Duration::from_micros(1_000_000 / u64::from(SELF_VIEW_FPS));
         let (tx, rx) = watch::channel(LocalVideos::new());
         let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx));
         let t0 = Instant::now();
-        for (n, (w, h), shown_as) in [
-            (1, (1920, 1080), (640, 360)),
-            (2, (3840, 2160), (640, 360)),
-            (3, (1080, 1920), (360, 640)),
-            (4, (480, 270), (480, 270)),
+        for (n, (w, h)) in [
+            (1, (1920, 1080)),
+            (2, (3840, 2160)),
+            (3, (1080, 1920)),
+            (4, (480, 270)),
         ] {
-            let mut i420 = I420Buffer::new(w, h);
-            view.offer(&mut i420, n, t0 + next * n as u32);
-            let (sw, sh) = shown_as;
+            let i420 = I420Buffer::new(w, h);
+            view.offer(&i420, n, t0 + next * n as u32);
             assert_eq!(
                 shown(&rx, ShareKind::Screen),
-                Some((sw, sh, (sw * sh * 4) as usize, n)),
+                Some((w, h, (w * h * 4) as usize, n)),
                 "{w}x{h}"
             );
-            assert_eq!(
-                rx.borrow()[&ShareKind::Screen].stream_height,
-                h,
-                "the tile's stat says the height that is sent"
-            );
+            assert_eq!(rx.borrow()[&ShareKind::Screen].stream_height, h);
             {
                 use livekit::webrtc::video_frame::VideoBuffer as _;
                 assert_eq!((i420.width(), i420.height()), (w, h), "the sent frame");
             }
         }
+    }
+
+    /// Task 6: the self-view runs at 30 fps: a frame within one 30 fps interval of the last is skipped, one a full
+    /// interval later is copied.
+    #[test]
+    fn the_self_view_runs_at_30_fps() {
+        assert_eq!(SELF_VIEW_FPS, 30);
+        let (tx, rx) = watch::channel(LocalVideos::new());
+        let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx));
+        let t0 = Instant::now();
+        view.offer(&sent(64, 32), 1, t0);
+        view.offer(&sent(64, 32), 2, t0 + Duration::from_millis(30));
+        assert_eq!(shown(&rx, ShareKind::Screen).map(|s| s.3), Some(1));
+        view.offer(&sent(64, 32), 3, t0 + Duration::from_millis(34));
+        assert_eq!(shown(&rx, ShareKind::Screen).map(|s| s.3), Some(3));
     }
 
     /// Self-view review m2: a frame's `Debug` says its size and counter, never its pixels (this device's own screen
@@ -2682,7 +2674,7 @@ mod self_view_tests {
         let (tx, rx) = watch::channel(LocalVideos::new());
         drop(rx);
         let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx.clone()));
-        view.offer(&mut sent(64, 32), 1, Instant::now());
+        view.offer(&sent(64, 32), 1, Instant::now());
         assert!(tx.borrow().is_empty());
     }
 }
