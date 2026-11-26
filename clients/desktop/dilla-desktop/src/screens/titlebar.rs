@@ -26,8 +26,12 @@ mod css {
     pub const GAP: f32 = 12.0;
     pub const BRAND_GAP: f32 = 8.0;
     pub const BRAND_MARK: f32 = 18.0;
+    /// `.d-topbar__center { flex: 0 1 420px; min-width: 0 }`: the slot shrinks in a narrow window.
     pub const SEARCH_SLOT: f32 = 420.0;
+    /// `.d-topbar__search { width: 100%; max-width: 360px }`.
     pub const SEARCH_W: f32 = 360.0;
+    /// The voice chip's widest: a long room name ellipsizes rather than pushing the search aside.
+    pub const VOICE_MAX_W: f32 = 200.0;
     pub const SEARCH_H: f32 = 28.0;
     pub const SEARCH_LEFT: f32 = 10.0;
     pub const SEARCH_RIGHT: f32 = 8.0;
@@ -505,64 +509,74 @@ pub fn render(
                 .tracking(LABEL_TRACKING_WIDE),
         );
     let search = div()
-        .w(Pixels::from(css::SEARCH_SLOT))
-        .flex_none()
+        .flex_basis(Pixels::from(css::SEARCH_SLOT))
+        .flex_grow_0()
+        .flex_shrink(1.0)
+        .min_w_0()
         .flex()
-        .justify_center()
+        .justify_center();
+    #[cfg(feature = "automation")]
+    let search = search
+        .relative()
+        .child(crate::automation::bounds_probe("topbar-search-slot"));
+    let field = interactive(div().id("topbar-search"))
+        .a11y(Role::Button, t("topbar.search"))
+        .aria_keyshortcuts("Control+K Meta+K")
+        .tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .cursor_pointer()
+        .on_click({
+            let on_search = handlers.on_search.clone();
+            move |_, window, cx| on_search(window, cx)
+        })
+        .w_full()
+        .max_w(Pixels::from(css::SEARCH_W))
+        .h(Pixels::from(css::SEARCH_H))
+        .bg(color::SURFACE_2)
+        .border_1()
+        .border_color(color::HAIRLINE_2)
+        .rounded(radius::MD)
+        .flex()
+        .items_center()
+        .pl(Pixels::from(css::SEARCH_LEFT))
+        .pr(Pixels::from(css::SEARCH_RIGHT))
+        .gap(Pixels::from(css::BRAND_GAP))
         .child(
-            interactive(div().id("topbar-search"))
-                .a11y(Role::Button, t("topbar.search"))
-                .aria_keyshortcuts("Control+K Meta+K")
-                .tab_index(0)
-                .focus_visible(|s| s.shadow(focus_ring()))
-                .cursor_pointer()
-                .on_click({
-                    let on_search = handlers.on_search.clone();
-                    move |_, window, cx| on_search(window, cx)
-                })
-                .w(Pixels::from(css::SEARCH_W))
-                .h(Pixels::from(css::SEARCH_H))
-                .bg(color::SURFACE_2)
+            Icon::new(IconName::Search)
+                .size(Pixels::from(css::SEARCH_GLYPH))
+                .color(color::FG_3),
+        )
+        .child(
+            div().flex_1().min_w_0().flex().child(
+                line(
+                    t("topbar.search"),
+                    text::UI,
+                    dilla_desktop_ui::text::root_line_height(text::UI),
+                    color::FG_3,
+                )
+                .ellipsis(),
+            ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .h(Pixels::from(css::KEYCAP_H))
                 .border_1()
-                .border_color(color::HAIRLINE_2)
-                .rounded(radius::MD)
-                .flex()
-                .items_center()
-                .pl(Pixels::from(css::SEARCH_LEFT))
-                .pr(Pixels::from(css::SEARCH_RIGHT))
-                .gap(Pixels::from(css::BRAND_GAP))
-                .child(
-                    Icon::new(IconName::Search)
-                        .size(Pixels::from(css::SEARCH_GLYPH))
-                        .color(color::FG_3),
-                )
-                .child(
-                    div().flex_1().min_w_0().flex().child(
-                        line(
-                            t("topbar.search"),
-                            text::UI,
-                            dilla_desktop_ui::text::root_line_height(text::UI),
-                            color::FG_3,
-                        )
-                        .ellipsis(),
-                    ),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .h(Pixels::from(css::KEYCAP_H))
-                        .border_1()
-                        .border_color(color::CONTROL_EDGE)
-                        .rounded(radius::SM)
-                        .px(Pixels::from(css::KEYCAP_PAD))
-                        .child(line(
-                            model.search_hint,
-                            text::MICRO,
-                            line_height(text::MICRO, 1.6),
-                            color::FG_2,
-                        )),
-                ),
+                .border_color(color::CONTROL_EDGE)
+                .rounded(radius::SM)
+                .px(Pixels::from(css::KEYCAP_PAD))
+                .child(line(
+                    model.search_hint,
+                    text::MICRO,
+                    line_height(text::MICRO, 1.6),
+                    color::FG_2,
+                )),
         );
+    #[cfg(feature = "automation")]
+    let field = field
+        .relative()
+        .child(crate::automation::bounds_probe("topbar-search-field"));
+    let search = search.child(field);
     let on_settings = handlers.on_settings.clone();
     let on_voice = handlers.on_voice.clone();
     // TopBar.tsx's voice chip, only while in a call: the room (and the link's ping once the client reads one).
@@ -575,19 +589,29 @@ pub fn render(
             .flex()
             .items_center()
             .h(Pixels::from(css::VOICE_H))
+            .max_w(Pixels::from(css::VOICE_MAX_W))
             .px(Pixels::from(css::VOICE_PAD_X))
             .bg(color::OK_TINT)
             .border_1()
             .border_color(color::OK_BORDER)
             .rounded(radius::MD)
             .focus_visible(|s| s.shadow(focus_ring()))
-            .on_click(move |_: &ClickEvent, window, cx| on_voice(window, cx))
-            .child(line(
-                room,
-                text::BTN,
-                dilla_desktop_ui::text::root_line_height(text::BTN),
-                color::OK_TEXT,
-            ));
+            .on_click(move |_: &ClickEvent, window, cx| on_voice(window, cx));
+        #[cfg(feature = "automation")]
+        let chip = chip
+            .relative()
+            .child(crate::automation::bounds_probe("topbar-voice"));
+        let chip = chip.child(
+            div().min_w_0().flex().overflow_hidden().child(
+                line(
+                    room,
+                    text::BTN,
+                    dilla_desktop_ui::text::root_line_height(text::BTN),
+                    color::OK_TEXT,
+                )
+                .ellipsis(),
+            ),
+        );
         // TopBar.css:30: the chip enters with `d-up` over `--duration-slow` on `--ease-out`.
         dilla_desktop_ui::motion::up_in(
             chip,
@@ -598,9 +622,9 @@ pub fn render(
             cx,
         )
     });
+    // Its items are flex_none: the group keeps its content width, and the search is what gives way.
     let mut end = div()
         .flex_1()
-        .min_w_0()
         .flex()
         .items_center()
         .justify_end()
@@ -611,6 +635,7 @@ pub fn render(
             interactive(div().id("topbar-settings"))
                 .a11y(Role::Button, t("shell.rail.settings"))
                 .tab_index(0)
+                .flex_none()
                 .cursor_pointer()
                 .rounded(radius::MD)
                 .focus_visible(|s| s.shadow(focus_ring()))
@@ -624,6 +649,12 @@ pub fn render(
                         .color(color::FG_2),
                 )),
         );
+    #[cfg(feature = "automation")]
+    {
+        end = end
+            .relative()
+            .child(crate::automation::bounds_probe("topbar-end"));
+    }
     if model.controls && !cfg!(target_os = "macos") {
         end = end
             .child(window_button(
@@ -818,6 +849,8 @@ mod tests {
     /// Draws the top bar, counting its renders.
     struct BarHost {
         renders: usize,
+        voice: Option<String>,
+        controls: bool,
     }
 
     impl gpui::Render for BarHost {
@@ -826,12 +859,12 @@ mod tests {
             let noop: super::super::shell::Action = std::rc::Rc::new(|_, _| {});
             render(
                 &TitlebarModel {
-                    controls: false,
+                    controls: self.controls,
                     search_hint: "Ctrl K",
                     reminders_due: 0,
                     reminders_open: false,
                     bell_focus: None,
-                    voice: None,
+                    voice: self.voice.clone(),
                     menu_open: false,
                     instance: String::new(),
                 },
@@ -854,7 +887,11 @@ mod tests {
     fn the_top_bar_has_no_blinking_caret(cx: &mut gpui::TestAppContext) {
         cx.update(crate::install);
         cx.update(|cx| cx.set_reduce_motion(false));
-        let (host, vcx) = cx.add_window_view(|_, _| BarHost { renders: 0 });
+        let (host, vcx) = cx.add_window_view(|_, _| BarHost {
+            renders: 0,
+            voice: None,
+            controls: false,
+        });
         vcx.run_until_parked();
         let before = host.read_with(vcx, |h, _| h.renders);
         for _ in 0..300 {
@@ -869,6 +906,51 @@ mod tests {
             before,
             "the idle top bar was redrawn over three seconds"
         );
+    }
+
+    /// TopBar.css:4-28 (jonas 2026-11-26, a ~890px window): the search slot is `flex: 0 1 420px` and its field
+    /// `width: 100%; max-width: 360px`, so a narrow window shrinks the search instead of letting the end group (the
+    /// voice chip, bell, settings and window buttons) slide over it. Drawn in a test window through the automation
+    /// build's bounds probes, with the window's own buttons and a call with a long room name.
+    #[cfg(feature = "automation")]
+    #[gpui::test]
+    fn the_search_shrinks_before_the_end_group_overlaps_it(cx: &mut gpui::TestAppContext) {
+        use crate::automation::probed;
+        cx.update(crate::install);
+        let (_host, vcx) = cx.add_window_view(|_, _| BarHost {
+            renders: 0,
+            voice: Some("Stark's Pond, the long room name of a very large call".into()),
+            controls: true,
+        });
+        for width in [1280.0_f32, 890.0, 760.0, 640.0] {
+            vcx.simulate_resize(gpui::size(Pixels::from(width), Pixels::from(600.0)));
+            vcx.run_until_parked();
+            vcx.update(|window, cx| window.simulate_next_frame(cx));
+            vcx.run_until_parked();
+            let slot = probed("topbar-search-slot").expect("slot");
+            let field = probed("topbar-search-field").expect("field");
+            let end = probed("topbar-end").expect("end");
+            let chip = probed("topbar-voice").expect("chip");
+            let at = format!("at {width}px");
+            assert!(
+                end.left() >= slot.right() - Pixels::from(0.5),
+                "the end group starts at {} inside the search slot (ends {}) {at}",
+                end.left(),
+                slot.right()
+            );
+            assert!(
+                chip.left() >= field.right() - Pixels::from(0.5),
+                "the voice chip ({chip:?}) overlaps the search field ({field:?}) {at}"
+            );
+            // The probe records the field's content box, inside its 1px borders.
+            let want = f32::from(slot.size.width).min(css::SEARCH_W) - 2.0;
+            assert!(
+                (f32::from(field.size.width) - want).abs() < 0.5,
+                "the search is {} wide, not min(360, slot {}) {at}",
+                field.size.width,
+                slot.size.width
+            );
+        }
     }
 
     /// beta.5 DesktopTitlebar.css: the compact windows' drag strip (`inset: 0 34px auto 0`) stops short of the close
