@@ -1571,8 +1571,24 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
 /// Picks a GIF (a click or Enter on a result): its full file is fetched through the instance and sent at once, alone,
 /// as its own message (Jonas, 2026-11-26: "Click sends at once"; the old app put it in the tray and waited for Enter).
 /// The picker closes, the focus goes back to the message box and "gif sent." is read out; the draft and the tray's
-/// other files stay as they are ([`send_gif`]).
+/// files stay as they are ([`send_gif`]). A second pick while one is fetched is ignored.
 pub fn pick_gif(index: usize, cx: &mut App) {
+    pick_gif_with(
+        index,
+        |client, community, id| client.gifs().media(community, id, GifVariant::Full),
+        cx,
+    );
+}
+
+/// What a GIF's fetch answers: its bytes, or why not.
+pub type GifFetch = tokio::sync::oneshot::Receiver<Result<Vec<u8>, dilla_client::ClientError>>;
+
+/// [`pick_gif`] with its fetch given (tests fetch no GIF from Giphy).
+pub fn pick_gif_with(
+    index: usize,
+    fetch: impl FnOnce(&Client, CommunityId, String) -> GifFetch,
+    cx: &mut App,
+) {
     let Some(g) = ui(cx).gif.as_mut() else { return };
     if g.picking.is_some() {
         return;
@@ -1581,23 +1597,24 @@ pub fn pick_gif(index: usize, cx: &mut App) {
     let Some(client) = g.client.clone() else {
         return;
     };
-    let to = Target {
-        client: Some(client.clone()),
-        channel: g.channel,
-        window: g.owner,
-    };
+    let (channel, shown_in) = (g.channel, g.owner);
     let (Some(item), Some(community)) = (g.items.get(index).cloned(), g.community) else {
         return;
     };
     g.picking = Some(item.id.clone());
     cx.refresh_windows();
-    let shown_in = to.window;
-    let rx = client
-        .gifs()
-        .media(community, item.id.clone(), GifVariant::Full);
+    let rx = fetch(&client, community, item.id.clone());
+    // Held weakly while the fetch runs: a released client is not kept alive by it.
+    let client = Rc::downgrade(&client);
     cx.spawn(async move |cx| {
         let got = rx.await;
         cx.update(|cx| {
+            let Some(client) = client
+                .upgrade()
+                .filter(|c| !ui(cx).released.contains(&owner_of(c)))
+            else {
+                return;
+            };
             match got {
                 Ok(Ok(bytes)) => {
                     let title = if item.title.is_empty() {
@@ -1611,6 +1628,11 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                     if let (Some(back), Some(owner)) = (back, shown_in) {
                         in_window(owner, cx, move |window, cx| window.focus(&back, cx));
                     }
+                    let to = Target {
+                        client: Some(client),
+                        channel,
+                        window: shown_in,
+                    };
                     send_gif(to, name, bytes, cx);
                 }
                 _ => {
@@ -1639,105 +1661,54 @@ fn in_window(owner: WindowId, cx: &mut App, f: impl FnOnce(&mut Window, &mut App
     });
 }
 
-/// Sends the GIF `name` (`bytes`) to `to`'s channel at once, as its own message with no text: it goes through the
-/// channel's tray (sealed and uploaded as any file, its card showing meanwhile), then only its own entry is taken
-/// (`Tray::take`), so the draft and the tray's other files stay. A GIF that could not be sent is left in the tray, so
-/// nothing is lost: Enter sends it with the rest; the toast says it was not sent.
+/// Sends the GIF `name` (`bytes`) to `to`'s channel at once, as its own message with no text
+/// (`Attachments::send_alone`): it is sealed and uploaded in a tray of its own, so the composer's tray never holds it,
+/// and the person's own send meanwhile neither waits for it ("not ready") nor carries it. Sent, "gif sent." is read
+/// out. Not sent, it goes into the composer's tray ([`attach`], with that tray's own refusals), so nothing is lost:
+/// Enter sends it with the rest; the toast says it was not sent. A client released meanwhile gets nothing.
 pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
-    let (Some(client), Some(channel)) = (to.client.clone(), to.channel) else {
+    let (Some(client), Some(channel)) = (to.client.as_ref(), to.channel) else {
         return;
     };
     let shown_in = to.window;
-    let tray = tray_of(&client, channel, cx);
-    let owner = owner_of(&client);
     let kept = bytes.clone();
-    let ids = match client
+    let rx = client
         .attachments()
-        .attach(&tray, vec![NewFile::from_bytes(&name, "image/gif", bytes)])
-    {
-        Ok(ids) => ids,
-        Err(_) => {
-            dilla_desktop_ui::components::toast::show_toast_in(
-                shown_in,
-                t("shell.message.failed"),
-                cx,
-            );
-            return;
-        }
-    };
-    for id in &ids {
-        ui(cx)
-            .tray_previews
-            .insert((owner, channel, id.clone()), TrayPreview::Gif);
-    }
-    cx.refresh_windows();
+        .send_alone(channel, NewFile::from_bytes(&name, "image/gif", bytes));
+    // Held weakly while the upload runs: a released client is not kept alive by it.
+    let client = Rc::downgrade(client);
+    drop(to);
     cx.spawn(async move |cx| {
-        // The tray seals and uploads on the client's runtime; its entry's phase says when that is done.
-        let done = |tray: &Tray| {
-            let entries = tray.entries();
-            ids.iter().all(|id| {
-                entries.iter().find(|e| &e.id == id).is_none_or(|e| {
-                    matches!(
-                        e.phase,
-                        dilla_client::state::attachments::TrayPhase::Ready
-                            | dilla_client::state::attachments::TrayPhase::Failed
-                    )
-                })
-            })
-        };
-        while !done(&tray) {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-        }
-        // Removed meanwhile (its × or a send from the message box took it), or its client was released (Forget, sign
-        // out): nothing more to do, and nothing is sent for a released account.
-        let entries = tray.entries();
-        let released = cx.update(|cx| ui(cx).released.contains(&owner));
-        if released || !ids.iter().all(|id| entries.iter().any(|e| &e.id == id)) {
-            return;
-        }
-        let taken = tray.take(&ids);
-        let sent = match taken {
-            Ok(files) => {
-                let rx = cx.update(|cx| {
-                    for id in &ids {
-                        ui(cx).tray_previews.remove(&(owner, channel, id.clone()));
-                    }
-                    client
-                        .attachments()
-                        .send(channel, String::new(), files, None)
-                });
-                match rx.await {
-                    Ok(Ok(_)) => Ok(()),
-                    // Taken but not sent: it goes back into the tray.
-                    _ => Err(true),
-                }
-            }
-            // Its upload failed: its card stays in the tray, failed.
-            Err(_) => Err(false),
-        };
+        let sent = rx.await;
         cx.update(|cx| {
+            let Some(client) = client
+                .upgrade()
+                .filter(|c| !ui(cx).released.contains(&owner_of(c)))
+            else {
+                return;
+            };
             match sent {
-                Ok(()) => {
+                Ok(Ok(_)) => {
                     if let Some(owner) = shown_in {
                         in_window(owner, cx, |window, cx| {
                             dilla_desktop_ui::a11y::announce(t("gif.sent"), window, cx)
                         });
                     }
                 }
-                Err(put_back) => {
-                    if put_back {
-                        attach(
-                            to,
-                            vec![NewFile::from_bytes(&name, "image/gif", kept)],
-                            vec![Some(TrayPreview::Gif)],
-                            cx,
-                        );
-                    }
+                _ => {
                     dilla_desktop_ui::components::toast::show_toast_in(
                         shown_in,
                         t("shell.message.failed"),
+                        cx,
+                    );
+                    attach(
+                        Target {
+                            client: Some(client),
+                            channel: Some(channel),
+                            window: shown_in,
+                        },
+                        vec![NewFile::from_bytes(&name, "image/gif", kept)],
+                        vec![Some(TrayPreview::Gif)],
                         cx,
                     );
                 }

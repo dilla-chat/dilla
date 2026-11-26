@@ -27,7 +27,7 @@ GIFs are a per-server setting. A person who manages a server enters that server'
 | the instance refused the search (key removed, busy, rate limit) | `gif.error` in the status line; typing again retries |
 | a GIF picked | the picker shows `gif.picking` and ignores further picks; the full GIF is downloaded through the instance, then the picker closes, focus goes to the message box and the GIF is sent at once as its own message with no text (Jonas, 2026-11-26: "Click sends at once"); the draft and the tray's other files stay as they are |
 | the pick failed | the picker stays open with `gif.pickFailed` |
-| the GIF is being sent | the tray shows it as an image file while it is sealed and uploaded, then it leaves the tray with its own message; if it cannot be sent it stays in the tray (nothing is lost) and `shell.message.failed` shows; Enter in the message box then sends it with the rest, or the tray's remove button drops it |
+| the GIF is being sent | it is sealed and uploaded on its own, never in the message box's tray, so the person's own Enter meanwhile sends the draft (and the tray's files) at once, without it; if the GIF cannot be sent it goes into the tray (nothing is lost) and `shell.message.failed` shows; Enter in the message box then sends it with the rest, or the tray's remove button drops it |
 | a reader | sees an ordinary image attachment; nothing marks it as a GIF from a service; it plays in the conversation for five minutes after it is first seen, as any GIF does (flow 04) |
 | the picker footer | `gif.powered` |
 | a phone | the picker is the width of the screen above the composer; results and buttons are 44px targets |

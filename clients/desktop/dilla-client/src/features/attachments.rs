@@ -1192,29 +1192,68 @@ impl Attachments {
         let inner = self.inner.clone();
         let routes = self.routes();
         self.inner.spawn(async move {
-            if attachments.len() > MAX_ATTACHMENTS {
-                return Err(AttachmentError::Count.into());
+            Self::post(&inner, routes.as_ref(), channel, body, attachments, reply).await
+        })
+    }
+
+    /// [`Self::send`]'s work, on the client's runtime.
+    async fn post(
+        inner: &Inner,
+        routes: &dyn BlobRoutes,
+        channel: ChannelId,
+        body: String,
+        attachments: Vec<Descriptor>,
+        reply: Option<MessageId>,
+    ) -> Result<MessageId, ClientError> {
+        if attachments.len() > MAX_ATTACHMENTS {
+            return Err(AttachmentError::Count.into());
+        }
+        let g = Self::group_of(inner, channel).await?;
+        for a in &attachments {
+            routes.confirm(channel, a.blob_id).await.map_err(|e| {
+                if e.status == 404 {
+                    AttachmentError::Missing
+                } else {
+                    AttachmentError::from(e)
+                }
+            })?;
+        }
+        let (request, _) = encode_send(&body, &attachments, reply);
+        drop(attachments);
+        // Queued behind the trust retry, as every send is (controller.ts `sendWithTrustRetry`): a post with files
+        // right after a peer's new device joined is not refused for it.
+        let msg = inner
+            .engine()
+            .send_with_trust_retry(g, request)
+            .await
+            .map_err(|e| ClientError::Sync(e.code()))?;
+        Ok(MessageId(msg))
+    }
+
+    /// Sends `file` at once as its own message, with no text (a picked GIF): it is sealed and uploaded in a tray of its
+    /// own that publishes nothing, so the channel's composer tray never holds it and the person's own send neither waits
+    /// for it nor carries it. A file that could not be uploaded answers its tray's reason (`E_ATTACHMENT_TOO_LARGE`, an
+    /// upload's code) as [`AttachmentError::Other`].
+    pub fn send_alone(
+        &self,
+        channel: ChannelId,
+        file: NewFile,
+    ) -> tokio::sync::oneshot::Receiver<Result<MessageId, ClientError>> {
+        let inner = self.inner.clone();
+        let routes = self.routes();
+        let tray = Tray::new(channel, routes.clone(), |_| {});
+        self.inner.spawn(async move {
+            let ids = tray.add(vec![file]).await?;
+            let failed = tray
+                .entries()
+                .into_iter()
+                .find(|e| e.phase == TrayPhase::Failed)
+                .map(|e| e.reason);
+            if let Some(reason) = failed {
+                return Err(AttachmentError::Other(reason).into());
             }
-            let g = Self::group_of(&inner, channel).await?;
-            for a in &attachments {
-                routes.confirm(channel, a.blob_id).await.map_err(|e| {
-                    if e.status == 404 {
-                        AttachmentError::Missing
-                    } else {
-                        AttachmentError::from(e)
-                    }
-                })?;
-            }
-            let (request, _) = encode_send(&body, &attachments, reply);
-            drop(attachments);
-            // Queued behind the trust retry, as every send is (controller.ts `sendWithTrustRetry`): a post with files
-            // right after a peer's new device joined is not refused for it.
-            let msg = inner
-                .engine()
-                .send_with_trust_retry(g, request)
-                .await
-                .map_err(|e| ClientError::Sync(e.code()))?;
-            Ok(MessageId(msg))
+            let d = tray.take(&ids)?;
+            Self::post(&inner, routes.as_ref(), channel, String::new(), d, None).await
         })
     }
 }

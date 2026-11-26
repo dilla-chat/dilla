@@ -417,7 +417,7 @@ mod two_accounts {
 
     use dilla_client::Client;
     use dilla_client::features::attachments::NewFile;
-    use dilla_client::state::{ChannelId, CommunityId};
+    use dilla_client::state::{AppState, ChannelId, CommunityId};
     use dilla_client::testing::host::{
         Host, clear_session, community, sign_up, start, start_host, wait_for,
     };
@@ -521,17 +521,46 @@ mod two_accounts {
         drop(w);
     }
 
-    /// Task 11 ("Click sends at once", Jonas 2026-11-26): a picked GIF goes out at once, alone, as its own message with
-    /// no text; a file already in the tray stays there, and so does the draft (the GIF never passes the message box).
-    /// The pick's Giphy fetch is left out (no network in tests): `send_gif` is what `pick_gif` runs on its bytes.
-    #[gpui::test]
-    #[ignore = "needs dilla-testhost and the WASI core"]
-    fn a_picked_gif_is_sent_alone_at_once(cx: &mut TestAppContext) {
-        // The client's runtime answers the send from its own thread.
+    /// The test GIF (two 1x1 frames).
+    fn gif_bytes() -> Vec<u8> {
+        include_bytes!("../src/screens/attachments/testdata/two-frames.gif").to_vec()
+    }
+
+    /// Runs the UI's (test) executor, whose timers move only with its clock, while the client's runtime works, until
+    /// `done` holds for alice's state.
+    fn pump(cx: &mut TestAppContext, w: &World, what: &str, done: impl Fn(&AppState) -> bool) {
+        let start = std::time::Instant::now();
+        while !done(&w.alice.state().borrow()) {
+            assert!(start.elapsed() < WAIT, "{what}");
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The channel's stored messages that carry files, as (body, the files' names).
+    fn posts(s: &AppState, channel: ChannelId) -> Vec<(String, Vec<String>)> {
+        s.timelines.get(&channel).map_or_else(Vec::new, |t| {
+            t.items
+                .iter()
+                .filter(|i| !i.attachments.is_empty() && i.seq.is_some())
+                .map(|i| {
+                    (
+                        i.body.clone(),
+                        i.attachments.iter().map(|a| a.name.clone()).collect(),
+                    )
+                })
+                .collect()
+        })
+    }
+
+    /// A world with alice's channel open (the picker is drawn in an open conversation) and `draft.bin` ready in her
+    /// composer's tray.
+    fn with_a_file_in_the_tray(cx: &mut TestAppContext, tag: &'static str) -> (World, Target) {
+        // The client's runtime answers from its own thread.
         cx.executor().allow_parking();
-        let w = world("t11-gifsend");
+        let w = world(tag);
         let channel = w.general;
-        // The picker is drawn in an open conversation: its channel is open.
         w._rt
             .block_on(w.alice.open_channel(channel))
             .unwrap()
@@ -542,39 +571,147 @@ mod two_accounts {
             window: None,
         };
         cx.update(|cx| ui::attach(to.clone(), vec![file("draft.bin")], vec![None], cx));
-        let gif = include_bytes!("../src/screens/attachments/testdata/two-frames.gif").to_vec();
-        cx.update(|cx| ui::send_gif(to.clone(), "cat.gif".to_owned(), gif, cx));
-        // The upload runs on the client's runtime; the wait for it, the take and the send on the UI's (test) executor,
-        // whose timers move only with its clock.
-        let posted = |s: &dilla_client::state::AppState| {
-            s.timelines.get(&channel).is_some_and(|t| {
-                t.items
-                    .iter()
-                    .any(|i| i.attachments.iter().any(|a| a.mime == "image/gif"))
-            })
-        };
         let start = std::time::Instant::now();
-        while !posted(&w.alice.state().borrow()) {
-            assert!(start.elapsed() < WAIT, "the GIF's message");
+        while !cx.update(|cx| ui::tray_of(&w.alice, channel, cx).all_ready()) {
+            assert!(start.elapsed() < WAIT, "the file is ready");
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (w, to)
+    }
+
+    /// Task 11 ("Click sends at once", Jonas 2026-11-26): a pick sends the GIF at once, alone, as its own message with no
+    /// text, and a second pick while the first is fetched is ignored (one fetch, one message); the file in the composer's
+    /// tray stays there, ready, and the tray never holds the GIF (the draft's text is the message box's and the pick
+    /// never touches it). The fetch is given (no Giphy in tests): `pick_gif` fetches the same way through the instance.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn a_picked_gif_is_sent_alone_at_once(cx: &mut TestAppContext) {
+        use dilla_client::features::gifs::GifItem;
+        use dilla_client::state::CommunityId;
+        use dilla_desktop::screens::attachments::ui::GifState;
+
+        let (w, _) = with_a_file_in_the_tray(cx, "t11-gifsend");
+        let channel = w.general;
+        cx.update(|cx| {
+            ui::ui(cx).gif = Some(GifState {
+                channel: Some(channel),
+                community: Some(CommunityId([1; 16])),
+                items: vec![GifItem {
+                    id: "abc".into(),
+                    title: "cat".into(),
+                    width: 1,
+                    height: 1,
+                }],
+                client: Some(w.alice.clone()),
+                ..GifState::default()
+            });
+        });
+        let fetches = std::rc::Rc::new(std::cell::Cell::new(0));
+        for _ in 0..2 {
+            let fetches = fetches.clone();
+            cx.update(|cx| {
+                ui::pick_gif_with(
+                    0,
+                    move |_, _, _| {
+                        fetches.set(fetches.get() + 1);
+                        let (tx, rx) = tokio::sync::oneshot::channel();
+                        let _ = tx.send(Ok(gif_bytes()));
+                        rx
+                    },
+                    cx,
+                )
+            });
+        }
+        assert_eq!(fetches.get(), 1, "the second pick is ignored");
+        pump(cx, &w, "the GIF's message", |s| {
+            !posts(s, channel).is_empty()
+        });
+        // Long enough for a second message to have come, had there been one.
+        for _ in 0..50 {
             cx.executor().advance_clock(Duration::from_millis(50));
             cx.run_until_parked();
             std::thread::sleep(Duration::from_millis(20));
         }
-        let posted = w.alice.state().borrow().clone();
-        let items: Vec<_> = posted.timelines[&channel]
-            .items
-            .iter()
-            .filter(|i| !i.attachments.is_empty())
-            .cloned()
-            .collect();
-        assert_eq!(items.len(), 1, "one message");
-        assert!(items[0].body.is_empty(), "no text");
-        assert_eq!(items[0].attachments.len(), 1, "the GIF alone");
+        let posted = posts(&w.alice.state().borrow(), channel);
+        assert_eq!(
+            posted,
+            [(String::new(), vec!["cat.gif".to_owned()])],
+            "the GIF alone, once"
+        );
+        assert!(
+            cx.read(|cx| cx.global::<ui::AttachmentsUi>().gif.is_none()),
+            "the picker closed"
+        );
         cx.update(|cx| {
             let left = ui::tray_of(&w.alice, channel, cx).entries();
             assert_eq!(left.len(), 1, "the other file stays in the tray");
             assert_eq!(left[0].name, "draft.bin");
+            assert!(ui::tray_of(&w.alice, channel, cx).all_ready());
         });
+        drop(w);
+    }
+
+    /// Reviewer I1: Enter on the draft while a picked GIF uploads sends the draft at once (not "not ready"), with the
+    /// tray's own file and without the GIF, which then goes as its own message.
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn enter_during_a_gif_upload_sends_the_draft_alone(cx: &mut TestAppContext) {
+        let (w, to) = with_a_file_in_the_tray(cx, "t11-gifenter");
+        let channel = w.general;
+        cx.update(|cx| ui::send_gif(to.clone(), "cat.gif".to_owned(), gif_bytes(), cx));
+        // The composer's send, as `Shell::send` does it, at once.
+        let files = cx
+            .update(|cx| ui::take_for_send(&w.alice, channel, cx))
+            .expect("the draft's files are ready");
+        assert_eq!(files.len(), 1, "only the tray's own file");
+        let rx = w
+            .alice
+            .attachments()
+            .send(channel, "the draft".into(), files, None);
+        pump(cx, &w, "both messages", |s| posts(s, channel).len() == 2);
+        let mut posted = posts(&w.alice.state().borrow(), channel);
+        posted.sort();
+        assert_eq!(
+            posted,
+            [
+                (String::new(), vec!["cat.gif".to_owned()]),
+                ("the draft".to_owned(), vec!["draft.bin".to_owned()]),
+            ]
+        );
+        drop(rx);
+        drop(w);
+    }
+
+    /// A GIF that could not be sent goes into the composer's tray, so nothing is lost (here: a channel this account
+    /// has no group of, which refuses the upload).
+    #[gpui::test]
+    #[ignore = "needs dilla-testhost and the WASI core"]
+    fn a_gif_not_sent_goes_into_the_tray(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let w = world("t11-giffail");
+        let nowhere = ChannelId([9; 16]);
+        let to = Target {
+            client: Some(w.alice.clone()),
+            channel: Some(nowhere),
+            window: None,
+        };
+        cx.update(|cx| ui::send_gif(to, "cat.gif".to_owned(), gif_bytes(), cx));
+        let start = std::time::Instant::now();
+        while cx.update(|cx| ui::tray_of(&w.alice, nowhere, cx).entries().is_empty()) {
+            assert!(start.elapsed() < WAIT, "the GIF went into the tray");
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let names: Vec<String> = cx.update(|cx| {
+            ui::tray_of(&w.alice, nowhere, cx)
+                .entries()
+                .into_iter()
+                .map(|e| e.name)
+                .collect()
+        });
+        assert_eq!(names, ["cat.gif"]);
         drop(w);
     }
 
