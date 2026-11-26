@@ -97,11 +97,13 @@ pub(crate) mod testing {
             }
             host.update(vcx, |_, cx| cx.notify());
             vcx.run_until_parked();
-            if let Some(s) = vcx.update(|window, _| window.painted_sprites().last().copied()) {
+            // Distinct frames: a slow run may advance a frame between the first two renders as well.
+            if let Some(s) = vcx.update(|window, _| window.painted_sprites().last().copied())
+                && !tiles.contains(&s.tile)
+            {
                 tiles.push(s.tile);
             }
         }
-        tiles.dedup();
         tiles.len()
     }
 
