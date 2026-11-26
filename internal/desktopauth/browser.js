@@ -6,11 +6,6 @@
     return globalThis.dillaDesktop;
   }
 
-  // packages/web/src/mobile.ts
-  function mobileBridge() {
-    return globalThis.dillaMobile;
-  }
-
   // packages/web/src/webauthn.ts
   var PasskeyError = class extends Error {
     kind;
@@ -126,7 +121,7 @@
     };
   }
   async function createPasskey(optionsJson) {
-    const bridge = mobileBridge() ?? desktopBridge();
+    const bridge = desktopBridge();
     if (bridge?.browserAuth) {
       try {
         const result = await bridge.browserAuth({ kind: "create", options: optionsJson });
@@ -157,7 +152,7 @@
     return JSON.stringify({ ...head, response, clientExtensionResults: {} });
   }
   async function getPasskey(optionsJson, conditional) {
-    const bridge = mobileBridge() ?? desktopBridge();
+    const bridge = desktopBridge();
     if (bridge?.browserAuth) {
       if (conditional !== void 0) throw new PasskeyError("cancelled", "Passkey autofill is not available in the desktop app");
       try {
