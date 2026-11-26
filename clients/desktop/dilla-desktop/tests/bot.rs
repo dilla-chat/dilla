@@ -1839,17 +1839,15 @@ fn an_announcement_scheduled_from_the_editor_is_listed(cx: &mut gpui::TestAppCon
         std::thread::sleep(Duration::from_secs(1));
     }
     // The shell hands the open channel's resolved bits to the threads area; the owner holds everything.
-    client.threads().set_channel_bits(
-        general,
-        viewer_channel_bits(&client.state().borrow(), general),
-    );
+    let bits = viewer_channel_bits(&client.state().borrow(), general);
+    let published = rt.block_on(world::set_channel_bits_and_wait(&client, general, bits));
 
     cx.update(dilla_desktop::install);
     cx.executor().allow_parking();
     let vcx = cx.add_empty_window();
     let window = vcx.update(|window, _| window.window_handle().window_id());
     let ctx = SlotCx {
-        state: client.state().borrow().clone(),
+        state: published,
         client: Some(client.clone()),
         community: Some(c),
         channel: Some(general),
@@ -2127,10 +2125,8 @@ fn a_role_panel_published_from_the_command_registers(cx: &mut gpui::TestAppConte
         std::thread::sleep(Duration::from_secs(1));
     }
     // The shell hands the open channel's resolved bits to the threads area; the owner holds everything.
-    client.threads().set_channel_bits(
-        general,
-        viewer_channel_bits(&client.state().borrow(), general),
-    );
+    let bits = viewer_channel_bits(&client.state().borrow(), general);
+    rt.block_on(world::set_channel_bits_and_wait(&client, general, bits));
     // A channel has its text group once someone opens it; the Bot posts a panel only into a channel that has one (and
     // waits itself for its join of a newly marked Bot channel).
     rt.block_on(client.open_channel(general))
@@ -2674,10 +2670,8 @@ fn an_uncertain_schedule_or_poll_is_reconciled_from_the_pending_branch(
         let _ = rt.block_on(client.bot().sync_catalog(c));
         std::thread::sleep(Duration::from_secs(1));
     }
-    client.threads().set_channel_bits(
-        general,
-        viewer_channel_bits(&client.state().borrow(), general),
-    );
+    let bits = viewer_channel_bits(&client.state().borrow(), general);
+    rt.block_on(world::set_channel_bits_and_wait(&client, general, bits));
     let _ = rt.block_on(client.open_channel(general));
 
     cx.update(dilla_desktop::install);
@@ -2934,10 +2928,8 @@ fn a_poll_card_votes_and_its_creator_closes_it(cx: &mut gpui::TestAppContext) {
         let _ = rt.block_on(client.bot().sync_catalog(c));
         std::thread::sleep(Duration::from_secs(1));
     }
-    client.threads().set_channel_bits(
-        general,
-        viewer_channel_bits(&client.state().borrow(), general),
-    );
+    let bits = viewer_channel_bits(&client.state().borrow(), general);
+    rt.block_on(world::set_channel_bits_and_wait(&client, general, bits));
     let _ = rt.block_on(client.open_channel(general));
 
     // The poll, made as the form makes it, and its post verified as the card reads it.

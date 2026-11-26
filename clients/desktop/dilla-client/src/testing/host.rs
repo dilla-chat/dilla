@@ -743,6 +743,25 @@ pub async fn second_device_faulted(
     (cfg, kc, root)
 }
 
+/// Tells the client's threads area what the viewer may do in `channel` (`Threads::set_channel_bits`) and waits (at most
+/// 10 s) until the published snapshot carries `bits` for it, answering that snapshot. The setter only queues the change on
+/// the client's update loop, so a snapshot read straight after it can still lack the bits (the commands' local permission
+/// checks then refuse); a test builds what it reads from the answered snapshot.
+pub async fn set_channel_bits_and_wait(
+    client: &Client,
+    channel: crate::state::ChannelId,
+    bits: Option<u64>,
+) -> Arc<AppState> {
+    client.threads().set_channel_bits(channel, bits);
+    wait_for(
+        client,
+        Duration::from_secs(10),
+        "the channel's bits in the snapshot",
+        |s| s.threads.channel_bits.get(&channel).copied() == bits,
+    )
+    .await
+}
+
 /// Waits (at most `within`) until `pred` holds for the client's state, answering that state.
 pub async fn wait_for(
     client: &Client,
