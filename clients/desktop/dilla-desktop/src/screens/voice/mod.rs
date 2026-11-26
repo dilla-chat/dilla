@@ -1660,6 +1660,15 @@ pub fn put_test_room_open(window: WindowId, open: Rc<std::cell::Cell<bool>>, cx:
     ui_mut(window, cx).test_room_open = Some(open);
 }
 
+/// Test hook: while `hold` is set, `window`'s media session waits before it takes up a call's media link (the client
+/// reports the call `In` meanwhile), as a busy session does.
+#[cfg(feature = "test-hooks")]
+pub fn hold_media_pickup(window: WindowId, hold: bool, cx: &mut App) {
+    if let Some(s) = session_of(window, cx) {
+        s.hold_pickup(hold);
+    }
+}
+
 /// The media sessions of the other instance windows (not `window`'s, nor one of its client's): the process's media
 /// router takes one call at a time, so a join in `window` waits until none of them has live media.
 fn other_sessions(window: WindowId, cx: &App) -> Vec<Rc<MediaSession>> {
@@ -2067,8 +2076,10 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     };
     let (options, session) = (ui.share_options, ui.session.clone());
     let Some(session) = session else { return };
+    // The call the press is for: the session runs it in that call only (once it has taken the call up).
+    let call = ui.state.voice.call.call_id.unwrap_or_default();
     if !on {
-        session.share(kind, false, options);
+        session.share(kind, false, options, call);
         return;
     }
     // A start needs the press on the focused window, in a live call of this window.
@@ -2087,10 +2098,10 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         ui.share_seq += 1;
         ui.share_panel_after = Some(ui.share_seq);
         ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
-        session.share_screen(None, options, ui.share_seq, ui.share_sound.clone());
+        session.share_screen(None, options, ui.share_seq, ui.share_sound.clone(), call);
         return;
     }
-    session.share(kind, true, options);
+    session.share(kind, true, options, call);
 }
 
 /// The application sound of `window`'s running screen share (parity plan Package 3): the application the person chose
@@ -2110,7 +2121,7 @@ pub fn share_app_audio(
         return;
     }
     if let Some(s) = &ui.session {
-        s.app_audio(source);
+        s.app_audio(source, ui.state.voice.call.call_id.unwrap_or_default());
     }
 }
 
@@ -2122,13 +2133,14 @@ pub fn set_share_app(
     cx: &mut App,
 ) {
     let Some(ui) = ui_of(window, cx) else { return };
-    let (session, live) = (
+    let (session, live, call) = (
         ui.session.clone(),
         ui.state.voice.call.phase == CallPhase::In,
+        ui.state.voice.call.call_id.unwrap_or_default(),
     );
     ui_mut(window, cx).share_sound = ShareSound::Person(source.clone());
     if live && let Some(s) = session {
-        s.app_audio(source);
+        s.app_audio(source, call);
     }
 }
 
@@ -2145,6 +2157,7 @@ pub fn share_source(
         return;
     }
     let session = ui.session.clone();
+    let call = ui.state.voice.call.call_id.unwrap_or_default();
     let ui = ui_mut(window, cx);
     ui.share_seq += 1;
     let seq = ui.share_seq;
@@ -2157,7 +2170,7 @@ pub fn share_source(
     if let Some(s) = &session {
         // The start carries its sound (the sound section's choice, or none until the window's is found): the session
         // gives the new share exactly that once it is up, and the running share keeps its own until then.
-        s.share_screen(Some(source.clone()), options, seq, ui_sound);
+        s.share_screen(Some(source.clone()), options, seq, ui_sound, call);
     }
     // A shared window brings its application's sound (D21): found off the UI thread, applied only to this share.
     let Some(find) = look_up else { return };
@@ -5176,11 +5189,12 @@ fn share_menu(ui: &VoiceUi, viewport_w: gpui::Pixels) -> Option<AnyElement> {
                 let w = wid(window);
                 let Some(ui) = ui_of(w, cx) else { return };
                 let (options, session) = (ui.share_options, ui.session.clone());
+                let call = ui.state.voice.call.call_id.unwrap_or_default();
                 ui_mut(w, cx).share_menu = false;
                 if sharing {
                     // Apply: the running share goes on at the new quality, from the same source.
                     if let Some(s) = session {
-                        s.quality(options);
+                        s.quality(options, call);
                     }
                     window.refresh();
                 } else {

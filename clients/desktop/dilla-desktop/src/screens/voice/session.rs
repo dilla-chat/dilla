@@ -102,12 +102,19 @@ pub const LINK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 /// What a share asks for.
+///
+/// The share commands name the call they were made for (the UI's `call_id` while the call is `In`): the session keeps
+/// one that reaches it before it has taken up that call's media link, and runs it once it has; one for another call never
+/// carries into this one ([`Pending`]).
 pub enum Command {
-    /// A camera share starts or stops, or the screen share stops (a screen share starts with [`Command::ShareScreen`]).
-    Share(ShareKind, bool, ShareOptions),
+    /// A camera share starts or stops, or the screen share stops (a screen share starts with [`Command::ShareScreen`]),
+    /// in the call `[u8; 16]`.
+    Share(ShareKind, bool, ShareOptions, [u8; 16]),
     /// A screen share starts, together with its sound, in one command (Task 44 fix round 4), so no order of the loop's
     /// arms can see the start without it.
     ShareScreen {
+        /// The call the share was started in.
+        call: [u8; 16],
         /// The source the person chose in the picker; `None`: the system's own dialog chooses.
         source: Option<DesktopSource>,
         options: ShareOptions,
@@ -120,11 +127,126 @@ pub enum Command {
     /// The application the shared window of the start `u64` plays, once found. It only ever reaches the share that start
     /// brought up, and never one whose sound the person chose.
     WindowSound(u64, Option<dilla_media::app_audio::AppSource>),
-    /// The stream quality changed while sharing: the running screen share goes on at it (the same source).
-    Quality(ShareOptions),
-    /// The person's own choice: the running screen share carries the sound of this application from now on (`None`: no
-    /// sound), and so does a share still opening.
-    AppAudio(Option<dilla_media::app_audio::AppSource>),
+    /// The stream quality changed while sharing in the call `[u8; 16]`: the running screen share goes on at it (the same
+    /// source).
+    Quality(ShareOptions, [u8; 16]),
+    /// The person's own choice in the call `[u8; 16]`: the running screen share carries the sound of this application
+    /// from now on (`None`: no sound), and so does a share still opening.
+    AppAudio(Option<dilla_media::app_audio::AppSource>, [u8; 16]),
+}
+
+/// Which of the kept commands a newer one replaces ([`Pending`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Screen,
+    Camera,
+    Quality,
+    AppAudio,
+    /// The window's sound of the start `u64`.
+    WindowSound(u64),
+}
+
+impl Command {
+    /// The call the command was made for; `None` for the window's sound, which names its start by token instead.
+    fn call(&self) -> Option<[u8; 16]> {
+        match self {
+            Command::Share(_, _, _, call)
+            | Command::ShareScreen { call, .. }
+            | Command::Quality(_, call)
+            | Command::AppAudio(_, call) => Some(*call),
+            Command::WindowSound(..) => None,
+        }
+    }
+
+    fn slot(&self) -> Slot {
+        match self {
+            Command::Share(ShareKind::Screen, ..) | Command::ShareScreen { .. } => Slot::Screen,
+            Command::Share(ShareKind::Camera, ..) => Slot::Camera,
+            Command::Quality(..) => Slot::Quality,
+            Command::AppAudio(..) => Slot::AppAudio,
+            Command::WindowSound(token, _) => Slot::WindowSound(*token),
+        }
+    }
+}
+
+/// The share commands that reached the session while it was not in their call: before it took up the call's media
+/// link (the client reports the call `In` first, and a move's old room may still be closing), or during the call a move
+/// left. Only the newest of each kind is kept (one screen start or stop, one camera, one quality, one sound choice), in
+/// the order they came; a window's sound only while the start it names is kept. A call's media takes those made for it
+/// ([`Pending::take_for`]) and the rest are dropped, so a press for one call never carries into another.
+#[derive(Default)]
+struct Pending(Vec<Command>);
+
+impl Pending {
+    /// Keeps `command` (a newer one of its kind replaces the older), or drops a window's sound whose start is not kept.
+    fn keep(&mut self, command: Command) {
+        if let Command::WindowSound(token, _) = command
+            && !self.starts(token)
+        {
+            return;
+        }
+        let slot = command.slot();
+        self.0.retain(|c| c.slot() != slot);
+        if slot == Slot::Screen {
+            let token = match &command {
+                Command::ShareScreen { token, .. } => Some(*token),
+                _ => None,
+            };
+            // A newer screen start or stop: the replaced start's window sound goes with it.
+            self.0
+                .retain(|c| !matches!(c, Command::WindowSound(t, _) if Some(*t) != token));
+        }
+        self.0.push(command);
+    }
+
+    /// Whether the kept screen start is the one `token` names.
+    fn starts(&self, token: u64) -> bool {
+        self.0
+            .iter()
+            .any(|c| matches!(c, Command::ShareScreen { token: t, .. } if *t == token))
+    }
+
+    /// Whether the loop of the call `call` leaves `command` for another call: it was made for another call, or it is the
+    /// window's sound of a start kept for one.
+    fn wants(&self, command: &Command, call: [u8; 16]) -> bool {
+        match command {
+            Command::WindowSound(token, _) => self.starts(*token),
+            c => c.call() != Some(call),
+        }
+    }
+
+    /// The kept commands made for `call`, in order; every other one is dropped.
+    fn take_for(&mut self, call: [u8; 16]) -> Vec<Command> {
+        let mut kept: Vec<Command> = Vec::new();
+        for c in std::mem::take(&mut self.0) {
+            let ours = match &c {
+                Command::WindowSound(token, _) => kept
+                    .iter()
+                    .any(|k| matches!(k, Command::ShareScreen { token: t, .. } if t == token)),
+                c => c.call() == Some(call),
+            };
+            if ours {
+                kept.push(c);
+            }
+        }
+        kept
+    }
+
+    /// Drops the commands kept for `call` (its media ended: nothing more runs in it).
+    fn forget(&mut self, call: [u8; 16]) {
+        let starts: Vec<u64> = self
+            .0
+            .iter()
+            .filter_map(|c| match c {
+                Command::ShareScreen { call: c, token, .. } if *c == call => Some(*token),
+                _ => None,
+            })
+            .collect();
+        self.0.retain(|c| match c {
+            Command::WindowSound(t, _) => !starts.contains(t),
+            c => c.call() != Some(call),
+        });
+    }
 }
 
 /// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
@@ -225,6 +347,9 @@ pub struct MediaSession {
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     /// The application the running screen share publishes the sound of ([`MediaSession::app_sound`]).
     app_sound: Arc<Mutex<Option<dilla_media::app_audio::AppSource>>>,
+    /// Test hook: while it holds, [`run`] waits before it takes up a call's media link ([`MediaSession::hold_pickup`]).
+    #[cfg(feature = "test-hooks")]
+    hold: watch::Sender<bool>,
 }
 
 /// What a share asks its [`SourceFactory`] for.
@@ -360,6 +485,8 @@ impl MediaSession {
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
         let app_sound = Arc::new(Mutex::new(None));
+        #[cfg(feature = "test-hooks")]
+        let (hold, held) = watch::channel(false);
         let ctx = Ctx {
             voice: client.voice(),
             states: client.state(),
@@ -374,6 +501,8 @@ impl MediaSession {
             live: live.clone(),
             room_closes: room_closes.clone(),
             closed,
+            #[cfg(feature = "test-hooks")]
+            held,
         };
         let task = runtime.spawn(run(ctx, rx));
         Ok(MediaSession {
@@ -387,7 +516,16 @@ impl MediaSession {
             video_seq,
             screen_sound,
             app_sound,
+            #[cfg(feature = "test-hooks")]
+            hold,
         })
+    }
+
+    /// Test hook: while `hold` is set, the session waits before it takes up a call's media link, as a busy or starved
+    /// session does (the client already reports the call `In` meanwhile).
+    #[cfg(feature = "test-hooks")]
+    pub fn hold_pickup(&self, hold: bool) {
+        self.hold.send_replace(hold);
     }
 
     fn send(&self, command: Command) {
@@ -396,21 +534,24 @@ impl MediaSession {
         }
     }
 
-    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one).
-    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions) {
-        self.send(Command::Share(kind, on, options));
+    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one), in the call
+    /// `call` (one the session has not taken up yet runs once it has).
+    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions, call: [u8; 16]) {
+        self.send(Command::Share(kind, on, options, call));
     }
 
     /// Starts a screen share of `source` (`None`: the system's own dialog chooses) with the sound section's state
-    /// `sound`. `token` names this start for [`MediaSession::window_sound`].
+    /// `sound`, in the call `call`. `token` names this start for [`MediaSession::window_sound`].
     pub fn share_screen(
         &self,
         source: Option<DesktopSource>,
         options: ShareOptions,
         token: u64,
         sound: crate::screens::voice::ShareSound,
+        call: [u8; 16],
     ) {
         self.send(Command::ShareScreen {
+            call,
             source,
             options,
             token,
@@ -435,13 +576,13 @@ impl MediaSession {
 
     /// The person's choice: shares the sound of `source` with the running screen share (`None` stops it) at once, and
     /// with a screen share still opening once it is up.
-    pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>) {
-        self.send(Command::AppAudio(source));
+    pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>, call: [u8; 16]) {
+        self.send(Command::AppAudio(source, call));
     }
 
-    /// Applies a new stream quality to the running screen share.
-    pub fn quality(&self, options: ShareOptions) {
-        self.send(Command::Quality(options));
+    /// Applies a new stream quality to the running screen share of the call `call`.
+    pub fn quality(&self, options: ShareOptions, call: [u8; 16]) {
+        self.send(Command::Quality(options, call));
     }
 
     /// The devices (hex) whose screen share carries sound: a remote screen without it shows the "no sound" mark.
@@ -566,6 +707,9 @@ struct Ctx {
     room_closes: dilla_media::RoomCloses,
     /// Changes (closes) when the session is dropped.
     closed: watch::Receiver<()>,
+    /// Test hook ([`MediaSession::hold_pickup`]).
+    #[cfg(feature = "test-hooks")]
+    held: watch::Receiver<bool>,
 }
 
 /// Whether a call's media is live in the session: from the start of a join until the call's media ended (or the join
@@ -691,10 +835,21 @@ impl Ctx {
 
 async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
     let mut links = ctx.voice.media();
+    let mut pending = Pending::default();
     loop {
+        #[cfg(feature = "test-hooks")]
+        if links.borrow().is_some() && !pickup_released(&ctx).await {
+            return;
+        }
         let link = links.borrow_and_update().clone();
         if let Some(link) = link {
-            in_call(&ctx, &link, &mut links, &mut commands).await;
+            in_call(&ctx, &link, &mut links, &mut commands, &mut pending).await;
+            // The call's media ended: a command for it still queued (a press as it ended, which the loop's last pass did
+            // not take) never runs, not even in a rejoin of the same call.
+            while let Ok(c) = commands.try_recv() {
+                pending.keep(c);
+            }
+            pending.forget(link.call_id);
             // A move replaces the link while the old call runs (its loop saw the change and left): the new call's link
             // is already here, so it is joined now, not after some later change.
             // A dropped session (its commands channel closed) joins nothing more, a move's next call included.
@@ -709,12 +864,35 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
                 continue;
             }
         }
-        // Biased, the session's end first: a dropped session whose link changed at the same moment joins nothing.
-        tokio::select! {
-            biased;
-            None = commands.recv() => return,
-            r = links.changed() => if r.is_err() { return },
+        // Biased, the session's end first: a dropped session whose link changed at the same moment joins nothing. A
+        // command meanwhile is kept for the call it names, which the next link may be (the client reports a call `In`
+        // before this loop has seen its link).
+        loop {
+            tokio::select! {
+                biased;
+                cmd = commands.recv() => match cmd {
+                    None => return,
+                    Some(c) => pending.keep(c),
+                },
+                r = links.changed() => {
+                    if r.is_err() {
+                        return;
+                    }
+                    break;
+                }
+            }
         }
+    }
+}
+
+/// Test hook: waits while [`MediaSession::hold_pickup`] holds; `false` once the session is dropped.
+#[cfg(feature = "test-hooks")]
+async fn pickup_released(ctx: &Ctx) -> bool {
+    let mut held = ctx.held.clone();
+    tokio::select! {
+        biased;
+        () = session_closed(ctx.closed.clone()) => false,
+        r = held.wait_for(|h| !*h) => r.is_ok(),
     }
 }
 
@@ -803,9 +981,14 @@ async fn in_call(
     link: &MediaLink,
     links: &mut watch::Receiver<Option<Arc<MediaLink>>>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    pending: &mut Pending,
 ) {
-    // A share asked for outside a call (a window's press as its last call ended) never carries into this one.
-    while commands.try_recv().is_ok() {}
+    // The share commands made for this call before its media took it up run once it has joined; one made for another
+    // call (a window's press as its last call ended) never carries into this one.
+    while let Ok(c) = commands.try_recv() {
+        pending.keep(c);
+    }
+    let kept = pending.take_for(link.call_id);
     let (feed, slot, feeder) = feed_epochs(link);
     // A muted or push-to-talk join: the microphone is muted before it is published. A microphone the OS denies the app
     // would only send silence (macOS, Windows): the call joins listen-only and says so (Package 7, beta.5's
@@ -910,6 +1093,9 @@ async fn in_call(
     // published, an answer from the client) is let go, as a dropped runtime let it go, and the call's media ends at
     // once below.
     let session = async {
+        for c in kept {
+            handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await;
+        }
         loop {
             let s = states.borrow_and_update().clone();
             // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
@@ -1031,36 +1217,12 @@ async fn in_call(
                     ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
                 }
                 // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
+                // A command for another call (the one a move goes to, pressed there while this call's loop still ran) is
+                // kept for it.
                 cmd = commands.recv() => match cmd {
                     None => break,
-                    Some(Command::Share(kind, false, _)) => {
-                        if kind == ShareKind::Screen {
-                            sound.stopped();
-                        }
-                        stop_share(ctx, &call, &mut opens, kind).await;
-                    }
-                    Some(Command::Share(kind, true, options)) => {
-                        // Not sent for a screen (`share_screen` is); one would start without any sound.
-                        if kind == ShareKind::Screen {
-                            sound.started(NO_TOKEN, &crate::screens::voice::ShareSound::Person(None));
-                        }
-                        opens.start(ctx, &opened_tx, kind, None, options, NO_TOKEN);
-                    }
-                    Some(Command::ShareScreen { source, options, token, sound: chosen }) => {
-                        sound.started(token, &chosen);
-                        opens.start(ctx, &opened_tx, ShareKind::Screen, source, options, token);
-                    }
-                    Some(Command::AppAudio(source)) => perform(ctx, &call, sound.asked(source)).await,
-                    Some(Command::WindowSound(token, app)) => {
-                        perform(ctx, &call, sound.window_found(token, app)).await;
-                    }
-                    Some(Command::Quality(options)) => {
-                        if ctx.states.borrow().voice.share.screen
-                            && let Err(e) = call.configure_video(ShareKind::Screen, options).await
-                        {
-                            log::warn!("voice: the new stream quality did not apply: {e}");
-                        }
-                    }
+                    Some(c) if pending.wants(&c, link.call_id) => pending.keep(c),
+                    Some(c) => handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await,
                 },
                 Some(done) = opened.recv() => {
                     if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
@@ -1137,6 +1299,53 @@ async fn in_call(
     // do (bounded; a close that hangs goes on in the background).
     call.end_media();
     close_room(live.closing(), ctx.room_closes.clone(), call.leave()).await;
+}
+
+/// Runs one share command in the call's loop (or one kept for this call from before its media took it up).
+async fn handle_command(
+    ctx: &Ctx,
+    call: &Call,
+    opens: &mut Opens,
+    opened_tx: &mpsc::UnboundedSender<Opened>,
+    sound: &mut AppSoundSlot,
+    command: Command,
+) {
+    match command {
+        Command::Share(kind, false, _, _) => {
+            if kind == ShareKind::Screen {
+                sound.stopped();
+            }
+            stop_share(ctx, call, opens, kind).await;
+        }
+        Command::Share(kind, true, options, _) => {
+            // Not sent for a screen (`share_screen` is); one would start without any sound.
+            if kind == ShareKind::Screen {
+                sound.started(NO_TOKEN, &crate::screens::voice::ShareSound::Person(None));
+            }
+            opens.start(ctx, opened_tx, kind, None, options, NO_TOKEN);
+        }
+        Command::ShareScreen {
+            source,
+            options,
+            token,
+            sound: chosen,
+            ..
+        } => {
+            sound.started(token, &chosen);
+            opens.start(ctx, opened_tx, ShareKind::Screen, source, options, token);
+        }
+        Command::AppAudio(source, _) => perform(ctx, call, sound.asked(source)).await,
+        Command::WindowSound(token, app) => {
+            perform(ctx, call, sound.window_found(token, app)).await;
+        }
+        Command::Quality(options, _) => {
+            if ctx.states.borrow().voice.share.screen
+                && let Err(e) = call.configure_video(ShareKind::Screen, options).await
+            {
+                log::warn!("voice: the new stream quality did not apply: {e}");
+            }
+        }
+    }
 }
 
 /// Whether `call_id` is still the call this device's media should be in.
@@ -1529,19 +1738,47 @@ async fn publish_share(
     if kind == ShareKind::Screen {
         next.screen_audio = audio;
     }
-    if let Ok(Ok(())) = ctx.voice.set_share(next).await {
-        if let Err(e) = call.publish_video_with(source, options).await {
-            log::warn!("voice: the share did not start: {e}");
-            set_kind(&mut next, kind, false);
-            let _ = ctx.voice.set_share(next).await;
-            return Published::Down;
+    match ctx.voice.set_share(next).await {
+        Ok(Ok(())) => {}
+        refused => {
+            // The instance refused the sharing slot (all sharers taken, not in the call's room, ...): nothing is
+            // published, and the person is told the share did not start.
+            let code = match &refused {
+                Ok(Err(e)) => refusal_code(e),
+                _ => "stopped",
+            };
+            log::warn!("voice: the {kind:?} share's slot was refused ({code})");
+            ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
+            return Published::Kept;
         }
-        if kind == ShareKind::Screen && !audio {
-            ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
-        }
-        return Published::Up;
     }
-    Published::Kept
+    if let Err(e) = call.publish_video_with(source, options).await {
+        log::warn!("voice: the share did not start: {e}");
+        set_kind(&mut next, kind, false);
+        let _ = ctx.voice.set_share(next).await;
+        return Published::Down;
+    }
+    if kind == ShareKind::Screen && !audio {
+        ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+    }
+    Published::Up
+}
+
+/// A refusal's stable code for the log: an instance's or the core's `E_*` code (only the code, never text after it),
+/// else only the kind of failure (never its text, which may carry an address).
+fn refusal_code(e: &dilla_client::ClientError) -> &str {
+    use dilla_client::ClientError;
+    match e {
+        ClientError::Sync(code) if code.starts_with("E_") => code
+            .split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            .next()
+            .unwrap_or("sync"),
+        ClientError::Sync(_) => "sync",
+        ClientError::Network(_) => "network",
+        ClientError::Revoked => "revoked",
+        ClientError::Stopped => "stopped",
+        _ => "other",
+    }
 }
 
 /// What [`publish_share`] did.
@@ -1578,6 +1815,105 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CALL_A: [u8; 16] = [1; 16];
+    const CALL_B: [u8; 16] = [2; 16];
+    const OPTIONS: ShareOptions = ShareOptions {
+        resolution: dilla_media::ShareResolution::P720,
+        fps: 15,
+    };
+
+    fn start(token: u64, call: [u8; 16]) -> Command {
+        Command::ShareScreen {
+            call,
+            source: None,
+            options: OPTIONS,
+            token,
+            sound: crate::screens::voice::ShareSound::Unset,
+        }
+    }
+
+    /// What a list of kept commands is, for the assertions: (kind, call's first byte or token).
+    fn shape(commands: &[Command]) -> Vec<(&'static str, u64)> {
+        commands
+            .iter()
+            .map(|c| match c {
+                Command::ShareScreen { token, .. } => ("start", *token),
+                Command::Share(ShareKind::Screen, on, _, call) => {
+                    (if *on { "screen" } else { "stop" }, u64::from(call[0]))
+                }
+                Command::Share(ShareKind::Camera, _, _, call) => ("camera", u64::from(call[0])),
+                Command::Quality(_, call) => ("quality", u64::from(call[0])),
+                Command::AppAudio(_, call) => ("sound", u64::from(call[0])),
+                Command::WindowSound(token, _) => ("window", *token),
+            })
+            .collect()
+    }
+
+    /// Share-drop flake: a share made for a call before the session took it up runs in that call, the newest of each
+    /// kind only; one made for another call is dropped.
+    #[test]
+    fn kept_commands_run_only_in_their_call_newest_of_each_kind() {
+        let mut p = Pending::default();
+        p.keep(start(1, CALL_A));
+        p.keep(Command::Share(ShareKind::Camera, true, OPTIONS, CALL_A));
+        p.keep(Command::Quality(OPTIONS, CALL_A));
+        p.keep(start(2, CALL_A));
+        p.keep(Command::Quality(OPTIONS, CALL_B));
+        p.keep(Command::Share(ShareKind::Camera, false, OPTIONS, CALL_A));
+        assert_eq!(
+            shape(&p.take_for(CALL_A)),
+            [("start", 2), ("camera", 1)],
+            "the newest start and camera of call A, not call B's quality"
+        );
+        assert!(p.take_for(CALL_A).is_empty(), "taken once");
+        assert!(p.take_for(CALL_B).is_empty(), "the rest was dropped");
+    }
+
+    /// A window's sound follows the start it names: kept with it, gone when a newer start or a stop replaces it, and
+    /// never kept without one.
+    #[test]
+    fn a_kept_window_sound_follows_its_start() {
+        let mut p = Pending::default();
+        p.keep(Command::WindowSound(1, None));
+        assert!(p.0.is_empty(), "no start of its own");
+        p.keep(start(1, CALL_A));
+        p.keep(Command::WindowSound(1, None));
+        assert_eq!(shape(&p.0), [("start", 1), ("window", 1)]);
+        assert!(p.wants(&Command::WindowSound(1, None), CALL_B));
+        p.keep(start(2, CALL_A));
+        assert_eq!(
+            shape(&p.0),
+            [("start", 2)],
+            "the replaced start's sound went"
+        );
+        p.keep(Command::WindowSound(2, None));
+        p.keep(Command::Share(ShareKind::Screen, false, OPTIONS, CALL_A));
+        assert_eq!(
+            shape(&p.0),
+            [("stop", 1)],
+            "a stop takes the start and its sound"
+        );
+    }
+
+    /// A call's loop takes its own commands and leaves the others for the call they name; a call whose media ended
+    /// forgets what was kept for it.
+    #[test]
+    fn a_call_leaves_another_call_s_commands_and_forgets_its_own() {
+        let mut p = Pending::default();
+        assert!(!p.wants(&start(1, CALL_A), CALL_A));
+        assert!(p.wants(&start(1, CALL_B), CALL_A));
+        assert!(
+            !p.wants(&Command::WindowSound(1, None), CALL_A),
+            "no start kept"
+        );
+        p.keep(start(1, CALL_A));
+        p.keep(Command::WindowSound(1, None));
+        p.keep(Command::Share(ShareKind::Camera, true, OPTIONS, CALL_B));
+        p.forget(CALL_A);
+        assert_eq!(shape(&p.0), [("camera", 2)]);
+        assert_eq!(shape(&p.take_for(CALL_B)), [("camera", 2)]);
+    }
 
     /// Client review M1: the end of a share that a newer one replaced (the call holds a share of the kind when the end is
     /// read) is stale: the new share's flag, UI and sound stay. With nothing held, the end is the share's going.
