@@ -22,7 +22,6 @@ func Default() *Config {
 	}
 	c.HTTP = HTTP{
 		TrustedOrigins: []string{"dilla://app"},
-		MobileOrigins:  []string{"capacitor://localhost", "https://localhost"},
 	}
 	c.Gateway = Gateway{
 		HeartbeatInterval: "30s", SessionIdleClose: "90s",
@@ -148,8 +147,6 @@ func (c *Config) Derive() {
 	}
 	if len(c.Auth.WebAuthn.RPOrigins) == 0 && c.Instance.Domain != "" {
 		origins := []string{"https://" + c.Instance.Domain}
-		// http.mobile_origins stay out: a passkey made in the mobile app's WebView must not
-		// verify here (TestMobileOriginsNotWebAuthn).
 		c.Auth.WebAuthn.RPOrigins = append(origins, c.HTTP.TrustedOrigins...)
 	}
 	if c.Auth.OIDC.RedirectURL == "" && c.Instance.Domain != "" {

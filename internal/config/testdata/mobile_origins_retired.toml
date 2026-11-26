@@ -1,0 +1,2 @@
+[http]
+mobile_origins = ["capacitor://localhost"]

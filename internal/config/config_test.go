@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +76,22 @@ func loadTestdata(t *testing.T, name string) (*config.Config, error) {
 	writeSecrets(t, dir)
 	t.Chdir(dir) // restores the working directory when the test ends
 	return config.Load(path)
+}
+
+// http.mobile_origins went with the Capacitor app: strict decoding must refuse it, not ignore it,
+// so an operator's stale line cannot silently look like a working setting.
+func TestRetiredMobileOriginsKeyFailsLoad(t *testing.T) {
+	_, err := loadTestdata(t, "mobile_origins_retired.toml")
+	if err == nil {
+		t.Fatal("Load accepted http.mobile_origins")
+	}
+	var code exit.Code
+	if !errors.As(err, &code) || code != exit.Config {
+		t.Fatalf("error %v does not carry exit.Config", err)
+	}
+	if !strings.Contains(err.Error(), "unknown key or table") || !strings.Contains(err.Error(), "mobile_origins") {
+		t.Fatalf("error %q does not name an unknown mobile_origins key", err)
+	}
 }
 
 func TestUnknownKeyFailsWithLineAndColumnAndExitConfig(t *testing.T) {
@@ -244,40 +259,6 @@ func TestValidationRules(t *testing.T) {
 		c.Auth.Methods = []string{"password", "totp"}
 		if err := c.Validate(); err != nil {
 			t.Fatalf("auth.methods = [password, totp]: Validate = %v, want nil", err)
-		}
-	})
-	// Mobile M1 task 4: each http.mobile_origins entry is one whole origin, matched exactly by CORS
-	// and as a scheme://host pattern by the gateway, so nothing may make the two disagree.
-	t.Run("http.mobile_origins entries are whole origins", func(t *testing.T) {
-		for _, bad := range []string{
-			"capacitor://*", "https://local?ost", "https://[a-z]ocalhost", "localhost",
-			"https://localhost/app", "https://localhost/", "https://localhost?x=1", "https://localhost#top",
-			"https://localhost#", "https://user@localhost", "https://",
-			// A backslash: some URL parsers read it as a path separator, so the two matchers could
-			// disagree about where the host ends.
-			`https://localhost\`, `https://localhost\@evil.example`, `capacitor:\\localhost`,
-			// Uppercase is refused, not lowercased: a browser serialises the Origin header in
-			// lowercase, so "Capacitor://Localhost" would never match and folding it silently would
-			// hide the typo.
-			"Capacitor://localhost", "capacitor://Localhost", "HTTPS://LOCALHOST", "https://localHost:8443",
-		} {
-			c := base()
-			c.Derive()
-			c.HTTP.MobileOrigins = []string{"capacitor://localhost", bad}
-			err := c.Validate()
-			if err == nil || !strings.Contains(err.Error(), "http.mobile_origins") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
-				t.Fatalf("mobile_origins entry %q: Validate = %v, want an error naming the key and the entry", bad, err)
-			}
-		}
-		c := base()
-		c.Derive()
-		c.HTTP.MobileOrigins = []string{"capacitor://localhost", "https://localhost", "https://localhost:8443"}
-		if err := c.Validate(); err != nil {
-			t.Fatalf("default-shaped mobile_origins: Validate = %v, want nil", err)
-		}
-		c.HTTP.MobileOrigins = nil
-		if err := c.Validate(); err != nil {
-			t.Fatalf("empty mobile_origins: Validate = %v, want nil", err)
 		}
 	})
 	// web3.6 review (wire 7): the client decodes at most 16 backup codes.
