@@ -1136,15 +1136,18 @@ func (s *Supervisor) closePlaybackLocked() {
 		s.starting.interrupted = true
 		s.starting.cancel()
 	}
-	s.closeDrainingLocked()
+	// The playback closes before the draining tail: the tail's end opens the playback's first-sample gate, so the
+	// other order could publish one sample of the next track after a stop or skip.
 	if s.playback != nil {
 		p := s.playback
 		s.playback = nil
 		_ = p.Close()
 	}
+	s.closeDrainingLocked()
 }
 
-// closeDrainingLocked ends the draining track's tail at once (a stop, skip, pause or leave).
+// closeDrainingLocked ends the draining track's tail at once (a stop, skip, pause or leave). Close or pause the
+// playback first: the tail's end opens its first-sample gate.
 func (s *Supervisor) closeDrainingLocked() {
 	if d := s.draining; d != nil {
 		s.draining = nil

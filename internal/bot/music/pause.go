@@ -94,16 +94,18 @@ func (s *Supervisor) cancelPauseLocked() {
 	s.pausedPlayback = false
 }
 func (s *Supervisor) pausePlaybackLocked() {
-	s.closeDrainingLocked()
 	p, ok := s.playback.(Pausable)
 	if !ok || !s.canHoldPlaybackLocked() {
 		s.closePlaybackLocked()
 		return
 	}
 	if s.pausedPlayback {
+		s.closeDrainingLocked()
 		return
 	}
 	p.Pause()
+	// The draining tail ends only once the pause holds the playback: its end opens the playback's first-sample gate.
+	s.closeDrainingLocked()
 	s.state.PositionMS = s.playbackPositionLocked(p)
 	s.state.PositionAtMS = 0
 	s.pausedPlayback = true
