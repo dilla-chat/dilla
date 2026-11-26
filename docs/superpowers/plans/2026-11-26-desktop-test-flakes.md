@@ -387,6 +387,58 @@ Task 8's commit.
 - [ ] **Step 3:** Run the crates' tests (unit and the live voice tests) and clippy. Commit:
   `desktop: report call activity so a conversation is not moved to AFK`.
 
+### Task 11: GIFs animate and send on click, pictures follow their rounded corners, and the preview closes on an outside click (review: opus)
+
+Jonas, 2026-11-26:
+- "giphy gifs anre not animated and shouldnt need to be clicked and then press enter to send?"; he chose "Click
+  sends at once".
+- "clicking outside an image when preview is open should close the preview". This is new behaviour: the old
+  `<dialog>` lightbox didn't close on an outside click.
+- "the image sticks out the rounded edges?": posted GIF cards, seen on alpha.3, KDE Wayland, 4K at scale 1×.
+
+He placed all of them in this PR. Spec: `docs/superpowers/specs/2026-11-26-gif-and-rounded-picture-diagnosis.md`.
+
+**1. Animation:**
+- Every `img()` that can show a GIF gets a stable `.id()`: the picker (`dilla-desktop-ui/.../gif_picker.rs` ~99),
+  the posted cards (`card.rs` ~84/99/139) and the lightbox (`lightbox.rs` ~46).
+- A GIF is drawn as one rounded Cover image, not `exact_cover`'s three layers.
+- Limits as in the old app:
+  - posted GIFs animate for at most 5 minutes, and only when at most 8 MiB and at least half visible;
+  - nothing animates under reduced motion.
+- Decoded GIFs are released (`remove_asset`/`drop_image`) when the picker closes.
+- Tests: `simulate_next_frame` advances a GIF's frame with an id; reduced motion stops it.
+
+**2. Click sends:**
+- In `ui::pick_gif` (`ui.rs` ~1486-1538), after the fetch: `tray.add(file)`, `tray.take(&ids)`, then
+  `attachments().send(channel, "", …)`. The GIF goes out alone, and the draft text and other tray files stay.
+- Focus returns to the composer, and the `gif.added`-style announcement becomes a sent announcement.
+- Update `docs/design/flows/16-gif-picker.md` (~28, 30) to the new behaviour.
+- Tests: a pick sends one message with the GIF and no text; the draft and an existing tray file are untouched.
+
+**3. Rounded pictures:**
+- A shared helper `rounded_picture(src, outer_radius, border, fit)` in `dilla-desktop-ui` gives the image the
+  container's radius minus its border.
+- Use it at:
+  - the GIF picker tiles (`gif_picker.rs` ~99-119);
+  - the composer tray preview (`tray.rs` ~92);
+  - the voice stage video (`voice/mod.rs` ~3584 inside ~3727);
+  - the DM call video (`voice/mod.rs` ~4402);
+  - the share-picker thumbnails (`share_picker/mod.rs` ~295);
+  - the posted image and GIF card path, with the picture radius aligned to the border's inside (7, not 8).
+- `voice/mod.rs` may only be edited after Task 10 has committed it.
+- Tests: a `#[gpui::test]` per site asserts that the image's corner radii are at least the inner radius. Re-shoot
+  the cards fixture at 1× and 2× where the parity tooling allows.
+
+**4. Lightbox:** a click on the backdrop, outside the image and its control bar, closes it (`attachments/mod.rs`
+~934, `dilla-desktop-ui/.../lightbox.rs` ~44). Clicks on the image or a control don't. Test both.
+
+- [ ] Write the tests above and verify they fail; implement; run the crates' tests and clippy.
+- [ ] Commit in up to four commits, one per part, e.g.:
+  - `desktop: GIFs animate (within the old app's limits)`;
+  - `desktop: a picked GIF is sent at once`;
+  - `desktop: pictures follow their container's rounded corners`;
+  - `desktop: a click outside the picture closes the preview`.
+
 **Order:** Tasks 1 and 2 run in parallel (disjoint files). Task 5 runs beside Task 3 (disjoint: `dilla-media/src`
 and `dilla-desktop` vs Go and `call.rs`). Task 3 follows Task 2, because both touch the G3 tests and
 the Bot logs. Task 4 runs last. Then the final review, `npm run ci:local`, and one PR.
