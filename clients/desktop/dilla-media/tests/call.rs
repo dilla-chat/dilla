@@ -459,9 +459,11 @@ async fn bot_play_from_enter_to_first_audio_frame_meets_g3() {
     );
 }
 
-/// e2e/voice/bot-music.spec.ts "next queued track gap is under 150 ms": the 5 s track, then the 30 s one queued behind
-/// it; once the first must have ended (with a second to spare), the gap is the receiver's longest quiet span since the
-/// first track started. A receiver that is quiet at the end never heard the next track start.
+/// e2e/voice/bot-music.spec.ts "next queued track gap is under 150 ms": the 5 s track, then a second 5 s one and the 30 s
+/// one queued behind it; once both short ones must have ended (with a second to spare), the gap is the receiver's longest
+/// quiet span since the first track started. A receiver that is quiet at the end never heard the next track start. The
+/// second 5 s track starts by an advance, with the listener already subscribed, and the 30 s one behind it delimits its
+/// end: its audible span is the whole fixture (the first, cold one loses its start to the listener's subscription).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad with its Bot and SFU: target/dilla-testhost, target/dillabot, dilla-bot-core, the wasi core and ffmpeg"]
 async fn bot_next_queued_track_gap_is_under_150_ms() {
@@ -472,6 +474,7 @@ async fn bot_next_queued_track_gap_is_under_150_ms() {
         seat_both(&mut w, room).await
     };
     let mut gaps = Vec::new();
+    let mut spans = Vec::new();
     for i in 0..GAP_RUNS {
         run(
             &ada.client,
@@ -489,16 +492,18 @@ async fn bot_next_queued_track_gap_is_under_150_ms() {
             .iter()
             .rfind(|e| e.audible)
             .map_or(0.0, |e| e.t);
-        let queued = run(
-            &ada.client,
-            w.community,
-            w.general,
-            &music::play(LONG),
-            "Track added to the music queue.",
-        )
-        .await;
-        assert!(queued.contains("Track added"), "{queued}");
-        while music::wall_ms() - started <= 6_000.0 {
+        for track in [SHORT, LONG] {
+            let queued = run(
+                &ada.client,
+                w.community,
+                w.general,
+                &music::play(track),
+                "Track added to the music queue.",
+            )
+            .await;
+            assert!(queued.contains("Track added"), "{queued}");
+        }
+        while music::wall_ms() - started <= 11_000.0 {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         let after: Vec<_> = bea
@@ -526,16 +531,59 @@ async fn bot_next_queued_track_gap_is_under_150_ms() {
             (hz - 440.0).abs() <= 20.0,
             "the next track is not what plays: {hz} Hz, edges {shown:?}"
         );
-        eprintln!("G3 gap run {i}: {gap:.0} ms ({hz} Hz now), edges {shown:?}");
+        // The queued 5 s track plays to its end: its own stream stays audible for the whole fixture, not cut off with
+        // the Bot's queued last second (the Bot unpublishes a track only once its queue drained).
+        let (_, streams) = bea.edges_raw().await;
+        let span = queued_track_span(&streams, started);
+        eprintln!(
+            "G3 gap run {i}: {gap:.0} ms ({hz} Hz now), queued track span {span:?} ms, edges {shown:?}"
+        );
+        let Some(span) = span else {
+            panic!(
+                "the queued track's stream has no audible span after {started}: each stream's: {streams:?}"
+            );
+        };
+        assert!(
+            span >= 4_900.0,
+            "the queued (5 s) track was audible for only {span:.0} ms: each stream's: {streams:?}"
+        );
         gaps.push(gap.max(0.0));
+        spans.push(span);
     }
     record("next-track-gap", &gaps);
+    record("queued-track-span", &spans);
     for gap in &gaps {
         assert!(
             *gap < 150.0,
             "gap between queued tracks {gap:.0} ms: {gaps:?}"
         );
     }
+}
+
+/// The audible span, in ms, of the second track: the first stream to turn audible after the one that turned audible at
+/// `started` (the call audio's audible edge), from its audible edge to its first quiet edge, or `None` when it has no
+/// such pair.
+fn queued_track_span(streams: &[serde_json::Value], started: f64) -> Option<f64> {
+    let t = |e: &serde_json::Value| e["t"].as_f64();
+    let audible = |e: &serde_json::Value| e["audible"].as_bool();
+    let first =
+        streams.iter().find(|e| {
+            audible(e) == Some(true) && t(e).is_some_and(|t| (t - started).abs() < 0.5)
+        })?["stream"]
+            .as_str()?;
+    let on = streams.iter().find(|e| {
+        audible(e) == Some(true)
+            && e["stream"].as_str().is_some_and(|s| s != first)
+            && t(e).is_some_and(|t| t > started)
+    })?;
+    let stream = on["stream"].as_str()?;
+    let began = t(on)?;
+    let ended = streams.iter().find(|e| {
+        e["stream"].as_str() == Some(stream)
+            && audible(e) == Some(false)
+            && t(e).is_some_and(|t| t > began)
+    })?;
+    Some(t(ended)? - began)
 }
 
 /// e2e/voice/bot-music.spec.ts "a repeated track starts within 500 ms at p95": the session's first `/play` joins the
