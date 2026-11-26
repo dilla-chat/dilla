@@ -265,6 +265,6 @@ mod tests {
         let image = crate::components::attachments::testing::gif_sized(64, 64);
         cx.update(|cx| cx.set_reduce_motion(true));
         let corner = picture_corner(cx, move |_, cx| picker_with(Some(image.clone()), cx));
-        assert!(corner >= inner_radius(radius::MD, px(1.0)), "{corner:?}");
+        assert_eq!(corner, inner_radius(radius::MD, px(1.0)));
     }
 }

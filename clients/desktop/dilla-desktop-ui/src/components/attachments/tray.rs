@@ -94,10 +94,10 @@ fn card(e: TrayEntry, cx: &App) -> AnyElement {
         // is under it, so its bottom corners stay square.
         Preview::Image(image) => {
             rounded_picture(image.clone(), radius::LG, px(1.0), ObjectFit::Cover)
+                .top_only()
                 .h_auto()
                 .flex_1()
                 .min_h_0()
-                .rounded_b(px(0.0))
                 .into_any_element()
         }
         Preview::Gif => div()
@@ -314,7 +314,7 @@ mod tests {
         });
         let c = corners.last().expect("the preview");
         let inner = inner_radius(radius::LG, px(1.0));
-        assert!(c.top_left >= inner && c.top_right >= inner, "{c:?}");
+        assert_eq!((c.top_left, c.top_right), (inner, inner), "{c:?}");
         assert_eq!((c.bottom_left, c.bottom_right), (px(0.0), px(0.0)));
     }
 }

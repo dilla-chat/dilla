@@ -510,6 +510,6 @@ mod tests {
                 }])
                 .into_any_element()
         });
-        assert!(corner >= inner_radius(radius::MD, px(1.0)), "{corner:?}");
+        assert_eq!(corner, inner_radius(radius::MD, px(1.0)));
     }
 }

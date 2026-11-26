@@ -4403,7 +4403,7 @@ fn card(
 /// A stage tile's video, filling the tile inside its `edge` (a border of 1 or 2px). It carries the tile's rounded corners
 /// itself (radius `xl` less the edge): GPUI clips no child to its parent's corners, so a stream of the tile's aspect
 /// would otherwise show square corners past them.
-fn stage_video(image: Arc<RenderImage>, edge: f32) -> gpui::Img {
+fn stage_video(image: Arc<RenderImage>, edge: f32) -> dilla_desktop_ui::picture::RoundedPicture {
     dilla_desktop_ui::picture::rounded_picture(
         ImageSource::Render(image),
         radius::XL,
@@ -4413,7 +4413,7 @@ fn stage_video(image: Arc<RenderImage>, edge: f32) -> gpui::Img {
 }
 
 /// A DM call tile's video, in its 16:9 box (radius `md`, no border), carrying the box's rounded corners itself.
-fn dm_video(image: Arc<RenderImage>) -> gpui::Img {
+fn dm_video(image: Arc<RenderImage>) -> dilla_desktop_ui::picture::RoundedPicture {
     dilla_desktop_ui::picture::rounded_picture(
         ImageSource::Render(image),
         radius::MD,
@@ -5462,9 +5462,10 @@ mod tests {
                         .into_any_element()
                 }),
             );
-            assert!(
-                got >= dilla_desktop_ui::tokens::radius::XL - px(edge),
-                "stage, edge {edge}: {got:?}"
+            assert_eq!(
+                got,
+                dilla_desktop_ui::tokens::radius::XL - px(edge),
+                "stage, edge {edge}"
             );
         }
         let image = frame();
@@ -5478,7 +5479,7 @@ mod tests {
                     .into_any_element()
             }),
         );
-        assert!(got >= dilla_desktop_ui::tokens::radius::MD, "DM: {got:?}");
+        assert_eq!(got, dilla_desktop_ui::tokens::radius::MD, "DM");
     }
 
     /// The portal's order (KDE share picker plan, Task 2): the panel before a share asks no sound question; once the
