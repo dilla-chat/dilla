@@ -90,6 +90,21 @@ func (p *Pool) guards() CallGuards {
 	return p.callGuards
 }
 
+type startCatchUpKey struct{}
+
+// WithStartCatchUp marks ctx as a track start's (or a call join's) catch-up, before the first key of the track is
+// derived (Task 3): it may trust the gateway's hinted group head. The monitor tick and a hint's nudge never carry it,
+// so they always read dillad's head: the tick is the backstop for a hint dillad never sent.
+func WithStartCatchUp(ctx context.Context) context.Context {
+	return context.WithValue(ctx, startCatchUpKey{}, true)
+}
+
+// IsStartCatchUp reports a ctx marked by WithStartCatchUp.
+func IsStartCatchUp(ctx context.Context) bool {
+	v, _ := ctx.Value(startCatchUpKey{}).(bool)
+	return v
+}
+
 type poolRoom interface{ Disconnect() }
 
 type poolBackend interface {
@@ -297,7 +312,7 @@ func (p *Pool) startSource(ctx context.Context, call client.Call, boundGroup id.
 	// group whose own leaf was missing is never taken as fresh (v0.1.0-bot2.2).
 	if guards.CatchUp != nil && (guards.FreshJoin == nil || music.ForcedRejoin(ctx) || !guards.FreshJoin(boundGroup)) {
 		// The helper's epoch must be the call's current one before any key is derived (C1).
-		if err := startStage(ctx, "call_catch_up", guards.CatchUp(ctx, boundGroup)); err != nil {
+		if err := startStage(ctx, "call_catch_up", guards.CatchUp(WithStartCatchUp(ctx), boundGroup)); err != nil {
 			_ = source.Close()
 			return nil, err
 		}

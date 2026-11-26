@@ -32,8 +32,9 @@ type hintedHead struct {
 	at         time.Time
 }
 
-// musicHintedHeadMaxAge bounds how long a hinted head stands without a newer hint or a read confirming it: the monitor
-// tick reads dillad's head at least this often, a backstop for a hint the stream never carried.
+// musicHintedHeadMaxAge bounds how long a hinted head stands for a start without a newer hint or a read (the monitor
+// tick's, every 2 s while a track plays) confirming it. A hint can be lost with the connection up (dillad drops a group
+// fan-out whose scope check fails), so only starts use the head; the tick always reads.
 const musicHintedHeadMaxAge = 10 * time.Second
 
 // groupHinted records a frame of group at next-1 that arrived on gateway connection conn. A head of an older connection

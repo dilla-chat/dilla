@@ -59,8 +59,9 @@ type musicCallCatchUp struct {
 	// Task 3): helper.ErrClosed once the helper this catch-up uses is closed, unusable or no longer the registered one.
 	// Nil checks nothing.
 	helperNow func() error
-	// heads, when set, is the gateway's hinted head of the group (Task 3): a helper already at it skips the remote read,
-	// which otherwise waits for a read token once a busy room drained the Bot's read bucket. Nil always reads.
+	// heads, when set, is the gateway's hinted head of the group (Task 3): a start's catch-up (livekit.WithStartCatchUp)
+	// with the helper already at it skips the remote read, which otherwise waits for a read token once a busy room
+	// drained the Bot's read bucket. Ticks and nudges always read. Nil always reads.
 	heads *musicGroupHeads
 }
 
@@ -137,10 +138,14 @@ func (c musicCallCatchUp) catchUp(ctx context.Context, group id.ID) error {
 		if err != nil {
 			return err
 		}
-		// Every handshake and message of the group reaches the Bot's live gateway connection as it is accepted: a helper
-		// at the head that connection's hints showed is current without asking dillad (Task 3).
-		if hinted, ok := c.heads.current(group); ok && hinted <= local.NextSequence {
-			return nil
+		// A start's (or a join's) catch-up trusts the head the live gateway connection's hints showed: a helper at it
+		// skips dillad's head read (Task 3). Hints are not guaranteed (dillad drops a group fan-out it cannot scope,
+		// with the connection still up), so the monitor tick and a hint's nudge, which carry no start mark, always read:
+		// the tick stays the 2 s backstop for a lost hint.
+		if livekit.IsStartCatchUp(ctx) {
+			if hinted, ok := c.heads.current(group); ok && hinted <= local.NextSequence {
+				return nil
+			}
 		}
 		read := c.heads.beginRead(group)
 		remote, err := c.remote(ctx, group)

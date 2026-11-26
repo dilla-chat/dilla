@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
+	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/id"
 )
@@ -49,15 +50,32 @@ func TestCatchUpSkipsRemoteReadWhenHintIsCurrent(t *testing.T) {
 	// The newest hint was sequence 8: the group's next sequence is 9, which the helper already holds.
 	r.events.groupHinted(r.installation, r.group, 9, r.conn, r.now)
 	sync := &catchUpSyncFake{}
-	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 0 || sync.calls != 0 {
+	if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 0 || sync.calls != 0 {
 		t.Fatalf("a hinted current group: err=%v GroupInfo calls=%d syncs=%d, want no read and no paging", err, r.remoteReads, sync.calls)
 	}
 	// A hint past the helper: the catch-up reads the head and pages.
 	r.events.groupHinted(r.installation, r.group, 12, r.conn, r.now)
 	r.remoteNext = 12
 	sync = &catchUpSyncFake{}
-	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 1 || sync.calls != 1 {
+	if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 1 || sync.calls != 1 {
 		t.Fatalf("a hinted group ahead of the helper: err=%v GroupInfo calls=%d syncs=%d, want one read and one pass", err, r.remoteReads, sync.calls)
+	}
+}
+
+// Fix round 1 (review I1): a hint can be lost with the connection up (dillad drops a group fan-out whose scope check
+// fails), so the monitor tick's and a nudge's catch-up (no start mark) read dillad's head even with a current hint:
+// the 2 s tick stays the backstop for a commit whose hint never came.
+func TestCatchUpTickReadsEvenWithACurrentHint(t *testing.T) {
+	r := newHeadsRig()
+	r.events.groupHinted(r.installation, r.group, 9, r.conn, r.now)
+	sync := &catchUpSyncFake{}
+	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 1 || sync.calls != 0 {
+		t.Fatalf("a tick with a current hint: err=%v GroupInfo calls=%d syncs=%d, want one read", err, r.remoteReads, sync.calls)
+	}
+	// The commit's hint was lost: the tick's read finds dillad ahead and pages it in.
+	r.remoteNext = 11
+	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 2 || sync.calls != 1 {
+		t.Fatalf("a tick after a lost hint: err=%v GroupInfo calls=%d syncs=%d, want a read and a pass", err, r.remoteReads, sync.calls)
 	}
 }
 
@@ -88,7 +106,7 @@ func TestCatchUpReadsRemoteWithoutHint(t *testing.T) {
 			r := newHeadsRig()
 			tc.setup(r)
 			sync := &catchUpSyncFake{}
-			if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 1 || sync.calls != 0 {
+			if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 1 || sync.calls != 0 {
 				t.Fatalf("err=%v GroupInfo calls=%d syncs=%d, want one read and no paging", err, r.remoteReads, sync.calls)
 			}
 		})
@@ -100,19 +118,19 @@ func TestCatchUpReadsRemoteWithoutHint(t *testing.T) {
 func TestCatchUpReadRenewsOnlyAHintedHead(t *testing.T) {
 	r := newHeadsRig()
 	sync := &catchUpSyncFake{}
-	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 1 {
+	if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 1 {
 		t.Fatalf("first read: err=%v reads=%d", err, r.remoteReads)
 	}
-	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 2 {
+	if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 2 {
 		t.Fatalf("a read made a head without a hint: reads=%d", r.remoteReads)
 	}
 	r.events.groupHinted(r.installation, r.group, 9, r.conn, r.now)
 	r.now = r.now.Add(musicHintedHeadMaxAge + time.Millisecond)
-	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 3 {
+	if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 3 {
 		t.Fatalf("an old head skipped the read: reads=%d", r.remoteReads)
 	}
 	// That read renewed the head: the next start skips.
-	if err := r.catchUp(9, sync).run(t.Context(), r.group); err != nil || r.remoteReads != 3 {
+	if err := r.catchUp(9, sync).run(livekit.WithStartCatchUp(t.Context()), r.group); err != nil || r.remoteReads != 3 {
 		t.Fatalf("a renewed head still read: reads=%d", r.remoteReads)
 	}
 }
