@@ -223,6 +223,37 @@ func TestStreamStarterPrefetchIsClaimedByTheNextStart(t *testing.T) {
 	}
 }
 
+// The process's output must outlive the process: ffmpeg writes its last pages and exits while the reader (a busy
+// prefetch buffer, a loaded machine) has not read them yet. exec.Cmd.Wait closes a StdoutPipe as soon as the process
+// is reaped, which dropped that unread tail and failed the read with "read |0: file already closed". Here the
+// reader starts only after the process was reaped, which makes that interleaving certain.
+func TestStreamProcessOutputSurvivesTheProcessExitingBeforeItIsRead(t *testing.T) {
+	dir := t.TempDir()
+	stream := testOgg(t, 0.5)
+	ffmpeg := fakeStreamFFmpeg(t, dir, stream, "")
+	starter, _ := streamStarterForTest(t, dir, ffmpeg, &fakeResolver{})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	src, err := starter.launch(ctx, "https://rr1---sn-abc.googlevideo.com/videoplayback?expire=4102444800", testUserAgent, 0)
+	if err != nil {
+		if errors.Is(err, ErrSandboxUnavailable) {
+			t.Skipf("bubblewrap network namespaces unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	defer src.Close()
+	process := src.(*boundedProcessPCM).process
+	select {
+	case <-process.done:
+	case <-ctx.Done():
+		t.Fatal("the process did not exit")
+	}
+	got, err := io.ReadAll(src)
+	if err != nil || !bytes.Equal(got, stream) {
+		t.Fatalf("read after the process exited: %d of %d bytes, %v", len(got), len(stream), err)
+	}
+}
+
 func TestStreamStarterRetriesOnceWithAFreshLookupWhenTheURLIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	stream := testOgg(t, 0.5)

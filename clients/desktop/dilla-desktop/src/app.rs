@@ -1550,6 +1550,12 @@ impl AppView {
     /// A key, a click or a pointer move in this window, while it is the active one: the person is here, so the instance
     /// does not show them idle (App.tsx: `pointerdown`, `pointermove` and `keydown` while the page is visible).
     fn note_activity(&mut self, window: &Window, cx: &mut Context<Self>) {
+        // Task 10: the same input keeps this window's call from being moved to AFK (its own 5 s throttle).
+        crate::screens::voice::afk_input(
+            crate::screens::voice::wid(window),
+            window.is_window_active(),
+            cx,
+        );
         if !window.is_window_active() || !self.activity.due(std::time::Instant::now()) {
             return;
         }

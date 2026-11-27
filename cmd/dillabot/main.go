@@ -414,6 +414,7 @@ func run(ctx context.Context, cfg config, logger *slog.Logger, reload <-chan os.
 		Timeout:           30 * time.Second,
 		RateLimits:        cfg.RateLimits,
 		HTTPClient:        cfg.httpClient(30 * time.Second),
+		Logger:            logger,
 	})
 	if err != nil {
 		return errors.New("bot HTTP client configuration is invalid")
@@ -669,7 +670,9 @@ func reconcile(ctx context.Context, cfg config, api *client.Client, runtime *cli
 											// unusable or replaced one stops the track at once (error_class=closed).
 											helperNow: func() error {
 												return musicHelperNow(musicRegistry, installation.ID, installation.CommunityID, nativeClient)
-											}}
+											},
+											// Task 3: a helper at the call group's hinted head skips dillad's head read.
+											heads: gateways.musicGroupHeads(installation.ID)}
 										joinCallGroup := func(joinCtx context.Context) error {
 											// Bot v2 Task 19: the policy version is read once per op 54, not per join (fix round 1, M2); an
 											// already-member join catches the call group up first (C1).

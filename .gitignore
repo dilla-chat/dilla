@@ -32,10 +32,8 @@ e2e/test-results/
 packages/media/wasm/
 packages/core-wasm/pkg/
 
-# the web client: a real build copied into the embed directory stays untracked; the placeholder is tracked
-internal/web/dist/*
-!internal/web/dist/index.html
-!internal/web/dist/dilla-manifest.json
+# dillad embeds no web client since Task 12; a leftover local copy of the old embed directory stays untracked
+internal/web/dist/
 packages/web/dist/
 packages/web/dist-desktop-strings/
 packages/client-core/harness-dist/

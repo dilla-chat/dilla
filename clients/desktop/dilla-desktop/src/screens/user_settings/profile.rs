@@ -5,8 +5,8 @@
 //! the card showing how others see you as you type.
 
 use gpui::{
-    AnyElement, Context, Hsla, IntoElement, ParentElement, Styled, div, hsla, linear_color_stop,
-    linear_gradient, px,
+    AnyElement, Context, Div, Hsla, IntoElement, ParentElement, Styled, div, hsla,
+    linear_color_stop, linear_gradient, px,
 };
 
 use dilla_desktop_ui::components::avatar::{Avatar, AvatarSize, colour_of};
@@ -57,6 +57,20 @@ fn bio_frame() -> Frame {
 }
 
 /// The band's colour at a lightness, from the avatar palette entry of the shown name.
+/// The preview's band (`.dw-profile-preview__band`) in the person's hue. GPUI clips a child to its parent's square
+/// bounds, never to its rounded corners, so the band rounds its own top corners to the card's inner radius (its 10px less
+/// the 1px edge, the padding box CSS clips to).
+fn band(name: &str) -> Div {
+    div()
+        .h(px(BAND_HEIGHT))
+        .rounded_t(radius::XL - px(EDGE))
+        .bg(linear_gradient(
+            BAND_ANGLE,
+            linear_color_stop(band_stop(name, BAND_LIGHT), 0.0),
+            linear_color_stop(band_stop(name, BAND_DARK), 1.0),
+        ))
+}
+
 fn band_stop(name: &str, lightness: f32) -> Hsla {
     let (hue, saturation, _) = colour_of(name);
     hsla(
@@ -222,11 +236,7 @@ impl UserSettings {
             .border_1()
             .border_color(color::CONTROL_EDGE_FIELD)
             .rounded(radius::XL)
-            .child(div().h(px(BAND_HEIGHT)).bg(linear_gradient(
-                BAND_ANGLE,
-                linear_color_stop(band_stop(&name, BAND_LIGHT), 0.0),
-                linear_color_stop(band_stop(&name, BAND_DARK), 1.0),
-            )))
+            .child(band(&name))
             .child(body);
 
         let mut col = div()
@@ -256,5 +266,22 @@ impl UserSettings {
                 .child(card),
         )
         .into_any_element()
+    }
+}
+
+/// Task 9 (2026-11-26): the preview's band rounds its top corners to the card's inner radius (10px less the 1px edge), so no
+/// square of band shows outside the round edge (GPUI clips a child to its parent's square bounds).
+#[cfg(test)]
+mod tests {
+    use gpui::{AbsoluteLength, Styled, px};
+
+    #[test]
+    fn the_preview_band_follows_the_card_s_inner_corners() {
+        let mut b = super::band("Ada");
+        let r = b.style().corner_radii.clone();
+        let inner: Option<AbsoluteLength> = Some((super::radius::XL - px(super::EDGE)).into());
+        assert_eq!(r.top_left, inner);
+        assert_eq!(r.top_right, inner);
+        assert_eq!(r.bottom_left, None);
     }
 }

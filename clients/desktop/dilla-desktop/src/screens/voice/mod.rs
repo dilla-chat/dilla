@@ -7,6 +7,7 @@
 //! The media of the call runs in [`session::MediaSession`] (one per process); the stage's video tiles draw its
 //! newest remote frames.
 
+pub mod afk;
 pub mod keys;
 pub mod menu;
 pub mod session;
@@ -28,8 +29,8 @@ use dilla_media::{
 };
 use gpui::{
     AnyElement, App, Div, ElementId, FocusHandle, Global, ImageSource, InteractiveElement,
-    IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, StyledImage,
-    Window, WindowId, anchored, deferred, div, img, px, relative,
+    IntoElement, ParentElement, RenderImage, StatefulInteractiveElement, Styled, Window, WindowId,
+    anchored, deferred, div, px, relative,
 };
 
 use dilla_desktop_ui::a11y::{Accessible, Role};
@@ -332,6 +333,8 @@ pub struct VoiceUi {
     /// A test's own left room, open while it holds ([`put_test_room_open`], feature `test-hooks`).
     #[cfg(feature = "test-hooks")]
     test_room_open: Option<Rc<std::cell::Cell<bool>>>,
+    /// Task 10: this call's AFK activity reports ([`afk`]).
+    afk: afk::AfkTracker,
 }
 
 /// A simulated call's media (the automation command `voice-sim`): the GPUI-only references of speaking, camera and screen
@@ -1206,6 +1209,11 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     {
         // The call ended: push to talk lets go (review I1).
         release_ptt(window, cx);
+        // A share pressed in it that the media session has not run yet never runs (not even in a rejoin of the same
+        // call): the person's leave cancels it.
+        if let Some(s) = session_of(window, cx) {
+            s.forget_kept();
+        }
     }
     if ui_mut(window, cx).state.voice.call.phase != CallPhase::Idle
         && state.voice.call.phase == CallPhase::Idle
@@ -1244,6 +1252,63 @@ pub fn sync(window: WindowId, state: Arc<AppState>, client: Option<&Rc<Client>>,
     if live && !ui.repainting {
         ui.repainting = true;
         repaint_on_video(window, cx);
+    }
+    follow_afk(window, cx);
+}
+
+/// Task 10 (Shell.tsx's AFK activity): `window`'s call reports once when it joins a channel that reports (asking for
+/// its community's AFK snapshot first when it is not read), and while this device speaks ([`afk`]). A report is
+/// fire-and-forget.
+fn follow_afk(window: WindowId, cx: &mut App) {
+    let ui = ui_mut(window, cx);
+    let Some(client) = ui.client.clone() else {
+        return;
+    };
+    let target = afk::target(&ui.state);
+    if target.is_none()
+        && let Some(community) = afk::unread_afk(&ui.state)
+    {
+        drop(client.ring().load_afk(community));
+    }
+    let now = std::time::Instant::now();
+    let speaking = afk::own_speaking(&ui.state);
+    let report = ui
+        .afk
+        .follow(target, now)
+        .or_else(|| ui.afk.speech(speaking, now));
+    if let Some(t) = report {
+        drop(client.ring().afk_activity(t.community, t.channel));
+    }
+}
+
+/// Task 10's speech tick: while this device speaks in `window`'s call, a report every [`afk::EVERY`]. It rides the
+/// call's repaint loop, which runs only while the call does.
+fn afk_speech(window: WindowId, cx: &mut App) {
+    if ui_of(window, cx).is_none() {
+        return;
+    }
+    let ui = ui_mut(window, cx);
+    let Some(client) = ui.client.clone() else {
+        return;
+    };
+    let speaking = afk::own_speaking(&ui.state);
+    if let Some(t) = ui.afk.speech(speaking, std::time::Instant::now()) {
+        drop(client.ring().afk_activity(t.community, t.channel));
+    }
+}
+
+/// Task 10: a pointer move, a press or a key in `window` (the app root's input hooks), `visible` when the window is the
+/// active one: its call reports activity (throttled, [`afk`]).
+pub fn afk_input(window: WindowId, visible: bool, cx: &mut App) {
+    if ui_of(window, cx).is_none() {
+        return;
+    }
+    let ui = ui_mut(window, cx);
+    let Some(client) = ui.client.clone() else {
+        return;
+    };
+    if let Some(t) = ui.afk.input(visible, std::time::Instant::now()) {
+        drop(client.ring().afk_activity(t.community, t.channel));
     }
 }
 
@@ -1306,6 +1371,9 @@ fn repaint_on_video(window: WindowId, cx: &mut App) {
                     None => Tick::Wait,
                 }
             });
+            if !matches!(tick, Tick::Stop) {
+                cx.update(|cx| afk_speech(window, cx));
+            }
             match tick {
                 Tick::Stop => break,
                 Tick::Wait => {}
@@ -1658,6 +1726,15 @@ pub fn rooms_open_for_join(
 #[cfg(feature = "test-hooks")]
 pub fn put_test_room_open(window: WindowId, open: Rc<std::cell::Cell<bool>>, cx: &mut App) {
     ui_mut(window, cx).test_room_open = Some(open);
+}
+
+/// Test hook: while `hold` is set, `window`'s media session waits before it takes up a call's media link (the client
+/// reports the call `In` meanwhile), as a busy session does.
+#[cfg(feature = "test-hooks")]
+pub fn hold_media_pickup(window: WindowId, hold: bool, cx: &mut App) {
+    if let Some(s) = session_of(window, cx) {
+        s.hold_pickup(hold);
+    }
 }
 
 /// The media sessions of the other instance windows (not `window`'s, nor one of its client's): the process's media
@@ -2067,14 +2144,18 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
     };
     let (options, session) = (ui.share_options, ui.session.clone());
     let Some(session) = session else { return };
+    // The call the press is for: the session runs a start in that call only (once it has taken the call up). A stop
+    // applies to whatever share runs, call or no call.
+    let call = ui.state.voice.call.call_id;
     if !on {
-        session.share(kind, false, options);
+        session.share(kind, false, options, call);
         return;
     }
     // A start needs the press on the focused window, in a live call of this window.
     if !window.is_window_active() || ui.state.voice.call.phase != CallPhase::In {
         return;
     }
+    let Some(call) = call else { return };
     if kind == ShareKind::Screen && !crate::screens::share_picker::portal(cx) {
         crate::screens::share_picker::open(options, window, cx);
         return;
@@ -2087,10 +2168,10 @@ pub fn toggle_share(kind: ShareKind, window: &mut Window, cx: &mut App) {
         ui.share_seq += 1;
         ui.share_panel_after = Some(ui.share_seq);
         ui.share_sound = std::mem::take(&mut ui.share_sound).on_share();
-        session.share_screen(None, options, ui.share_seq, ui.share_sound.clone());
+        session.share_screen(None, options, ui.share_seq, ui.share_sound.clone(), call);
         return;
     }
-    session.share(kind, true, options);
+    session.share(kind, true, options, Some(call));
 }
 
 /// The application sound of `window`'s running screen share (parity plan Package 3): the application the person chose
@@ -2110,7 +2191,7 @@ pub fn share_app_audio(
         return;
     }
     if let Some(s) = &ui.session {
-        s.app_audio(source);
+        s.app_audio(source, ui.state.voice.call.call_id);
     }
 }
 
@@ -2122,13 +2203,14 @@ pub fn set_share_app(
     cx: &mut App,
 ) {
     let Some(ui) = ui_of(window, cx) else { return };
-    let (session, live) = (
+    let (session, live, call) = (
         ui.session.clone(),
         ui.state.voice.call.phase == CallPhase::In,
+        ui.state.voice.call.call_id,
     );
     ui_mut(window, cx).share_sound = ShareSound::Person(source.clone());
     if live && let Some(s) = session {
-        s.app_audio(source);
+        s.app_audio(source, call);
     }
 }
 
@@ -2145,6 +2227,9 @@ pub fn share_source(
         return;
     }
     let session = ui.session.clone();
+    let Some(call) = ui.state.voice.call.call_id else {
+        return;
+    };
     let ui = ui_mut(window, cx);
     ui.share_seq += 1;
     let seq = ui.share_seq;
@@ -2157,7 +2242,7 @@ pub fn share_source(
     if let Some(s) = &session {
         // The start carries its sound (the sound section's choice, or none until the window's is found): the session
         // gives the new share exactly that once it is up, and the running share keeps its own until then.
-        s.share_screen(Some(source.clone()), options, seq, ui_sound);
+        s.share_screen(Some(source.clone()), options, seq, ui_sound, call);
     }
     // A shared window brings its application's sound (D21): found off the UI thread, applied only to this share.
     let Some(find) = look_up else { return };
@@ -3245,21 +3330,16 @@ fn measure_rate(rate: &mut (std::time::Instant, u64, u32), frames: u64, now: std
     }
 }
 
-/// `frame`'s RGBA rows as the BGRA gpui draws, mirrored left to right with `mirror` (the own camera's self-view only:
-/// what is sent is never mirrored).
-fn bgra_of(frame: &RemoteFrame, mirror: bool) -> Vec<u8> {
-    let mut bgra = frame.rgba.as_ref().clone();
+/// `frame`'s BGRA rows (dilla-media converts to the order gpui draws, so nothing is swapped), mirrored left to right
+/// with `mirror` (the own camera's self-view only: what is sent is never mirrored). The bytes are taken over when
+/// nobody else holds them; while the call's frame maps still hold them they are copied once (a memcpy, no per-pixel
+/// pass), and the producer's buffer is free again for its next frame (final review I1).
+fn bgra_of(frame: RemoteFrame, mirror: bool) -> Vec<u8> {
     let row = frame.width as usize * 4;
-    if row == 0 {
-        return bgra;
-    }
-    for line in bgra.chunks_exact_mut(row) {
-        let pixels = line.as_chunks_mut::<4>().0;
-        if mirror {
-            pixels.reverse();
-        }
-        for px in pixels {
-            px.swap(0, 2);
+    let mut bgra = Arc::unwrap_or_clone(frame.bgra);
+    if mirror && row != 0 {
+        for line in bgra.chunks_exact_mut(row) {
+            line.as_chunks_mut::<4>().0.reverse();
         }
     }
     bgra
@@ -3295,7 +3375,7 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
     ui.heights = videos
         .iter()
         .filter(|(k, _)| Some(*k) != mirrored.as_ref())
-        // The stream's own height: a self-view frame is scaled down, its stat says what is sent.
+        // The stream's own height, what its stat says (a self-view frame is the sent frame at its own size).
         .map(|(k, f)| (k.clone(), f.stream_height))
         .collect();
     ui.images.retain(|k, (_, image)| {
@@ -3305,17 +3385,19 @@ fn refresh_images(window: &mut Window, cx: &mut App) -> HashMap<StreamKey, Arc<R
         }
         keep
     });
-    for (k, f) in &videos {
-        if ui.images.get(k).is_some_and(|(n, _)| *n == f.frames) {
+    for (k, f) in videos {
+        if ui.images.get(&k).is_some_and(|(n, _)| *n == f.frames) {
             continue;
         }
-        let bgra = bgra_of(f, Some(k) == mirrored.as_ref());
-        if let Some(buf) = image::RgbaImage::from_raw(f.width, f.height, bgra) {
+        let (width, height, frames) = (f.width, f.height, f.frames);
+        let bgra = bgra_of(f, Some(&k) == mirrored.as_ref());
+        // gpui's RenderImage holds BGRA bytes in an RgbaImage's buffer.
+        if let Some(buf) = image::RgbaImage::from_raw(width, height, bgra) {
             let frame = image::Frame::new(buf);
-            if let Some((_, old)) = ui.images.insert(
-                k.clone(),
-                (f.frames, Arc::new(RenderImage::new(vec![frame]))),
-            ) {
+            if let Some((_, old)) = ui
+                .images
+                .insert(k, (frames, Arc::new(RenderImage::new(vec![frame]))))
+            {
                 stale.push(old);
             }
         }
@@ -3485,6 +3567,13 @@ fn tile(
     } else {
         AvatarSize::Stage
     };
+    // The web draws the tile's edge as an inset shadow, which moves nothing; here it is a border, inside which absolute
+    // children are placed, so their insets are counted from the tile's outer edge.
+    let edge = if speaking || selected {
+        m::TILE_EDGE_STRONG
+    } else {
+        m::TILE_EDGE
+    };
     let media = match video {
         Some(image) => {
             let selector = format!(
@@ -3495,11 +3584,7 @@ fn tile(
             div()
                 .debug_selector(move || selector.clone())
                 .size_full()
-                .child(
-                    img(ImageSource::Render(image))
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
+                .child(stage_video(image, edge))
                 .into_any_element()
         }
         None if k.screen => div()
@@ -3527,13 +3612,6 @@ fn tile(
                 .size(face),
             )
             .into_any_element(),
-    };
-    // The web draws the tile's edge as an inset shadow, which moves nothing; here it is a border, inside which absolute
-    // children are placed, so their insets are counted from the tile's outer edge.
-    let edge = if speaking || selected {
-        m::TILE_EDGE_STRONG
-    } else {
-        m::TILE_EDGE
     };
     // CallStage.css: the focused tile's caption is 24px over its top left (10px in), 8px in, on the tile scrim.
     let caption = if is_focused {
@@ -4313,14 +4391,32 @@ fn card(
                 .rounded(radius::MD)
                 .overflow_hidden()
                 .bg(color::BG)
-                .child(
-                    img(ImageSource::Render(image))
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Contain),
-                )
+                .child(dm_video(image))
         }))
         .child(caption)
         .into_any_element()
+}
+
+/// A stage tile's video, filling the tile inside its `edge` (a border of 1 or 2px). It carries the tile's rounded corners
+/// itself (radius `xl` less the edge): GPUI clips no child to its parent's corners, so a stream of the tile's aspect
+/// would otherwise show square corners past them.
+fn stage_video(image: Arc<RenderImage>, edge: f32) -> dilla_desktop_ui::picture::RoundedPicture {
+    dilla_desktop_ui::picture::rounded_picture(
+        ImageSource::Render(image),
+        radius::XL,
+        px(edge),
+        gpui::ObjectFit::Contain,
+    )
+}
+
+/// A DM call tile's video, in its 16:9 box (radius `md`, no border), carrying the box's rounded corners itself.
+fn dm_video(image: Arc<RenderImage>) -> dilla_desktop_ui::picture::RoundedPicture {
+    dilla_desktop_ui::picture::rounded_picture(
+        ImageSource::Render(image),
+        radius::MD,
+        gpui::Pixels::ZERO,
+        gpui::ObjectFit::Contain,
+    )
 }
 
 /// The DM call box's controls (CallControls without the call bar's words): mute, deafen, camera, share, then leave set
@@ -5176,11 +5272,12 @@ fn share_menu(ui: &VoiceUi, viewport_w: gpui::Pixels) -> Option<AnyElement> {
                 let w = wid(window);
                 let Some(ui) = ui_of(w, cx) else { return };
                 let (options, session) = (ui.share_options, ui.session.clone());
+                let call = ui.state.voice.call.call_id;
                 ui_mut(w, cx).share_menu = false;
                 if sharing {
                     // Apply: the running share goes on at the new quality, from the same source.
-                    if let Some(s) = session {
-                        s.quality(options);
+                    if let (Some(s), Some(call)) = (session, call) {
+                        s.quality(options, call);
                     }
                     window.refresh();
                 } else {
@@ -5311,6 +5408,79 @@ fn count_label(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A video's picture carries its tile's rounded corners itself, at the border's inside (GPUI clips no child to its
+    /// parent's corners): a stage tile's (`xl` less its edge, 1 or 2px) and a DM call tile's (`md`, no border).
+    #[gpui::test]
+    fn a_video_follows_its_tile_s_rounded_corners(cx: &mut gpui::TestAppContext) {
+        use gpui::{IntoElement, ParentElement, Styled, div, px};
+
+        struct Host(Box<dyn Fn() -> gpui::AnyElement>);
+        impl gpui::Render for Host {
+            fn render(
+                &mut self,
+                _: &mut gpui::Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                (self.0)()
+            }
+        }
+        const PROBE_W: f32 = 160.0;
+        const PROBE_H: f32 = 90.0;
+        let frame = || {
+            let f = image::Frame::new(image::ImageBuffer::from_pixel(
+                160,
+                90,
+                image::Rgba([40, 80, 120, 255]),
+            ));
+            std::sync::Arc::new(gpui::RenderImage::new(vec![f]))
+        };
+        let corner = |cx: &mut gpui::TestAppContext, build: Box<dyn Fn() -> gpui::AnyElement>| {
+            let (_, vcx) = cx.add_window_view(|_, _| Host(build));
+            vcx.run_until_parked();
+            vcx.update(|w, _| {
+                let s = *w.painted_sprites().last().expect("the video is painted");
+                let c = s.corner_radii;
+                let min = c
+                    .top_left
+                    .0
+                    .min(c.top_right.0)
+                    .min(c.bottom_left.0)
+                    .min(c.bottom_right.0);
+                px(min / w.painted_scale_factor())
+            })
+        };
+        for edge in [super::m::TILE_EDGE, super::m::TILE_EDGE_STRONG] {
+            let image = frame();
+            let got = corner(
+                cx,
+                Box::new(move || {
+                    div()
+                        .w(px(PROBE_W))
+                        .h(px(PROBE_H))
+                        .child(super::stage_video(image.clone(), edge))
+                        .into_any_element()
+                }),
+            );
+            assert_eq!(
+                got,
+                dilla_desktop_ui::tokens::radius::XL - px(edge),
+                "stage, edge {edge}"
+            );
+        }
+        let image = frame();
+        let got = corner(
+            cx,
+            Box::new(move || {
+                div()
+                    .w(px(PROBE_W))
+                    .h(px(PROBE_H))
+                    .child(super::dm_video(image.clone()))
+                    .into_any_element()
+            }),
+        );
+        assert_eq!(got, dilla_desktop_ui::tokens::radius::MD, "DM");
+    }
+
     /// The portal's order (KDE share picker plan, Task 2): the panel before a share asks no sound question; once the
     /// system dialog's pick is live, the panel opens by itself, once, for the share it was asked for only.
     #[test]
@@ -5324,6 +5494,27 @@ mod tests {
             !after(false, false, Some(4), 4),
             "not live (yet, or cancelled)"
         );
+    }
+
+    /// Final review I1: a frame's bytes are already BGRA (dilla-media converts to libyuv's ARGB), so the stage passes
+    /// them through as they are; only the own camera is mirrored, pixel by pixel, never channel-swapped. Synthetic
+    /// two-pixel rows only.
+    #[test]
+    fn a_frame_s_bgra_is_drawn_as_it_is_and_only_mirrored() {
+        let frame = || dilla_media::RemoteFrame {
+            width: 2,
+            height: 1,
+            bgra: std::sync::Arc::new(vec![1, 2, 3, 4, 5, 6, 7, 8]),
+            frames: 1,
+            stream_height: 1,
+        };
+        assert_eq!(super::bgra_of(frame(), false), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(super::bgra_of(frame(), true), vec![5, 6, 7, 8, 1, 2, 3, 4]);
+        // Nobody else holds the bytes: taken over, not copied.
+        let only = frame();
+        let at = only.bgra.as_ptr();
+        let taken = super::bgra_of(only, false);
+        assert_eq!(taken.as_ptr(), at, "the very bytes");
     }
 
     /// Self-view review m5: a stream's counter that starts again (a quality change gives the share a new sent counter)

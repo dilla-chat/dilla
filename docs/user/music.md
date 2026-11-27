@@ -42,6 +42,9 @@ The page also lists **Last 20 music starts**: how long each took from the comman
 example "640 ms". A start that needed a first lookup of the track says "1180 ms, first lookup". A track that is
 queued next, or one you played a moment ago, starts faster.
 
+Each track plays to its very end, and the next queued track follows with no gap. Starting `/play` again and again stays
+fast, and `/stop` goes through the first time.
+
 New installations start at volume 50 and 15 minutes. An instance that already saved its settings keeps them.
 
 Join a voice channel and open the command picker by typing `/` at the start of a

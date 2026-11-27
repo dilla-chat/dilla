@@ -65,6 +65,56 @@ impl Speaking {
     }
 }
 
+/// This device's own speaking (session.ts `ownSpeaking`, Task 5): the level of what its microphone sends
+/// ([`dilla_media::Call::local_audio_level`]) through the same `SpeakingDetector` as a remote device's, counted only while
+/// the microphone sends ([`own_gate`]).
+pub struct OwnSpeaking {
+    since: Instant,
+    detector: SpeakingDetector,
+}
+
+impl Default for OwnSpeaking {
+    fn default() -> Self {
+        Self {
+            since: Instant::now(),
+            detector: SpeakingDetector::default(),
+        }
+    }
+}
+
+impl OwnSpeaking {
+    /// Whether this device speaks at `now`, from its newest level; `sending` is [`own_gate`]. The detector follows the
+    /// level either way (a muted microphone reads 0), as the web's runs on its meter whatever the gate says.
+    pub fn update(&mut self, rms: f32, sending: bool, now: Instant) -> bool {
+        let ms = now.saturating_duration_since(self.since).as_secs_f64() * 1000.0;
+        let on = self.detector.update(rms, ms);
+        sending && on
+    }
+}
+
+/// session.ts `ownGate`: the microphone sends (not muted, deafened or with push to talk up) and the call is not paused.
+pub fn own_gate(s: &AppState, ptt_mode: bool) -> bool {
+    mic_open(s, ptt_mode) && !s.voice.call.paused()
+}
+
+/// The devices drawn speaking: the remote ones heard speaking (`remote`, hex; this device's own entry, should the SFU
+/// ever send one back, is left out) and this device while [`OwnSpeaking`] says so.
+pub fn speaking_set(
+    remote: &BTreeSet<String>,
+    own: Option<DeviceId>,
+    own_on: bool,
+) -> BTreeSet<DeviceId> {
+    let mut set: BTreeSet<DeviceId> = remote
+        .iter()
+        .filter_map(|h| unhex(h).map(DeviceId))
+        .collect();
+    set.retain(|d| Some(*d) != own);
+    if let (Some(own), true) = (own, own_on) {
+        set.insert(own);
+    }
+    set
+}
+
 /// The call's microphone from Task 19's voice values: the chosen input, its noise choice (Automatic is the enhanced
 /// suppressor where it runs, Lightweight libwebrtc's), and echo cancellation and gain control as set.
 pub fn call_options(v: VoiceValues) -> CallOptions {
@@ -102,12 +152,20 @@ pub const LINK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 const LINK_STALL: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 /// What a share asks for.
+///
+/// The share commands name the call they were made for (the UI's `call_id` while the call is `In`): the session keeps
+/// a start that reaches it before it has taken up that call's media link, and runs it once it has; one for another call
+/// never carries into this one ([`Pending`]). A stop is never kept or dropped: it applies at once to whatever share runs,
+/// and cancels every kept start of its kind.
 pub enum Command {
     /// A camera share starts or stops, or the screen share stops (a screen share starts with [`Command::ShareScreen`]).
-    Share(ShareKind, bool, ShareOptions),
+    /// A start names its call; a stop may name none (it applies whatever call runs).
+    Share(ShareKind, bool, ShareOptions, Option<[u8; 16]>),
     /// A screen share starts, together with its sound, in one command (Task 44 fix round 4), so no order of the loop's
     /// arms can see the start without it.
     ShareScreen {
+        /// The call the share was started in.
+        call: [u8; 16],
         /// The source the person chose in the picker; `None`: the system's own dialog chooses.
         source: Option<DesktopSource>,
         options: ShareOptions,
@@ -120,11 +178,163 @@ pub enum Command {
     /// The application the shared window of the start `u64` plays, once found. It only ever reaches the share that start
     /// brought up, and never one whose sound the person chose.
     WindowSound(u64, Option<dilla_media::app_audio::AppSource>),
-    /// The stream quality changed while sharing: the running screen share goes on at it (the same source).
-    Quality(ShareOptions),
-    /// The person's own choice: the running screen share carries the sound of this application from now on (`None`: no
-    /// sound), and so does a share still opening.
-    AppAudio(Option<dilla_media::app_audio::AppSource>),
+    /// The stream quality changed while sharing in the call `[u8; 16]`: the running screen share goes on at it (the same
+    /// source).
+    Quality(ShareOptions, [u8; 16]),
+    /// The person's own choice in the call it names: the running screen share carries the sound of this application from
+    /// now on (`None`: no sound, a stop, which may name no call), and so does a share still opening.
+    AppAudio(Option<dilla_media::app_audio::AppSource>, Option<[u8; 16]>),
+    /// The window's call ended (the person left, or was taken out): no start kept from before runs any more, not even in
+    /// a rejoin of the same call id.
+    Forget,
+}
+
+/// Which of the kept commands a newer one replaces ([`Pending`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Screen,
+    Camera,
+    Quality,
+    AppAudio,
+    /// The window's sound of the start `u64`.
+    WindowSound(u64),
+}
+
+impl Command {
+    /// The call the command was made for; `None` for the window's sound (it names its start by token instead), for a
+    /// stop that names no call, and for [`Command::Forget`].
+    fn call(&self) -> Option<[u8; 16]> {
+        match self {
+            Command::Share(_, _, _, call) | Command::AppAudio(_, call) => *call,
+            Command::ShareScreen { call, .. } | Command::Quality(_, call) => Some(*call),
+            Command::WindowSound(..) | Command::Forget => None,
+        }
+    }
+
+    /// A share or its sound switched off: never kept, never dropped, run at once in whatever call runs.
+    fn is_stop(&self) -> bool {
+        matches!(
+            self,
+            Command::Share(_, false, ..) | Command::AppAudio(None, _)
+        )
+    }
+
+    /// `None` for [`Command::Forget`], which is never kept.
+    fn slot(&self) -> Option<Slot> {
+        Some(match self {
+            Command::Share(ShareKind::Screen, ..) | Command::ShareScreen { .. } => Slot::Screen,
+            Command::Share(ShareKind::Camera, ..) => Slot::Camera,
+            Command::Quality(..) => Slot::Quality,
+            Command::AppAudio(..) => Slot::AppAudio,
+            Command::WindowSound(token, _) => Slot::WindowSound(*token),
+            Command::Forget => return None,
+        })
+    }
+}
+
+/// The share commands that reached the session while it was not in their call: before it took up the call's media
+/// link (the client reports the call `In` first, and a move's old room may still be closing), or during the call a move
+/// left. Only the newest start of each kind is kept (one screen start, one camera, one quality, one sound choice), in
+/// the order they came; a window's sound only while the start it names is kept. A stop is never kept: it cancels the
+/// kept start of its kind (whatever call that names). A call's media takes those made for it ([`Pending::take_for`]) and
+/// the rest are dropped, so a press for one call never carries into another; the window's call ending
+/// ([`Command::Forget`]) and a new link ([`Pending::retain_current`]) drop them too.
+#[derive(Default)]
+struct Pending(Vec<Command>);
+
+impl Pending {
+    /// Keeps `command` (a newer one of its kind replaces the older). A stop only cancels the kept start of its kind,
+    /// [`Command::Forget`] cancels everything, and a window's sound whose start is not kept is dropped.
+    fn keep(&mut self, command: Command) {
+        match command {
+            Command::Forget => {
+                self.0.clear();
+                return;
+            }
+            Command::WindowSound(token, _) if !self.starts(token) => return,
+            _ => {}
+        }
+        self.cancel(&command);
+        if !command.is_stop() {
+            self.0.push(command);
+        }
+    }
+
+    /// Drops the kept command of `command`'s kind; for the screen also the window's sound of the start it replaces
+    /// (a newer start keeps its own).
+    fn cancel(&mut self, command: &Command) {
+        let slot = command.slot();
+        self.0.retain(|c| c.slot() != slot);
+        if slot == Some(Slot::Screen) {
+            let token = match command {
+                Command::ShareScreen { token, .. } => Some(*token),
+                _ => None,
+            };
+            self.0
+                .retain(|c| !matches!(c, Command::WindowSound(t, _) if Some(*t) != token));
+        }
+    }
+
+    /// The link changed: only the commands for its call stay kept (none while there is no link).
+    fn retain_current(&mut self, call: Option<[u8; 16]>) {
+        match call {
+            Some(call) => self.0 = self.take_for(call),
+            None => self.0.clear(),
+        }
+    }
+
+    /// Whether the kept screen start is the one `token` names.
+    fn starts(&self, token: u64) -> bool {
+        self.0
+            .iter()
+            .any(|c| matches!(c, Command::ShareScreen { token: t, .. } if *t == token))
+    }
+
+    /// Whether the loop of the call `call` leaves `command` for another call: it was made for another call, or it is the
+    /// window's sound of a start kept for one.
+    fn wants(&self, command: &Command, call: [u8; 16]) -> bool {
+        match command {
+            Command::WindowSound(token, _) => self.starts(*token),
+            c => c.call() != Some(call),
+        }
+    }
+
+    /// The kept commands made for `call`, in order; every other one is dropped.
+    ///
+    /// Residual carry-over: a start pressed in a call, the person's leave and a rejoin of the same call id (its room had
+    /// not finished) all while this session's task never ran and the window's sync never saw the call end
+    /// ([`Command::Forget`]) still runs in the rejoin, since it names that same id.
+    fn take_for(&mut self, call: [u8; 16]) -> Vec<Command> {
+        let mut kept: Vec<Command> = Vec::new();
+        for c in std::mem::take(&mut self.0) {
+            let ours = match &c {
+                Command::WindowSound(token, _) => kept
+                    .iter()
+                    .any(|k| matches!(k, Command::ShareScreen { token: t, .. } if t == token)),
+                c => c.call() == Some(call),
+            };
+            if ours {
+                kept.push(c);
+            }
+        }
+        kept
+    }
+
+    /// Drops the commands kept for `call` (its media ended: nothing more runs in it).
+    fn forget(&mut self, call: [u8; 16]) {
+        let starts: Vec<u64> = self
+            .0
+            .iter()
+            .filter_map(|c| match c {
+                Command::ShareScreen { call: c, token, .. } if *c == call => Some(*token),
+                _ => None,
+            })
+            .collect();
+        self.0.retain(|c| match c {
+            Command::WindowSound(t, _) => !starts.contains(t),
+            c => c.call() != Some(call),
+        });
+    }
 }
 
 /// The link's ping read (session.ts `linkTick`), polled beside the call loop's other arms rather than awaited in one, so
@@ -225,6 +435,9 @@ pub struct MediaSession {
     screen_sound: Arc<Mutex<BTreeSet<String>>>,
     /// The application the running screen share publishes the sound of ([`MediaSession::app_sound`]).
     app_sound: Arc<Mutex<Option<dilla_media::app_audio::AppSource>>>,
+    /// Test hook: while it holds, [`run`] waits before it takes up a call's media link ([`MediaSession::hold_pickup`]).
+    #[cfg(feature = "test-hooks")]
+    hold: watch::Sender<bool>,
 }
 
 /// What a share asks its [`SourceFactory`] for.
@@ -360,6 +573,8 @@ impl MediaSession {
         let video_seq = Arc::new(AtomicU64::new(0));
         let screen_sound = Arc::new(Mutex::new(BTreeSet::new()));
         let app_sound = Arc::new(Mutex::new(None));
+        #[cfg(feature = "test-hooks")]
+        let (hold, held) = watch::channel(false);
         let ctx = Ctx {
             voice: client.voice(),
             states: client.state(),
@@ -374,6 +589,8 @@ impl MediaSession {
             live: live.clone(),
             room_closes: room_closes.clone(),
             closed,
+            #[cfg(feature = "test-hooks")]
+            held,
         };
         let task = runtime.spawn(run(ctx, rx));
         Ok(MediaSession {
@@ -387,7 +604,21 @@ impl MediaSession {
             video_seq,
             screen_sound,
             app_sound,
+            #[cfg(feature = "test-hooks")]
+            hold,
         })
+    }
+
+    /// The window's call ended: no share start kept from before runs any more ([`Command::Forget`]).
+    pub fn forget_kept(&self) {
+        self.send(Command::Forget);
+    }
+
+    /// Test hook: while `hold` is set, the session waits before it takes up a call's media link, as a busy or starved
+    /// session does (the client already reports the call `In` meanwhile).
+    #[cfg(feature = "test-hooks")]
+    pub fn hold_pickup(&self, hold: bool) {
+        self.hold.send_replace(hold);
     }
 
     fn send(&self, command: Command) {
@@ -396,21 +627,25 @@ impl MediaSession {
         }
     }
 
-    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one).
-    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions) {
-        self.send(Command::Share(kind, on, options));
+    /// Starts or stops the camera, or stops the screen share ([`MediaSession::share_screen`] starts one). A start runs in
+    /// the call `call` (one the session has not taken up yet runs once it has; a start with no call never runs); a stop
+    /// applies at once to whatever share runs.
+    pub fn share(&self, kind: ShareKind, on: bool, options: ShareOptions, call: Option<[u8; 16]>) {
+        self.send(Command::Share(kind, on, options, call));
     }
 
     /// Starts a screen share of `source` (`None`: the system's own dialog chooses) with the sound section's state
-    /// `sound`. `token` names this start for [`MediaSession::window_sound`].
+    /// `sound`, in the call `call`. `token` names this start for [`MediaSession::window_sound`].
     pub fn share_screen(
         &self,
         source: Option<DesktopSource>,
         options: ShareOptions,
         token: u64,
         sound: crate::screens::voice::ShareSound,
+        call: [u8; 16],
     ) {
         self.send(Command::ShareScreen {
+            call,
             source,
             options,
             token,
@@ -435,13 +670,17 @@ impl MediaSession {
 
     /// The person's choice: shares the sound of `source` with the running screen share (`None` stops it) at once, and
     /// with a screen share still opening once it is up.
-    pub fn app_audio(&self, source: Option<dilla_media::app_audio::AppSource>) {
-        self.send(Command::AppAudio(source));
+    pub fn app_audio(
+        &self,
+        source: Option<dilla_media::app_audio::AppSource>,
+        call: Option<[u8; 16]>,
+    ) {
+        self.send(Command::AppAudio(source, call));
     }
 
-    /// Applies a new stream quality to the running screen share.
-    pub fn quality(&self, options: ShareOptions) {
-        self.send(Command::Quality(options));
+    /// Applies a new stream quality to the running screen share of the call `call`.
+    pub fn quality(&self, options: ShareOptions, call: [u8; 16]) {
+        self.send(Command::Quality(options, call));
     }
 
     /// The devices (hex) whose screen share carries sound: a remote screen without it shows the "no sound" mark.
@@ -566,6 +805,9 @@ struct Ctx {
     room_closes: dilla_media::RoomCloses,
     /// Changes (closes) when the session is dropped.
     closed: watch::Receiver<()>,
+    /// Test hook ([`MediaSession::hold_pickup`]).
+    #[cfg(feature = "test-hooks")]
+    held: watch::Receiver<bool>,
 }
 
 /// Whether a call's media is live in the session: from the start of a join until the call's media ended (or the join
@@ -691,10 +933,21 @@ impl Ctx {
 
 async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
     let mut links = ctx.voice.media();
+    let mut pending = Pending::default();
     loop {
+        #[cfg(feature = "test-hooks")]
+        if links.borrow().is_some() && !pickup_released(&ctx).await {
+            return;
+        }
         let link = links.borrow_and_update().clone();
         if let Some(link) = link {
-            in_call(&ctx, &link, &mut links, &mut commands).await;
+            in_call(&ctx, &link, &mut links, &mut commands, &mut pending).await;
+            // The call's media ended: a command for it still queued (a press as it ended, which the loop's last pass did
+            // not take) never runs, not even in a rejoin of the same call.
+            while let Ok(c) = commands.try_recv() {
+                pending.keep(c);
+            }
+            pending.forget(link.call_id);
             // A move replaces the link while the old call runs (its loop saw the change and left): the new call's link
             // is already here, so it is joined now, not after some later change.
             // A dropped session (its commands channel closed) joins nothing more, a move's next call included.
@@ -709,12 +962,37 @@ async fn run(ctx: Ctx, mut commands: mpsc::UnboundedReceiver<Command>) {
                 continue;
             }
         }
-        // Biased, the session's end first: a dropped session whose link changed at the same moment joins nothing.
-        tokio::select! {
-            biased;
-            None = commands.recv() => return,
-            r = links.changed() => if r.is_err() { return },
+        // Biased, the session's end first: a dropped session whose link changed at the same moment joins nothing. A
+        // command meanwhile is kept for the call it names, which the next link may be (the client reports a call `In`
+        // before this loop has seen its link).
+        loop {
+            tokio::select! {
+                biased;
+                cmd = commands.recv() => match cmd {
+                    None => return,
+                    Some(c) => pending.keep(c),
+                },
+                r = links.changed() => {
+                    if r.is_err() {
+                        return;
+                    }
+                    // A start kept for a call that is not the new link's never runs.
+                    pending.retain_current(links.borrow().as_ref().map(|l| l.call_id));
+                    break;
+                }
+            }
         }
+    }
+}
+
+/// Test hook: waits while [`MediaSession::hold_pickup`] holds; `false` once the session is dropped.
+#[cfg(feature = "test-hooks")]
+async fn pickup_released(ctx: &Ctx) -> bool {
+    let mut held = ctx.held.clone();
+    tokio::select! {
+        biased;
+        () = session_closed(ctx.closed.clone()) => false,
+        r = held.wait_for(|h| !*h) => r.is_ok(),
     }
 }
 
@@ -803,9 +1081,14 @@ async fn in_call(
     link: &MediaLink,
     links: &mut watch::Receiver<Option<Arc<MediaLink>>>,
     commands: &mut mpsc::UnboundedReceiver<Command>,
+    pending: &mut Pending,
 ) {
-    // A share asked for outside a call (a window's press as its last call ended) never carries into this one.
-    while commands.try_recv().is_ok() {}
+    // The share commands made for this call before its media took it up run once it has joined; one made for another
+    // call (a window's press as its last call ended) never carries into this one.
+    while let Ok(c) = commands.try_recv() {
+        pending.keep(c);
+    }
+    let kept = pending.take_for(link.call_id);
     let (feed, slot, feeder) = feed_epochs(link);
     // A muted or push-to-talk join: the microphone is muted before it is published. A microphone the OS denies the app
     // would only send silence (macOS, Windows): the call joins listen-only and says so (Package 7, beta.5's
@@ -888,6 +1171,12 @@ async fn in_call(
     let mut app_ended = call.app_audio_ended();
     let mut room_end = call.ended();
     let mut speaking = Speaking::default();
+    // The remote devices (hex) heard speaking, and this device's own speaking from its microphone's level (Task 5).
+    let mut remote_speaking: BTreeSet<String> = BTreeSet::new();
+    let mut local_level = call.local_audio_level();
+    let mut own_speaking = OwnSpeaking::default();
+    let mut own_on = false;
+    let mut own_sending = false;
     // The remote devices with a verified audio track, and those with a video stream: the media peers the stage's tiles are.
     let mut sfu_peers: Vec<SfuRemote> = Vec::new();
     let mut audio_peers: BTreeSet<DeviceId> = BTreeSet::new();
@@ -910,6 +1199,9 @@ async fn in_call(
     // published, an answer from the client) is let go, as a dropped runtime let it go, and the call's media ends at
     // once below.
     let session = async {
+        for c in kept {
+            handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await;
+        }
         loop {
             let s = states.borrow_and_update().clone();
             // The settings are read on every pass: a mode switch publishes the voice values, which wakes this loop.
@@ -918,6 +1210,14 @@ async fn in_call(
                 call.set_muted(want.0);
                 call.set_deafened(want.1);
                 applied = Some(want);
+            }
+            // Task 5: this device speaks only while its microphone sends; a mute, deafen, pause or released key takes
+            // its speaking away at once, not at the next level.
+            own_sending = own_gate(&s, ctx.ptt_mode());
+            if !own_sending && own_on {
+                own_on = false;
+                ctx.voice
+                    .set_speaking(speaking_set(&remote_speaking, own, own_on));
             }
             // The per-person volumes (the stage's person menu writes them, which wakes this loop as a mode switch does).
             let now = gains(&ctx.values(), &s);
@@ -953,10 +1253,20 @@ async fn in_call(
                         audio_peers = heard.keys().filter_map(|h| unhex(h).map(DeviceId)).collect();
                         audio_peers.retain(|d| Some(*d) != own);
                         publish_peers(ctx, &sfu_peers, &audio_peers, &video_peers, &screen_peers);
-                        let now = speaking.update(&heard, Instant::now());
-                        let mut set: BTreeSet<DeviceId> = now.iter().filter_map(|h| unhex(h).map(DeviceId)).collect();
-                        set.retain(|d| Some(*d) != own);
-                        ctx.voice.set_speaking(set);
+                        remote_speaking = speaking.update(&heard, Instant::now());
+                        ctx.voice.set_speaking(speaking_set(&remote_speaking, own, own_on));
+                    }
+                }
+                // Task 5: this device's own level, at the remote levels' cadence (one per 100 ms sent). The set is
+                // published only when this device's speaking changes; the remote arm republishes it with every level.
+                r = local_level.changed() => {
+                    if r.is_ok() {
+                        let rms = *local_level.borrow_and_update();
+                        let on = own_speaking.update(rms, own_sending, Instant::now());
+                        if on != own_on {
+                            own_on = on;
+                            ctx.voice.set_speaking(speaking_set(&remote_speaking, own, own_on));
+                        }
                     }
                 }
                 r = remotes.changed() => {
@@ -1031,36 +1341,18 @@ async fn in_call(
                     ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
                 }
                 // `None`: the session was dropped (`Drop for MediaSession`), and the call is left below.
+                // A command for another call (the one a move goes to, pressed there while this call's loop still ran) is
+                // kept for it.
+                // A stop applies at once to whatever share runs, and cancels any kept start of its kind.
                 cmd = commands.recv() => match cmd {
                     None => break,
-                    Some(Command::Share(kind, false, _)) => {
-                        if kind == ShareKind::Screen {
-                            sound.stopped();
-                        }
-                        stop_share(ctx, &call, &mut opens, kind).await;
+                    Some(Command::Forget) => pending.keep(Command::Forget),
+                    Some(c) if c.is_stop() => {
+                        pending.cancel(&c);
+                        handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await;
                     }
-                    Some(Command::Share(kind, true, options)) => {
-                        // Not sent for a screen (`share_screen` is); one would start without any sound.
-                        if kind == ShareKind::Screen {
-                            sound.started(NO_TOKEN, &crate::screens::voice::ShareSound::Person(None));
-                        }
-                        opens.start(ctx, &opened_tx, kind, None, options, NO_TOKEN);
-                    }
-                    Some(Command::ShareScreen { source, options, token, sound: chosen }) => {
-                        sound.started(token, &chosen);
-                        opens.start(ctx, &opened_tx, ShareKind::Screen, source, options, token);
-                    }
-                    Some(Command::AppAudio(source)) => perform(ctx, &call, sound.asked(source)).await,
-                    Some(Command::WindowSound(token, app)) => {
-                        perform(ctx, &call, sound.window_found(token, app)).await;
-                    }
-                    Some(Command::Quality(options)) => {
-                        if ctx.states.borrow().voice.share.screen
-                            && let Err(e) = call.configure_video(ShareKind::Screen, options).await
-                        {
-                            log::warn!("voice: the new stream quality did not apply: {e}");
-                        }
-                    }
+                    Some(c) if pending.wants(&c, link.call_id) => pending.keep(c),
+                    Some(c) => handle_command(ctx, &call, &mut opens, &opened_tx, &mut sound, c).await,
                 },
                 Some(done) = opened.recv() => {
                     if let Some(result) = opens.finish(done.kind, done.generation, done.result) {
@@ -1137,6 +1429,55 @@ async fn in_call(
     // do (bounded; a close that hangs goes on in the background).
     call.end_media();
     close_room(live.closing(), ctx.room_closes.clone(), call.leave()).await;
+}
+
+/// Runs one share command in the call's loop (or one kept for this call from before its media took it up).
+async fn handle_command(
+    ctx: &Ctx,
+    call: &Call,
+    opens: &mut Opens,
+    opened_tx: &mpsc::UnboundedSender<Opened>,
+    sound: &mut AppSoundSlot,
+    command: Command,
+) {
+    match command {
+        Command::Share(kind, false, _, _) => {
+            if kind == ShareKind::Screen {
+                sound.stopped();
+            }
+            stop_share(ctx, call, opens, kind).await;
+        }
+        Command::Share(kind, true, options, _) => {
+            // Not sent for a screen (`share_screen` is); one would start without any sound.
+            if kind == ShareKind::Screen {
+                sound.started(NO_TOKEN, &crate::screens::voice::ShareSound::Person(None));
+            }
+            opens.start(ctx, opened_tx, kind, None, options, NO_TOKEN);
+        }
+        Command::ShareScreen {
+            source,
+            options,
+            token,
+            sound: chosen,
+            ..
+        } => {
+            sound.started(token, &chosen);
+            opens.start(ctx, opened_tx, ShareKind::Screen, source, options, token);
+        }
+        Command::AppAudio(source, _) => perform(ctx, call, sound.asked(source)).await,
+        Command::WindowSound(token, app) => {
+            perform(ctx, call, sound.window_found(token, app)).await;
+        }
+        // The kept starts already went (the loop's own `Pending`).
+        Command::Forget => {}
+        Command::Quality(options, _) => {
+            if ctx.states.borrow().voice.share.screen
+                && let Err(e) = call.configure_video(ShareKind::Screen, options).await
+            {
+                log::warn!("voice: the new stream quality did not apply: {e}");
+            }
+        }
+    }
 }
 
 /// Whether `call_id` is still the call this device's media should be in.
@@ -1529,19 +1870,47 @@ async fn publish_share(
     if kind == ShareKind::Screen {
         next.screen_audio = audio;
     }
-    if let Ok(Ok(())) = ctx.voice.set_share(next).await {
-        if let Err(e) = call.publish_video_with(source, options).await {
-            log::warn!("voice: the share did not start: {e}");
-            set_kind(&mut next, kind, false);
-            let _ = ctx.voice.set_share(next).await;
-            return Published::Down;
+    match ctx.voice.set_share(next).await {
+        Ok(Ok(())) => {}
+        refused => {
+            // The instance refused the sharing slot (all sharers taken, not in the call's room, ...): nothing is
+            // published, and the person is told the share did not start.
+            let code = match &refused {
+                Ok(Err(e)) => refusal_code(e),
+                _ => "stopped",
+            };
+            log::warn!("voice: the {kind:?} share's slot was refused ({code})");
+            ctx.voice.set_notice(Some(VoiceNotice::ShareCancelled));
+            return Published::Kept;
         }
-        if kind == ShareKind::Screen && !audio {
-            ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
-        }
-        return Published::Up;
     }
-    Published::Kept
+    if let Err(e) = call.publish_video_with(source, options).await {
+        log::warn!("voice: the share did not start: {e}");
+        set_kind(&mut next, kind, false);
+        let _ = ctx.voice.set_share(next).await;
+        return Published::Down;
+    }
+    if kind == ShareKind::Screen && !audio {
+        ctx.voice.set_notice(Some(VoiceNotice::ShareWithoutSound));
+    }
+    Published::Up
+}
+
+/// A refusal's stable code for the log: an instance's or the core's `E_*` code (only the code, never text after it),
+/// else only the kind of failure (never its text, which may carry an address).
+fn refusal_code(e: &dilla_client::ClientError) -> &str {
+    use dilla_client::ClientError;
+    match e {
+        ClientError::Sync(code) if code.starts_with("E_") => code
+            .split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            .next()
+            .unwrap_or("sync"),
+        ClientError::Sync(_) => "sync",
+        ClientError::Network(_) => "network",
+        ClientError::Revoked => "revoked",
+        ClientError::Stopped => "stopped",
+        _ => "other",
+    }
 }
 
 /// What [`publish_share`] did.
@@ -1578,6 +1947,153 @@ fn unhex(h: &str) -> Option<[u8; 16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const CALL_A: [u8; 16] = [1; 16];
+    const CALL_B: [u8; 16] = [2; 16];
+    const OPTIONS: ShareOptions = ShareOptions {
+        resolution: dilla_media::ShareResolution::P720,
+        fps: 15,
+    };
+
+    fn start(token: u64, call: [u8; 16]) -> Command {
+        Command::ShareScreen {
+            call,
+            source: None,
+            options: OPTIONS,
+            token,
+            sound: crate::screens::voice::ShareSound::Unset,
+        }
+    }
+
+    /// What a list of kept commands is, for the assertions: (kind, call's first byte or token).
+    fn shape(commands: &[Command]) -> Vec<(&'static str, u64)> {
+        let byte = |call: &Option<[u8; 16]>| call.map_or(0, |c| u64::from(c[0]));
+        commands
+            .iter()
+            .map(|c| match c {
+                Command::ShareScreen { token, .. } => ("start", *token),
+                Command::Share(ShareKind::Screen, _, _, call) => ("screen", byte(call)),
+                Command::Share(ShareKind::Camera, _, _, call) => ("camera", byte(call)),
+                Command::Quality(_, call) => ("quality", u64::from(call[0])),
+                Command::AppAudio(_, call) => ("sound", byte(call)),
+                Command::WindowSound(token, _) => ("window", *token),
+                Command::Forget => ("forget", 0),
+            })
+            .collect()
+    }
+
+    fn camera(on: bool, call: Option<[u8; 16]>) -> Command {
+        Command::Share(ShareKind::Camera, on, OPTIONS, call)
+    }
+
+    /// Share-drop flake: a share made for a call before the session took it up runs in that call, the newest of each
+    /// kind only; one made for another call is dropped.
+    #[test]
+    fn kept_commands_run_only_in_their_call_newest_of_each_kind() {
+        let mut p = Pending::default();
+        p.keep(start(1, CALL_A));
+        p.keep(Command::Quality(OPTIONS, CALL_A));
+        p.keep(start(2, CALL_A));
+        p.keep(Command::Quality(OPTIONS, CALL_B));
+        p.keep(camera(true, Some(CALL_A)));
+        assert_eq!(
+            shape(&p.take_for(CALL_A)),
+            [("start", 2), ("camera", 1)],
+            "the newest start and camera of call A, not call B's quality"
+        );
+        assert!(p.take_for(CALL_A).is_empty(), "taken once");
+        assert!(p.take_for(CALL_B).is_empty(), "the rest was dropped");
+    }
+
+    /// Security review S1: a stop is never kept (nor dropped for naming another call or none): it cancels the kept
+    /// start of its kind, whatever call that names, and the loop runs it at once.
+    #[test]
+    fn a_stop_cancels_the_kept_start_of_its_kind_and_is_never_kept() {
+        let mut p = Pending::default();
+        p.keep(camera(true, Some(CALL_A)));
+        p.keep(start(1, CALL_B));
+        p.keep(Command::AppAudio(None, Some(CALL_A)));
+        assert!(p.0.iter().all(|c| !c.is_stop()), "no stop kept");
+        p.keep(camera(false, None));
+        assert_eq!(shape(&p.0), [("start", 1)], "the camera start went");
+        p.keep(Command::Share(
+            ShareKind::Screen,
+            false,
+            OPTIONS,
+            Some(CALL_A),
+        ));
+        assert!(
+            p.0.is_empty(),
+            "a stop naming call A cancels call B's start too"
+        );
+        assert!(camera(false, None).is_stop());
+        assert!(Command::AppAudio(None, None).is_stop());
+        assert!(!camera(true, Some(CALL_A)).is_stop());
+    }
+
+    /// A window's sound follows the start it names: kept with it, gone when a newer start or a stop replaces it, and
+    /// never kept without one.
+    #[test]
+    fn a_kept_window_sound_follows_its_start() {
+        let mut p = Pending::default();
+        p.keep(Command::WindowSound(1, None));
+        assert!(p.0.is_empty(), "no start of its own");
+        p.keep(start(1, CALL_A));
+        p.keep(Command::WindowSound(1, None));
+        assert_eq!(shape(&p.0), [("start", 1), ("window", 1)]);
+        assert!(p.wants(&Command::WindowSound(1, None), CALL_B));
+        p.keep(start(2, CALL_A));
+        assert_eq!(
+            shape(&p.0),
+            [("start", 2)],
+            "the replaced start's sound went"
+        );
+        p.keep(Command::WindowSound(2, None));
+        p.keep(Command::Share(ShareKind::Screen, false, OPTIONS, None));
+        assert!(p.0.is_empty(), "a stop takes the start and its sound");
+    }
+
+    /// A call's loop takes its own commands and leaves the others for the call they name; a call whose media ended
+    /// forgets what was kept for it.
+    #[test]
+    fn a_call_leaves_another_call_s_commands_and_forgets_its_own() {
+        let mut p = Pending::default();
+        assert!(!p.wants(&start(1, CALL_A), CALL_A));
+        assert!(p.wants(&start(1, CALL_B), CALL_A));
+        assert!(
+            !p.wants(&Command::WindowSound(1, None), CALL_A),
+            "no start kept"
+        );
+        p.keep(start(1, CALL_A));
+        p.keep(Command::WindowSound(1, None));
+        p.keep(camera(true, Some(CALL_B)));
+        p.forget(CALL_A);
+        assert_eq!(shape(&p.0), [("camera", 2)]);
+        assert_eq!(shape(&p.take_for(CALL_B)), [("camera", 2)]);
+    }
+
+    /// Security review S2: a new link keeps only its own call's starts (none without a link), and the window's call
+    /// ending ([`Command::Forget`]) drops every kept start, so neither carries into a later call.
+    #[test]
+    fn a_new_link_or_the_call_s_end_drops_other_kept_starts() {
+        let mut p = Pending::default();
+        p.keep(start(1, CALL_A));
+        p.keep(Command::WindowSound(1, None));
+        p.keep(camera(true, Some(CALL_B)));
+        p.retain_current(Some(CALL_B));
+        assert_eq!(shape(&p.0), [("camera", 2)], "only the new link's call");
+        p.retain_current(None);
+        assert!(p.0.is_empty(), "no link, nothing kept");
+        p.keep(start(2, CALL_A));
+        p.keep(Command::Forget);
+        assert!(p.0.is_empty(), "the call's end drops the kept start");
+        p.keep(start(3, CALL_A));
+        assert_eq!(
+            shape(&p.take_for(CALL_A)),
+            [("start", 3)],
+            "a press after the end is kept"
+        );
+    }
 
     /// Client review M1: the end of a share that a newer one replaced (the call holds a share of the kind when the end is
     /// read) is stale: the new share's flag, UI and sound stay. With nothing held, the end is the share's going.
@@ -2177,6 +2693,91 @@ mod tests {
         assert!(s.update(&levels, at(760)).contains("aa"));
         levels.remove("aa");
         assert!(s.update(&levels, at(780)).is_empty(), "no longer heard");
+    }
+
+    const OWN: DeviceId = DeviceId([7; 16]);
+
+    /// Task 5 (session.ts `ownSpeaking`): the local level over `SPEAK_RMS` for over `SPEAK_ON_MS` puts this device in
+    /// the speaking set, beside the remote devices heard; the remotes' own entry for this device never does.
+    #[test]
+    fn own_device_speaks_from_the_local_level() {
+        use dilla_client::features::voice_prefs::speaking::{SPEAK_ON_MS, SPEAK_RMS};
+        let mut own = OwnSpeaking::default();
+        let t0 = own.since;
+        let t1 = t0 + std::time::Duration::from_secs_f64((SPEAK_ON_MS + 10.0) / 1000.0);
+        let loud = SPEAK_RMS * 2.0;
+        let remote = BTreeSet::from([hex(&[2; 16]), hex(&OWN.0)]);
+        assert!(!own.update(loud, true, t0), "not yet: the onset");
+        assert_eq!(
+            speaking_set(&remote, Some(OWN), false),
+            BTreeSet::from([DeviceId([2; 16])]),
+            "the own device is never taken from the remote levels"
+        );
+        assert!(own.update(loud, true, t1));
+        assert_eq!(
+            speaking_set(&remote, Some(OWN), true),
+            BTreeSet::from([DeviceId([2; 16]), OWN])
+        );
+        assert!(!OwnSpeaking::default().update(SPEAK_RMS / 2.0, true, t1));
+    }
+
+    /// The own device counts only while the mic sends (session.ts `ownGate`): never muted, deafened, paused, or with
+    /// push to talk up.
+    #[test]
+    fn own_device_never_speaks_while_muted_deafened_paused_or_ptt_up() {
+        use dilla_client::features::voice_prefs::speaking::SPEAK_RMS;
+        let open = AppState::default();
+        assert!(own_gate(&open, false));
+        let mut muted = AppState::default();
+        muted.voice.self_mute = true;
+        let mut deafened = AppState::default();
+        deafened.voice.self_deaf = true;
+        let mut paused = AppState::default();
+        paused.voice.call.phase = dilla_client::calls::CallPhase::In;
+        paused.voice.call.error = Some("E_EPOCH_REFUSED".into());
+        assert!(paused.voice.call.paused());
+        let ptt_up = AppState::default();
+        let mut ptt_held = AppState::default();
+        ptt_held.voice.ptt_held = true;
+        assert!(own_gate(&ptt_held, true));
+        for (what, s, ptt) in [
+            ("muted", &muted, false),
+            ("deafened", &deafened, false),
+            ("paused", &paused, false),
+            ("push to talk up", &ptt_up, true),
+        ] {
+            assert!(!own_gate(s, ptt), "{what}");
+            let mut own = OwnSpeaking::default();
+            let t0 = own.since;
+            for ms in (0..1_000).step_by(100) {
+                let lit = own.update(
+                    SPEAK_RMS * 4.0,
+                    own_gate(s, ptt),
+                    t0 + std::time::Duration::from_millis(ms),
+                );
+                assert!(!lit, "{what}: lit at {ms} ms");
+            }
+        }
+    }
+
+    /// The own device stays lit `SPEAK_HOLD_MS` after the voice stops, as a remote device does.
+    #[test]
+    fn own_speaking_holds_for_the_hangover() {
+        use dilla_client::features::voice_prefs::speaking::{SPEAK_HOLD_MS, SPEAK_RMS};
+        let mut own = OwnSpeaking::default();
+        let t0 = own.since;
+        let at = |ms: f64| t0 + std::time::Duration::from_secs_f64(ms / 1000.0);
+        let _ = own.update(SPEAK_RMS * 2.0, true, at(0.0));
+        assert!(own.update(SPEAK_RMS * 2.0, true, at(100.0)));
+        assert!(own.update(0.0, true, at(200.0)), "held");
+        assert!(
+            own.update(0.0, true, at(200.0 + SPEAK_HOLD_MS - 10.0)),
+            "held"
+        );
+        assert!(
+            !own.update(0.0, true, at(200.0 + SPEAK_HOLD_MS + 10.0)),
+            "off"
+        );
     }
 
     /// Integration 3: what Settings -> Voice wrote (Task 19's values) is the call's microphone: its device, its noise

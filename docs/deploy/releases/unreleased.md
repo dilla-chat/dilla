@@ -1,6 +1,7 @@
 # dilla, unreleased
 
-A draft for the next release. It describes what changes for someone who runs the server or the Bot on their own server.
+A draft for the next release. It describes what changes for someone who runs the server or the Bot on their own server,
+and what the next desktop alpha changes for the people who use it.
 Rename it to the release's tag when the tag is cut.
 
 ## Before you upgrade
@@ -11,10 +12,26 @@ The Capacitor mobile app is removed from the repository, and with it the `http.m
 that still has it fails to load, so the server does not start. Delete that line, then upgrade `dillad` as usual.
 
 - This release carries no Android APK, and its `SHA256SUMS` does not list one.
-- The TestFlight preview ends: the iPhone preview is no longer updated. Use the web client in your phone's browser until
-  the native apps come (planned, no date yet).
+- The TestFlight preview ends: the iPhone preview is no longer updated. Phones have no app until the native apps come
+  (planned, no date yet).
 - The server no longer allows the app's origins (`capacitor://localhost` and `https://localhost`) to call `/v1/` and
-  `/i/` with a bearer token. The web client is served from the same origin and is not affected.
+  `/i/` with a bearer token. The desktop app is not affected.
+
+## Browser client removed from the server
+
+`dillad` no longer serves the browser client. Nothing needs doing when you upgrade.
+
+- **Old client addresses go to the download page.** `/`, `/welcome`, `/c/…` and every other former client path answer a
+  redirect to `/download`. The API (`/v1/…`), the gateway, `/i/<code>`, `/desktop-auth`, webhooks, metrics and health
+  answer as before. `/app-version.json` is gone, and the gateway sends no build hint.
+- **The invite page is desktop-only.** It offers "Open Dilla desktop" and a download link, and no browser link.
+- **Signing in through OIDC from a browser is refused.** It answers 403 "sign in from Dilla desktop". The desktop app's
+  OIDC sign-in is unchanged.
+- **`--desktop-downloads` is deprecated and harmless.** The download page is always served. The flag is still accepted,
+  so an `ExecStart` that carries it keeps starting; it logs one warning. Remove it or leave it, both work.
+  `--desktop-downloads-channel` is unchanged.
+- No `dilla.toml` setting changed. A source build needs no web build first
+  ([Build dillad from source](../README.md#build-dillad-from-source)).
 
 ## The Bot's store moved to SQLite3 Multiple Ciphers
 
@@ -57,3 +74,40 @@ sudo sh install-bot.sh --upgrade
 - The Bot's journal line `bot channel group needs the Bot re-added: no Welcome to join it from` now reads
   `bot channel group needs the Bot re-added: no Welcome on this pass`. Its meaning is unchanged: no Welcome was found on
   that pass, and it can precede a successful `bot joined Bot channel group`.
+
+## Bot music
+
+- **Each track plays to its end.** The last second of a track was cut off. It now plays out, and the next queued track
+  follows with no gap.
+- **Repeated `/play` starts stay fast.** Starting a track again and again no longer slows down.
+- **`/stop` is not refused any more.** It used to be sent at an out-of-date revision, refused once and retried. It now
+  goes through the first time.
+
+## Desktop app (next alpha)
+
+These ship in the next desktop alpha, not with the server.
+
+**Calls and sharing**
+
+- A **Share** or camera press right after you join a call or move to another one is no longer lost. A stop always
+  applies at once, and leaving a call cancels a share press that had not started yet.
+- Your own stage tile, your entry in the sidebar and your avatar ring light up while you speak. They light only while
+  your microphone is really sending: not when you are muted, deafened or paused, and not when push to talk is up.
+- The preview of your own screen share is shown at full resolution. It was a 640 pixel copy. What others see was never
+  affected.
+- The desktop app reports call activity, so a live conversation is no longer moved to the AFK channel.
+
+**Window and profile**
+
+- In a narrow window the title bar's search shrinks, so the call chip no longer slides over it.
+- The member list, and its button, work for the channel that opens when the app starts.
+- The member profile card: its banner follows the rounded corners, it closes on a click outside it or on Escape, and
+  **Message** and the compare (shield) button work. Long names wrap and a long bio scrolls.
+
+**GIFs and pictures**
+
+- GIFs animate in the picker, in messages and in the preview. They stay still under reduced motion.
+- A GIF you pick in the picker is sent at once.
+- Pictures and videos follow their rounded corners: GIF picker tiles, attachment previews, call videos and the
+  thumbnails in the share picker.
+- A click outside the picture closes the image preview.

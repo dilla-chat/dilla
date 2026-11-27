@@ -117,6 +117,14 @@ func migrationProvider(c *config.Config, db *sql.DB) (*goose.Provider, error) {
 // which drops the labels a call member writes (protocol_version, sdk, …), so no client can grow
 // /metrics. A dilla_* series registered anywhere but on the returned Metrics' registry is never
 // served (I-1 of the integration re-review).
+// warnDeprecatedServeFlags logs one warning when --desktop-downloads is set: it has no effect since
+// dillad always serves the download page (Task 12). The line names the flag and nothing else.
+func warnDeprecatedServeFlags(log *slog.Logger, desktopDownloads bool) {
+	if desktopDownloads {
+		log.Warn("serve: --desktop-downloads is deprecated and has no effect; the download page is always served")
+	}
+}
+
 func newMetrics() *obs.Metrics {
 	reg := prometheus.NewRegistry()
 	return obs.NewMetrics(reg, prometheus.Gatherers{reg, sfu.LiveKitGatherer(prometheus.DefaultGatherer)})
@@ -133,8 +141,10 @@ func newMetrics() *obs.Metrics {
 // binary's surface and an end-to-end test's surface are one thing.
 func runServe(args []string, stdout, stderr io.Writer) error {
 	fs, cfgPath := newFlagSet("serve", stderr)
-	desktopDownloads := fs.Bool("desktop-downloads", false, "serve desktop downloads for browser navigation (enable only after desktop acceptance)")
-	downloadsChannel := fs.String("desktop-downloads-channel", "beta", "desktop release line --desktop-downloads serves: beta (Electron beta.5) or gpui-alpha (native GPUI alpha)")
+	// Deprecated (Task 12): the download page is always on. Still accepted, because a unit that
+	// passes it (CT 144) would otherwise fail with a usage error and restart in a loop.
+	desktopDownloads := fs.Bool("desktop-downloads", false, "deprecated, has no effect: dillad always serves the desktop download page")
+	downloadsChannel := fs.String("desktop-downloads-channel", "beta", "desktop release line the download page serves: beta (Electron beta.5) or gpui-alpha (native GPUI alpha)")
 	if err := parse(fs, args, stdout); err != nil {
 		return err
 	}
@@ -247,6 +257,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	log := obs.NewLogger(cfg.Log, stderr)
+	warnDeprecatedServeFlags(log, *desktopDownloads)
 	if backupPath != "" {
 		// Only now, with the migration done: a failed one restores the newest
 		// copy, so nothing may be removed before this point. A copy that will
@@ -336,7 +347,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		Config: cfg, Repo: repo, Clock: clock.System(), Log: log,
 		Metrics: metrics, Health: health, ScrapeToken: os.Getenv(metricsTokenEnv),
 		Blobs: blobStore, Relay: relayRev,
-		DesktopDownloads: *desktopDownloads, DesktopDownloadChannel: channel,
+		DesktopDownloadChannel: channel,
 	}
 	var bot *botsupervisor.Supervisor
 	if keeper != nil {

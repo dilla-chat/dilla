@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/dilla-chat/dilla/internal/bot/client"
@@ -154,7 +156,10 @@ func (c *Client) call(ctx context.Context, op protocol.HelperOperation, payload 
 	if err := client.CooperativeCheckpoint(ctx); err != nil {
 		return nil, err
 	}
-	release, err := c.gate.Acquire(ctx, client.RequestPriority(ctx))
+	priority := client.RequestPriority(ctx)
+	gateBegan := time.Now()
+	release, err := c.gate.Acquire(ctx, priority)
+	logGateWait(ctx, priority, time.Since(gateBegan))
 	if err != nil {
 		if errors.Is(err, prioritygate.ErrClosed) {
 			err = helper.ErrClosed
@@ -808,4 +813,25 @@ func validAreaKey(area uint64, key []byte) error {
 }
 func validStateValue(v []byte) bool {
 	return len(v) > 0 && len(v) <= maxStateValue && cborx.ExpectMajor(v, cborx.MajorArray) == nil && cborx.CheckDeterministic(v) == nil
+}
+
+// gateWaitLogged is the shortest helper-gate wait that is logged: a longer wait on the audible path (a track switch's
+// save, a start's catch-up) shows up as a gap, so its priority is logged to tell queueing behind other work from a
+// slow helper call.
+const gateWaitLogged = 50 * time.Millisecond
+
+// logGateWait logs a helper-gate wait of gateWaitLogged or longer by its priority and duration only: no operation,
+// group or member.
+func logGateWait(ctx context.Context, priority int, waited time.Duration) {
+	if waited < gateWaitLogged {
+		return
+	}
+	name := "background"
+	switch priority {
+	case 1:
+		name = "interactive"
+	case 2:
+		name = "immediate"
+	}
+	slog.InfoContext(ctx, "bot helper gate wait", "priority", name, "duration_ms", waited.Milliseconds())
 }

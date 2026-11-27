@@ -14,7 +14,7 @@ Command drafts stay separate from text drafts for each conversation and thread.
 **In the desktop app** every built-in command runs, in channels and in threads, with the same picker, chips and private
 results. A command whose outcome is uncertain (the connection dropped before the answer) reopens its draft instead of
 being sent twice. The poll form, the announcement editor and the role panel editor (`/rolepanel create`) open as
-dialogs, as in the browser.
+dialogs.
 A command does not take an unrelated reply or attachment with it. Unknown slash
 input stays private. Choose **Send as text**, or prefix the text with `//`, to post
 a slash literally. Ordinary messages, edits, history replay, and bot-authored
@@ -34,7 +34,7 @@ permissions. Inaccessible users, roles, and channels are not suggested.
 Commands go to the Bot in one step and the answer comes straight back. The list of commands is already on your
 device when you type `/`, so the picker never waits for the server.
 
-If Bot commands are missing on a device after a server update, quit and relaunch the app, or reload the browser tab.
+If Bot commands are missing on a device after a server update, quit and relaunch the app.
 A resume is not enough.
 
 ## Bot channels
@@ -187,8 +187,7 @@ Anyone who can read the log could post to the channel.
 
 This version changed how the app talks to the server, and older apps cannot connect to it. The desktop app shows
 **Update dilla to continue** with an **Update** button. Press it and the app downloads the new version and restarts.
-If no update is ready yet, it says so; try again in a little while. A browser tab reloads on its own the first
-time.
+If no update is ready yet, it says so; try again in a little while.
 
 ## Polls
 
@@ -226,14 +225,14 @@ card, with a readable fallback when cards are unavailable.
 ## Reminders
 
 Reminders are one-time and private to your account across your devices. Choose a
-duration or a local date and time; the composer previews the exact time in your browser’s time zone.
+duration or a local date and time; the composer previews the exact time in your device’s time zone.
 Durations must be between 1 minute and 365 days. Times in a daylight-saving gap
 are rejected; an ambiguous local time asks you to choose which occurrence you mean.
 
 You can have up to 100 outstanding reminders per community. Due reminders remain
 in your inbox until dismissed. The inbox supports upcoming and due lists, cancel,
 and dismiss. Reminders are saved before success is shown and catch up after bot
-downtime or browser closure. Membership revocation or a disabled bot stops access
-and delivery. Browser notifications need the existing notification permission and
-are not promised while the browser is closed. Reconnecting and unlocking syncs the
+downtime or the app being closed. Membership revocation or a disabled bot stops access
+and delivery. Notifications need the existing notification permission and
+are not promised while the app is closed. Reconnecting and unlocking syncs the
 private inbox; notification polling is bounded and staggered across devices.

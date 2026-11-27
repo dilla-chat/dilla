@@ -1,6 +1,6 @@
 name: release
 # A GitHub release for a v* tag: dillad, dillabot, its native helper for linux/amd64 and linux/arm64,
-# the real web client embedded, the wasm32-wasip1 core, deploy/install.sh, deploy/install-bot.sh
+# the wasm32-wasip1 core, deploy/install.sh, deploy/install-bot.sh
 # and SHA256SUMS over all assets. The two installers handle dillad and dillabot independently. No container image is built or pushed here.
 #
 # The release is created in one step, after every asset and SHA256SUMS exist: releases in this repository are
@@ -49,7 +49,6 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
       version: ${{ steps.tag.outputs.version }}
-      noise_mode: ${{ steps.tag.outputs.noise_mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -76,55 +75,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-          echo "noise_mode=$(node scripts/release-noise-mode.mjs "$tag")" >> "$GITHUB_OUTPUT"
       - name: The tagged commit's tree has a green server run
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_SHA: ${{ github.sha }}
         run: node scripts/server-release-gate.mjs "$TAG_SHA"
-
-  web-build:
-    runs-on: ubuntu-24.04
-    needs: [tag]
-    timeout-minutes: 15
-    # The same build as server.yml's web-build, LLVM 23.1 pin included: the dist is what the binaries embed.
-    env:
-      CC_wasm32_unknown_unknown: /usr/bin/clang-23
-      AR_wasm32_unknown_unknown: /usr/bin/llvm-ar-23
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - id: clang23
-        name: clang 23 for the wasm C build
-        run: bash scripts/ci-llvm.sh install
-      - run: rustup show active-toolchain
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .nvmrc
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache: false
-      - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
-      - run: bash scripts/install-ci-tool.sh wasm-bindgen
-      - run: bash scripts/install-ci-tool.sh wasm-pack
-      - run: bash scripts/install-ci-tool.sh binaryen
-      - run: wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
-      - run: node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
-      - run: npm ci
-      - run: npm run typecheck -w @dilla/core-wasm
-      - run: npm run typecheck -w @dilla/client-core
-      - run: npm run typecheck -w @dilla/web
-      - run: npm run build -w @dilla/web
-        env:
-          DILLA_NOISE_MODE: ${{ needs.tag.outputs.noise_mode }}
-      - run: npm run test:noise-release
-      - run: go test -tags webdist ./internal/web/...
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist/
-          if-no-files-found: error
 
   rust-wasi:
     runs-on: ubuntu-latest
@@ -195,7 +150,7 @@ jobs:
 
   go-release:
     runs-on: ubuntu-latest
-    needs: [tag, web-build]
+    needs: [tag]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -204,20 +159,6 @@ jobs:
           cache: false
       - name: Download Go modules (retried only on known network errors)
         run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
-      - run: rm -rf internal/web/dist
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: internal/web/dist
-      - name: The binaries embed the real client, not the placeholder
-        run: |
-          test -f internal/web/dist/index.html
-          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - name: the downloaded client passes the manifest check
-        run: go test -tags webdist ./internal/web/...
-        env:
-          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist
       # The tag job's version (the tag, its leading v dropped) is the binary's version (cmd/dillad main.Version);
       # every other build keeps 0.0.0-dev. It reaches the shell only through env, and the tag job allows only
       # [A-Za-z0-9.+_-] in the tag, so it is one word in the flags.

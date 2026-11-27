@@ -195,8 +195,9 @@ func (o *OIDC) Exchange(ctx context.Context, code, verifier, nonce string) (stri
 	return idToken.Issuer, idToken.Subject, claims.Email, nil
 }
 
-// StateCookie is the one cookie dillad sets, and it exists only between the
-// redirect and the callback.
+// StateCookie builds the retired browser flow's state cookie. dillad no longer
+// sets it: the callback only clears it (MaxAge -1), so a browser still holding
+// one from before the browser client was dropped loses it.
 //
 // The prefix is __Secure-, not __Host-. RFC 6265bis §4.1.3.2 requires a
 // __Host--prefixed cookie to have Path=/ and no Domain, and a browser REJECTS
@@ -213,10 +214,11 @@ func StateCookie(name, value string, maxAge int) *http.Cookie {
 	}
 }
 
-// DesktopOIDCStateCookie uses the browser's default path so an instance hosted
-// under a reverse-proxy prefix keeps the proof on its own OIDC directory. The
-// callback matches it only to a pending desktop ceremony, separately from the
-// legacy browser cookie.
+// DesktopOIDCStateCookie is the one cookie dillad sets, and it exists only
+// between the desktop OIDC start leg and the callback. It uses the browser's
+// default path so an instance hosted under a reverse-proxy prefix keeps the
+// proof on its own OIDC directory. The callback compares it with the state and
+// finishes only a pending desktop ceremony.
 func DesktopOIDCStateCookie(value string, maxAge int) *http.Cookie {
 	return &http.Cookie{Name: "__Secure-dilla-desktop-oidc", Value: value, MaxAge: maxAge, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}
 }

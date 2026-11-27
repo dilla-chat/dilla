@@ -13,7 +13,7 @@ const repoRoot = resolve(import.meta.dirname, '..');
 const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
 const env = { GITHUB_SHA: sourceSha, GITHUB_RUN_ID: '12345', GITHUB_RUN_ATTEMPT: '2' };
 const moduleURL = new URL('./e2e-test-tools.mjs', import.meta.url);
-const names = ['dilla-testhost', 'dilla-testkit', 'dillabot', 'dilla-bot-core', 'dilla-gpui-peer'];
+const names = ['dilla-testhost', 'dilla-testkit', 'dillabot', 'dilla-bot-core'];
 
 function fixture(t, platform = 'linux', arch = 'x64') {
   const root = mkdtempSync(join(tmpdir(), 'dilla-e2e-tools-'));
@@ -217,9 +217,7 @@ fs.mkdirSync(path.dirname(output), { recursive: true }); fs.writeFileSync(output
     ['build', '-p', 'dilla-testkit', '--release', '--locked'],
     ['-C', repoRoot, 'build', '-tags', 'dilla_testhost', '-o', join(output, 'dillabot'), './cmd/dillabot'],
     ['build', '-p', 'dilla-bot-core', '--release', '--locked'],
-    ['build', '-p', 'dilla-client', '--example', 'peer', '--release', '--locked'],
   ]);
-  assert.equal(readFileSync(paths.gpuiPeer, 'utf8'), 'compiled build -p dilla-client --example peer --release --locked');
   buildTestTools(output, options);
-  assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 10, 'an existing bundle cannot bypass source builds');
+  assert.equal(readFileSync(log, 'utf8').trim().split('\n').length, 8, 'an existing bundle cannot bypass source builds');
 });

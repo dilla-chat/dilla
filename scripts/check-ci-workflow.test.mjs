@@ -142,10 +142,10 @@ test('workflow steps execute only commit-pinned GitHub actions', () => {
 });
 
 test('clang 23 build jobs stay on the Ubuntu 24.04 image they install packages for', () => {
-  for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build']) {
+  for (const job of ['rust-wasm-node', 'browser-spike', 'browser-media', 'core-harness']) {
     assert.match(REAL_CI, new RegExp(`^  ${job}:\\n(?:    (?:name|needs|if):.*\\n)*    runs-on: ubuntu-24\\.04$`, 'm'));
   }
-  assert.match(REAL_RELEASE, /^  web-build:\n    runs-on: ubuntu-24\.04$/m);
+  assert.doesNotMatch(REAL_RELEASE, /^  web-build:/m);
 });
 
 test('the CI checker rejects a third-party action even when pinned', () => {
@@ -189,7 +189,7 @@ function browserJobsFixture() {
   return Object.entries(BROWSER_WEB_JOBS).map(([job, spec]) => `  ${job}:
     runs-on: ubuntu-24.04
     timeout-minutes: ${spec.timeout}
-    needs: [rust-native, rust-wasi, web-build]
+    needs: [rust-native, rust-wasi, core-harness]
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -199,10 +199,6 @@ function browserJobsFixture() {
         with:
           name: dilla-testkit
           path: artifacts
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
@@ -417,7 +413,7 @@ ${goShardMatrix('go')}    steps:
           path: e2e/test-results
           if-no-files-found: error
 
-  web-build:
+  core-harness:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -428,15 +424,7 @@ ${goShardMatrix('go')}    steps:
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
       - run: npm run typecheck:e2e
-      - run: npm run build -w @dilla/web
-      - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
-      - run: go test -tags webdist ./internal/web/...
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist/
-          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-harness
@@ -538,21 +526,7 @@ ${goShardMatrix('go-postgres')}    services:
 
   go-release:
     runs-on: ubuntu-latest
-    needs: [web-build]
     steps:
-      - run: rm -rf internal/web/dist
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: internal/web/dist
-      - run: |
-          test -f internal/web/dist/index.html
-          if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-      - name: the downloaded client passes the manifest check
-        run: go test -tags webdist ./internal/web/...
-        env:
-          DILLA_WEB_DIST: \${{ github.workspace }}/internal/web/dist
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad
       - name: No dillad is a dilla_unsafe_test build
         run: |
@@ -569,7 +543,7 @@ ${goShardMatrix('go-postgres')}    services:
 
 // The four jobs that build for wasm32-unknown-unknown, as the CI workflows write them: the canonical clang 23 job env and,
 // right after checkout, the canonical pinned install steps (ruling of 2026-10-13; hardened after the d3429ce lead).
-const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'web-build'];
+const WASM_JOBS = ['rust-wasm-node', 'browser-spike', 'browser-media', 'core-harness'];
 
 function withWasmClang(text) {
   const out = [];
@@ -1386,7 +1360,7 @@ function jobBody(job) {
   return lines.slice(from, to).join('\n');
 }
 
-for (const job of ['web-build', ...Object.keys(BROWSER_WEB_JOBS)]) {
+for (const job of ['core-harness', ...Object.keys(BROWSER_WEB_JOBS)]) {
   test(`a workflow without the ${job} job is reported`, () => {
     const problems = checkWorkflow(fixture(GOOD.replace(jobBody(job), '')));
     assert.ok(problems.some((p) => p.includes(`missing job "${job}"`)), problems.join('\n'));
@@ -1394,27 +1368,21 @@ for (const job of ['web-build', ...Object.keys(BROWSER_WEB_JOBS)]) {
 }
 
 for (const [job, needle] of [
-  ['web-build', 'timeout-minutes: 15'],
-  ['web-build', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg'],
-  ['web-build', 'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm'],
-  ['web-build', 'npm run typecheck -w @dilla/client-core'],
-  ['web-build', 'npm run typecheck -w @dilla/web'],
-  ['web-build', 'npm run typecheck:e2e'],
-  ['web-build', 'npm run build -w @dilla/web'],
-  ['web-build', 'npm run build:harness -w @dilla/client-core'],
-  ['web-build', 'go test -tags webdist ./internal/web/...'],
-  ['web-build', 'name: dilla-web-dist'],
-  ['web-build', 'path: packages/web/dist/'],
-  ['web-build', 'name: dilla-core-harness'],
-  ['web-build', 'path: packages/client-core/harness-dist/'],
+  ['core-harness', 'timeout-minutes: 15'],
+  ['core-harness', 'wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg'],
+  ['core-harness', 'node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm'],
+  ['core-harness', 'npm run typecheck -w @dilla/client-core'],
+  ['core-harness', 'npm run typecheck -w @dilla/web'],
+  ['core-harness', 'npm run typecheck:e2e'],
+  ['core-harness', 'npm run build:harness -w @dilla/client-core'],
+  ['core-harness', 'name: dilla-core-harness'],
+  ['core-harness', 'path: packages/client-core/harness-dist/'],
   ...Object.entries(BROWSER_WEB_JOBS).flatMap(([job, spec]) => [
     [job, `timeout-minutes: ${spec.timeout}`],
     ...(spec.engine === 'firefox' && spec.suite !== 'core' ? [[job, 'sh scripts/ci-audio-server.sh']] : []),
     [job, 'name: dilla-core-wasi'],
     [job, 'path: internal/mlswasi/testdata'],
     [job, 'name: dilla-testkit'],
-    [job, 'name: dilla-web-dist'],
-    [job, 'path: packages/web/dist'],
     [job, 'name: dilla-core-harness'],
     [job, 'path: packages/client-core/harness-dist'],
     [job, `npx playwright install --with-deps ${spec.engine}`],
@@ -1424,10 +1392,6 @@ for (const [job, needle] of [
     [job, `name: browser-web-results-${job}`],
     [job, 'path: e2e/test-results'],
   ]),
-  ['go-release', 'name: dilla-web-dist'],
-  ['go-release', 'path: internal/web/dist'],
-  ['go-release', 'content="placeholder"'],
-  ['go-release', 'go test -tags webdist ./internal/web/...'],
   ['node', 'npm run test:manifest-writer'],
   ['server-scripts', 'npm run test:bot-ops-check'],
   ['server-scripts', 'npm run check:bot-ops'],
@@ -1462,11 +1426,11 @@ test('the server workflow runs the scripts release.yml ships, gated on any code 
 });
 
 for (const job of Object.keys(BROWSER_WEB_JOBS)) {
-  for (const need of ['rust-native', 'rust-wasi', 'web-build']) {
+  for (const need of ['rust-native', 'rust-wasi', 'core-harness']) {
     test(`a ${job} job without needs: ${need} is reported`, () => {
       const body = jobBody(job);
-      const kept = ['rust-native', 'rust-wasi', 'web-build'].filter((n) => n !== need).join(', ');
-      const cut = body.replace('    needs: [changes, rust-native, rust-wasi, web-build]\n', `    needs: [changes, ${kept}]\n`);
+      const kept = ['rust-native', 'rust-wasi', 'core-harness'].filter((n) => n !== need).join(', ');
+      const cut = body.replace('    needs: [changes, rust-native, rust-wasi, core-harness]\n', `    needs: [changes, ${kept}]\n`);
       assert.notEqual(cut, body, 'fixture sanity: needs');
       const problems = checkWorkflow(fixture(GOOD.replace(body, () => cut)));
       assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes(`needs: ${need}`)), problems.join('\n'));
@@ -1517,32 +1481,6 @@ test('a browser job without the e2e gate is reported', () => {
     const problems = checkWorkflow(fixture(GOOD.replace(body, () => ungated)));
     assert.ok(problems.some((p) => p.includes(`"${job}"`) && p.includes("needs.changes.outputs.e2e != 'false'")), `${job}: ${problems.join('\n')}`);
   }
-});
-
-test('go-release must point the webdist test at the downloaded client', () => {
-  const line = '          DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist\n';
-  const body = jobBody('go-release');
-  assert.ok(body.includes(line), 'fixture sanity: the DILLA_WEB_DIST line');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace(line, ''))));
-  assert.ok(
-    problems.some((p) => p.includes('"go-release"') && p.includes('DILLA_WEB_DIST: ${{ github.workspace }}/internal/web/dist')),
-    problems.join('\n'),
-  );
-});
-
-test('a go-release job without needs: web-build is reported', () => {
-  const body = jobBody('go-release');
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => body.replace('    needs: [changes, web-build]\n', ''))));
-  assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('needs: web-build')), problems.join('\n'));
-});
-
-test('a go-release job that builds before it fetches the web client is reported', () => {
-  const build = '      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/dillad-linux-amd64 ./cmd/dillad\n';
-  const body = jobBody('go-release');
-  assert.ok(body.includes(build), 'fixture sanity: the amd64 build');
-  const moved = body.replace(build, '').replace('    steps:\n', `    steps:\n${build}`);
-  const problems = checkWorkflow(fixture(GOOD.replace(body, () => moved)));
-  assert.ok(problems.some((p) => p.includes('"go-release"') && p.includes('before it builds')), problems.join('\n'));
 });
 
 // web-2b task 11 (L-CI-20, L-CI-21): the screenshots of the web-2b stories and the re-derived browser budget.
@@ -1741,7 +1679,7 @@ for (const job of WASM_JOBS) {
 // The validator differential of the d3429ce lead: the earlier rule matched substrings, so this job passed it while
 // running no install at all, with the required strings in a comment and in an echo.
 test('an evading job that only names the pinned strings in a comment and an echo is reported', () => {
-  const evading = editJob('web-build', (b) =>
+  const evading = editJob('core-harness', (b) =>
     b.replace(
       `${WASM_CLANG_BLOCK}\n`,
       `      # ${WASM_CLANG_BLOCK.split('\n').map((l) => l.trim()).join(' ; ')}\n` +
@@ -1749,7 +1687,7 @@ test('an evading job that only names the pinned strings in a comment and an echo
     ),
   );
   const problems = checkWorkflow(fixture(evading));
-  assert.ok(problems.includes(STEP_RULE('web-build')), problems.join('\n'));
+  assert.ok(problems.includes(STEP_RULE('core-harness')), problems.join('\n'));
 });
 
 for (const [what, edit, expected] of [
@@ -1779,8 +1717,8 @@ for (const [what, edit, expected] of [
     /writes GITHUB_ENV or GITHUB_PATH/,
   ],
 ]) {
-  test(`web-build with ${what} is reported`, () => {
-    const problems = checkWorkflow(fixture(editJob('web-build', edit)));
+  test(`core-harness with ${what} is reported`, () => {
+    const problems = checkWorkflow(fixture(editJob('core-harness', edit)));
     assert.ok(problems.some((p) => expected.test(p)), problems.join('\n'));
   });
 }
@@ -1940,18 +1878,6 @@ test('a tag job that no longer checks the ref is reported', () => {
   assertReported(releaseProblems((t) => t.replace(/ {10}test "\$GITHUB_REF" = .*\n/, '')), 'refs/tags/$tag');
 });
 
-test('a release web-build without the clang 23 pin is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('        name: clang 23 for the wasm C build\n', '        name: clang for the wasm C build\n')), 'clang 23');
-});
-
-test('a release go-release that builds before the placeholder guard is reported', () => {
-  assertReported(releaseProblems((t) => t.replace(/ {6}- name: The binaries embed the real client[^\n]*\n {8}run: \|\n(?: {10}[^\n]*\n)+/, '')), 'refuse the placeholder');
-});
-
-test('a release go-release that does not wait for web-build is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('needs: [tag, web-build]', 'needs: [tag]')), '"web-build" in its needs');
-});
-
 test('a release Bot build that does not wait for the WASI core is reported', () => {
   assertReported(releaseProblems((t) => t.replace('needs: [tag, rust-wasi]', 'needs: [tag]')), '"rust-wasi" in its needs');
 });
@@ -2031,11 +1957,11 @@ test('a tag job without the server release gate step is reported', () => {
 
 test('a tag job without actions: read, or another job with actions access, is reported', () => {
   assertReported(releaseProblems((t) => t.replace('      contents: read\n      actions: read\n', '      contents: read\n')), 'actions: read');
-  assertReported(releaseProblems((t) => t.replace('  web-build:\n    runs-on: ubuntu-24.04\n', '  web-build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      actions: read\n')), 'only the tag job reads workflow runs');
+  assertReported(releaseProblems((t) => t.replace('  rust-wasi:\n    runs-on: ubuntu-latest\n', '  rust-wasi:\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      actions: read\n')), 'only the tag job reads workflow runs');
 });
 
 test('a build cache in the release workflow is reported', () => {
-  assertReported(releaseProblems((t) => t.replace('          node-version-file: .nvmrc\n', '          node-version-file: .nvmrc\n          cache: npm\n')), 'build cache');
+  assertReported(releaseProblems((t) => t.replace('          cache: false\n', '          cache: npm\n')), 'build cache');
 });
 
 test('a release setup-go without cache: false is reported', () => {
@@ -2114,9 +2040,9 @@ test('a job added without a gate is reported', () => {
 });
 
 test('a gate that can run while a needed job is skipped is reported', () => {
-  // go-release (go or web) needs web-build (e2e): fine. Narrow web-build to core and a UI change would skip go-release's dependency.
-  const problems = checkWorkflow(fixture(GOOD.replace(/(  web-build:\n(?:    needs:.*\n)?)    if: .*\n/, "$1    if: needs.changes.outputs.core != 'false'\n")));
-  assert.ok(problems.some((p) => p.includes('"web-build" must carry')), problems.join('\n'));
+  // core-integration (e2e) needs core-harness (e2e): fine. Narrow core-harness to core and a UI change would skip core-integration's dependency.
+  const problems = checkWorkflow(fixture(GOOD.replace(/(  core-harness:\n(?:    needs:.*\n)?)    if: .*\n/, "$1    if: needs.changes.outputs.core != 'false'\n")));
+  assert.ok(problems.some((p) => p.includes('"core-harness" must carry')), problems.join('\n'));
 });
 
 test('each real ok job needs every other job of its workflow', () => {

@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use dilla_client::Client;
 use dilla_client::features::attachments::{
-    ATTACHMENT_CAP, AttachmentKind, NewFile, Tray, attachment_kind, safe_name,
+    ATTACHMENT_CAP, AttachmentKind, NewFile, SendCancel, Tray, attachment_kind, safe_name,
 };
 use dilla_client::features::gifs::{GifItem, GifVariant};
 use dilla_client::state::{ChannelId, CommunityId};
@@ -162,9 +162,11 @@ pub struct GifState {
     pub turn: u64,
     /// The search field, made when the picker first draws.
     pub search: Option<gpui::Entity<gpui_component::input::InputState>>,
-    /// The client that searches and attaches the pick, and the window the picker is drawn in.
+    /// The client that searches and sends the pick, and the window the picker is drawn in.
     pub client: Option<Rc<Client>>,
     pub owner: Option<WindowId>,
+    /// What had the focus when the picker took it (the message box): a pick gives it back.
+    pub return_focus: Option<FocusHandle>,
 }
 
 /// A tray entry's picture, kept by its tray id (Attachments.tsx `trayPreviews`).
@@ -172,6 +174,46 @@ pub struct GifState {
 pub enum TrayPreview {
     Image(Arc<Image>),
     Gif,
+}
+
+/// Attachments.tsx `GIF_PLAY_MS`: a posted GIF plays in its card for at most this long from when it first played.
+pub const GIF_PLAY: Duration = Duration::from_secs(5 * 60);
+
+/// A posted GIF's play (Attachments.tsx's autoplay rules): whether at least half of its card was visible when it last
+/// painted, and when it first played.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GifPlay {
+    pub visible: bool,
+    pub since: Option<Instant>,
+}
+
+impl GifPlay {
+    /// Whether it may play at `now`: at least half visible, and within [`GIF_PLAY`] of its first play. After that it
+    /// shows its still.
+    pub fn may_play(&self, now: Instant) -> bool {
+        self.visible
+            && self
+                .since
+                .is_none_or(|s| now.saturating_duration_since(s) < GIF_PLAY)
+    }
+}
+
+/// Records whether at least half of the GIF card `key` is visible; answers whether that changed.
+pub fn set_gif_visible(key: CardKey, visible: bool, cx: &mut App) -> bool {
+    let play = ui(cx).gif_plays.entry(key).or_default();
+    let changed = play.visible != visible;
+    play.visible = visible;
+    changed
+}
+
+/// The GIF card `key` plays now: its first play starts its [`GIF_PLAY`] window.
+pub fn gif_played(key: CardKey, now: Instant, cx: &mut App) {
+    ui(cx)
+        .gif_plays
+        .entry(key)
+        .or_default()
+        .since
+        .get_or_insert(now);
 }
 
 /// The attachments area's state. One per app, and that is safe by construction (final review sweep): what belongs to a
@@ -187,6 +229,8 @@ pub struct AttachmentsUi {
     pub images: HashMap<ImageKey, Slot>,
     pub cards: HashMap<CardKey, CardStatus>,
     pub players: HashMap<CardKey, Player>,
+    /// Each posted GIF's play (its visibility and its first play), by card.
+    pub gif_plays: HashMap<CardKey, GifPlay>,
     /// The newest open's generation of each image, card and player (the key names its client): [`release`] drops what
     /// that client opened, whatever channel it is in (a DM's, a left channel's, a thread's; re-review N3).
     pub media_owners: HashMap<MediaKey, u64>,
@@ -200,6 +244,9 @@ pub struct AttachmentsUi {
     /// client was released is not shown (final review I5). Never pruned: one serial per released client for the
     /// process's life, like the lazily pruned per-client registries of final review M9 (ids only, no client).
     pub released: BTreeSet<u64>,
+    /// The picked GIFs being sealed, uploaded and posted ([`send_gif`]): the composer of their client and channel says
+    /// "Sending GIF…" until each is sent or failed, and a release cancels its client's before they post.
+    pub gif_sends: Vec<GifSend>,
     /// `gifStatus` per server: `None` while asked.
     pub gif_on: HashMap<CommunityId, Option<bool>>,
     /// Per window, what its composer last drew for: where a paste, a drop or a pick in that window goes. Keyed by
@@ -211,6 +258,24 @@ pub struct AttachmentsUi {
     pub fullscreen: Option<Fullscreen>,
     /// The video in the picture-in-picture window, if any (one at a time, as in Chromium).
     pub pip: Option<Pip>,
+}
+
+/// One picked GIF on its way ([`AttachmentsUi::gif_sends`]): its client (by serial), its channel, and the switch that
+/// stops it before it posts.
+pub struct GifSend {
+    pub owner: u64,
+    pub channel: ChannelId,
+    pub cancel: SendCancel,
+}
+
+/// Whether `client` is sending a picked GIF to `channel` now: its composer says "Sending GIF…".
+pub fn gif_sending(client: &Client, channel: ChannelId, cx: &App) -> bool {
+    let owner = owner_of(client);
+    cx.try_global::<AttachmentsUi>().is_some_and(|u| {
+        u.gif_sends
+            .iter()
+            .any(|g| g.owner == owner && g.channel == channel)
+    })
 }
 
 /// A window's composer target: its client and its open channel, and the window (its toasts show there).
@@ -354,15 +419,23 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     {
         u.lightbox = None;
     }
-    if u.gif
+    let picker = u
+        .gif
         .as_ref()
-        .is_some_and(|g| g.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)))
-    {
-        u.gif = None;
-    }
+        .is_some_and(|g| g.client.as_ref().is_some_and(|c| Rc::ptr_eq(c, client)));
     u.trays.retain(|(c, _), _| *c != owner);
     u.tray_previews.retain(|(c, _, _), _| *c != owner);
     u.released.insert(owner);
+    // Final review R5: a GIF still uploading for this client never posts (a sign-out or Forget came first).
+    u.gif_sends.retain(|g| {
+        if g.owner == owner {
+            g.cancel.cancel();
+        }
+        g.owner != owner
+    });
+    if picker {
+        close_gifs(cx);
+    }
     // Final review I5: the DM GIF notice of any window that asked with it goes.
     crate::per_window::each_mut::<Notice>(cx, |_, n| {
         if n.0.as_ref().is_some_and(|n| Rc::ptr_eq(&n.client, client)) {
@@ -396,7 +469,7 @@ pub fn window_closed(window: WindowId, cx: &mut App) {
         u.lightbox = None;
     }
     if u.gif.as_ref().is_some_and(|g| g.owner == Some(window)) {
-        u.gif = None;
+        close_gifs(cx);
     }
 }
 
@@ -444,6 +517,7 @@ pub fn forget_owner(owner: u64, cx: &mut App) {
     u.images.retain(|k, _| k.client != owner);
     u.cards.retain(|k, _| k.client != owner);
     u.players.retain(|k, _| k.client != owner);
+    u.gif_plays.retain(|k, _| k.client != owner);
     u.saves.retain(|_, k| k.client != owner);
 }
 
@@ -538,12 +612,20 @@ pub fn tray_of(client: &Client, channel: ChannelId, cx: &mut App) -> Tray {
 
 /// Attachments.tsx `attachFiles`: the files join the tray (a toast for a file over 25 MB, the tray's own refusal of
 /// an eleventh file), each picture with its preview.
-pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>>, cx: &mut App) {
+///
+/// Whether the files landed in the tray: `false` when there was nothing to attach or the tray refused them (its own
+/// toast says why).
+pub fn attach(
+    to: Target,
+    files: Vec<NewFile>,
+    previews: Vec<Option<TrayPreview>>,
+    cx: &mut App,
+) -> bool {
     let (Some(client), Some(channel), shown_in) = (to.client, to.channel, to.window) else {
-        return;
+        return false;
     };
     if files.is_empty() {
-        return;
+        return false;
     }
     let tray = tray_of(&client, channel, cx);
     let owner = owner_of(&client);
@@ -555,7 +637,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
             cx,
         );
     }
-    match client.attachments().attach(&tray, files) {
+    let landed = match client.attachments().attach(&tray, files) {
         Ok(ids) => {
             let u = ui(cx);
             for (id, p) in ids.into_iter().zip(previews) {
@@ -563,6 +645,7 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
                     u.tray_previews.insert((owner, channel, id), p);
                 }
             }
+            true
         }
         Err(e) => {
             let text = if e.code() == "E_ATTACHMENT_COUNT" {
@@ -571,9 +654,11 @@ pub fn attach(to: Target, files: Vec<NewFile>, previews: Vec<Option<TrayPreview>
                 tf("shell.banner.commandError", &[("code", &e.code())])
             };
             dilla_desktop_ui::components::toast::show_toast_in(shown_in, text, cx);
+            false
         }
-    }
+    };
     cx.refresh_windows();
+    landed
 }
 
 /// A file from disk, with its preview when it is a still picture (a GIF gets the GIF card).
@@ -1271,11 +1356,46 @@ pub fn toggle_gifs(
     community: CommunityId,
     cx: &mut App,
 ) {
-    if ui(cx).gif.take().is_some() {
+    if close_gifs(cx) {
         cx.refresh_windows();
         return;
     }
     open_gifs(client, owner, channel, community, String::new(), cx);
+}
+
+/// Closes the GIF picker, if one is open, and lets go of its decoded previews ([`release_pictures`]). Answers whether
+/// one was open.
+pub fn close_gifs(cx: &mut App) -> bool {
+    let Some(g) = ui(cx).gif.take() else {
+        return false;
+    };
+    release_pictures(g.previews.into_values().collect(), cx);
+    true
+}
+
+/// Lets go of decoded pictures (the GIF picker's previews): every frame leaves the GPU atlas of every window, and the
+/// decode leaves GPUI's asset cache, where it would otherwise stay for the app's life (a page of GIF previews decodes to
+/// tens of MB). Deferred, so no window is being updated when the frames are dropped.
+pub fn release_pictures(images: Vec<Arc<Image>>, cx: &mut App) {
+    if images.is_empty() {
+        return;
+    }
+    cx.defer(move |cx| {
+        // The decode is app-wide; any window answers it, and `drop_image` clears it from all of them.
+        if let Some(window) = cx.windows().into_iter().next() {
+            let _ = window.update(cx, |_, window, cx| {
+                // A preview never decoded starts no lasting work: its load goes with `remove_asset` below.
+                for image in &images {
+                    if let Some(r) = image.clone().get_render_image(window, cx) {
+                        cx.drop_image(r, Some(window));
+                    }
+                }
+            });
+        }
+        for image in images {
+            image.remove_asset(cx);
+        }
+    });
 }
 
 /// Opens the GIF picker of `channel` in `community` with `query` in its search field and searches it (`/giphy`,
@@ -1289,6 +1409,8 @@ pub fn open_gifs(
     query: String,
     cx: &mut App,
 ) {
+    // A picker open before (`/giphy` again) lets go of its previews.
+    close_gifs(cx);
     ui(cx).gif = Some(GifState {
         channel: Some(channel),
         community: Some(community),
@@ -1345,7 +1467,7 @@ pub fn open_dm_gifs(
     // A second press closes this window's picker or notice (never another window's).
     let picker_here = ui(cx).gif.as_ref().is_some_and(|g| g.owner == Some(owner));
     if picker_here {
-        ui(cx).gif = None;
+        close_gifs(cx);
     }
     let notice_here = crate::per_window::get_mut::<Notice>(owner, cx)
         .0
@@ -1433,15 +1555,19 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
         return;
     };
     let offset = if more { g.next.unwrap_or(0) } else { 0 };
+    let mut dropped = Vec::new();
     if !more {
         g.items.clear();
         g.active = None;
+        // A new search's results replace the old: their previews are let go.
+        dropped.extend(g.previews.drain().map(|(_, p)| p));
     }
     g.query = query.clone();
     g.loading = true;
     g.error = false;
     g.turn += 1;
     let turn = g.turn;
+    release_pictures(dropped, cx);
     cx.refresh_windows();
     let rx = client.gifs().search(community, query, offset);
     cx.spawn(async move |cx| {
@@ -1481,9 +1607,27 @@ pub fn search_gifs(query: String, more: bool, cx: &mut App) {
     .detach();
 }
 
-/// Picks a GIF: its full file is fetched through the instance and attached as an ordinary attachment (the worker's
-/// note: "a GIF crosses back as a Blob and the page sends it with attachFiles").
+/// Picks a GIF (a click or Enter on a result): its full file is fetched through the instance and sent at once, alone,
+/// as its own message (Jonas, 2026-11-26: "Click sends at once"; the old app put it in the tray and waited for Enter).
+/// The picker closes, the focus goes back to the message box and "gif sent." is read out; the draft and the tray's
+/// files stay as they are ([`send_gif`]). A second pick while one is fetched is ignored.
 pub fn pick_gif(index: usize, cx: &mut App) {
+    pick_gif_with(
+        index,
+        |client, community, id| client.gifs().media(community, id, GifVariant::Full),
+        cx,
+    );
+}
+
+/// What a GIF's fetch answers: its bytes, or why not.
+pub type GifFetch = tokio::sync::oneshot::Receiver<Result<Vec<u8>, dilla_client::ClientError>>;
+
+/// [`pick_gif`] with its fetch given (tests fetch no GIF from Giphy).
+pub fn pick_gif_with(
+    index: usize,
+    fetch: impl FnOnce(&Client, CommunityId, String) -> GifFetch,
+    cx: &mut App,
+) {
     let Some(g) = ui(cx).gif.as_mut() else { return };
     if g.picking.is_some() {
         return;
@@ -1492,23 +1636,24 @@ pub fn pick_gif(index: usize, cx: &mut App) {
     let Some(client) = g.client.clone() else {
         return;
     };
-    let to = Target {
-        client: Some(client.clone()),
-        channel: g.channel,
-        window: g.owner,
-    };
+    let (channel, shown_in) = (g.channel, g.owner);
     let (Some(item), Some(community)) = (g.items.get(index).cloned(), g.community) else {
         return;
     };
     g.picking = Some(item.id.clone());
     cx.refresh_windows();
-    let shown_in = to.window;
-    let rx = client
-        .gifs()
-        .media(community, item.id.clone(), GifVariant::Full);
+    let rx = fetch(&client, community, item.id.clone());
+    // Held weakly while the fetch runs: a released client is not kept alive by it.
+    let client = Rc::downgrade(&client);
     cx.spawn(async move |cx| {
         let got = rx.await;
         cx.update(|cx| {
+            let Some(client) = client
+                .upgrade()
+                .filter(|c| !ui(cx).released.contains(&owner_of(c)))
+            else {
+                return;
+            };
             match got {
                 Ok(Ok(bytes)) => {
                     let title = if item.title.is_empty() {
@@ -1517,13 +1662,17 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                         item.title.clone()
                     };
                     let name = format!("{}.gif", safe_name(&title, "gif"));
-                    ui(cx).gif = None;
-                    attach(
-                        to,
-                        vec![NewFile::from_bytes(&name, "image/gif", bytes)],
-                        vec![Some(TrayPreview::Gif)],
-                        cx,
-                    );
+                    let back = ui(cx).gif.as_mut().and_then(|g| g.return_focus.take());
+                    close_gifs(cx);
+                    if let (Some(back), Some(owner)) = (back, shown_in) {
+                        in_window(owner, cx, move |window, cx| window.focus(&back, cx));
+                    }
+                    let to = Target {
+                        client: Some(client),
+                        channel,
+                        window: shown_in,
+                    };
+                    send_gif(to, name, bytes, cx);
                 }
                 _ => {
                     if let Some(g) = ui(cx).gif.as_mut() {
@@ -1537,6 +1686,94 @@ pub fn pick_gif(index: usize, cx: &mut App) {
                 }
             }
             cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+/// Runs `f` in the window `owner`, if it is still open (deferred: never inside another update of it).
+fn in_window(owner: WindowId, cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    cx.defer(move |cx| {
+        if let Some(handle) = cx.windows().into_iter().find(|w| w.window_id() == owner) {
+            let _ = handle.update(cx, |_, window, cx| f(window, cx));
+        }
+    });
+}
+
+/// Sends the GIF `name` (`bytes`) to `to`'s channel at once, as its own message with no text
+/// (`Attachments::send_alone`): it is sealed and uploaded in a tray of its own, so the composer's tray never holds it,
+/// and the person's own send meanwhile neither waits for it ("not ready") nor carries it. Until it is sent or failed the
+/// composer says "Sending GIF…" ([`gif_sending`]), read out politely once; typing and sending go on. Sent, "gif sent."
+/// is read out. Not sent, it goes into the composer's tray ([`attach`], with that tray's own refusals), so nothing is
+/// lost: Enter sends it with the rest, and the toast says it is there; a tray that refuses it (full) shows its own
+/// refusal instead, never "it's in your attachments". A client released meanwhile gets nothing, and its GIF
+/// is not posted (the release cancels it).
+pub fn send_gif(to: Target, name: String, bytes: Vec<u8>, cx: &mut App) {
+    let (Some(client), Some(channel)) = (to.client.as_ref(), to.channel) else {
+        return;
+    };
+    let shown_in = to.window;
+    let kept = bytes.clone();
+    let cancel = SendCancel::default();
+    ui(cx).gif_sends.push(GifSend {
+        owner: owner_of(client),
+        channel,
+        cancel: cancel.clone(),
+    });
+    if let Some(owner) = shown_in {
+        in_window(owner, cx, |window, cx| {
+            dilla_desktop_ui::a11y::announce(t("gif.sending"), window, cx)
+        });
+    }
+    let rx = client.attachments().send_alone(
+        channel,
+        NewFile::from_bytes(&name, "image/gif", bytes),
+        cancel.clone(),
+    );
+    // Held weakly while the upload runs: a released client is not kept alive by it.
+    let client = Rc::downgrade(client);
+    drop(to);
+    cx.refresh_windows();
+    cx.spawn(async move |cx| {
+        let sent = rx.await;
+        cx.update(|cx| {
+            ui(cx).gif_sends.retain(|g| !g.cancel.same(&cancel));
+            cx.refresh_windows();
+            let Some(client) = client
+                .upgrade()
+                .filter(|c| !ui(cx).released.contains(&owner_of(c)))
+            else {
+                return;
+            };
+            match sent {
+                Ok(Ok(_)) => {
+                    if let Some(owner) = shown_in {
+                        in_window(owner, cx, |window, cx| {
+                            dilla_desktop_ui::a11y::announce(t("gif.sent"), window, cx)
+                        });
+                    }
+                }
+                _ => {
+                    let landed = attach(
+                        Target {
+                            client: Some(client),
+                            channel: Some(channel),
+                            window: shown_in,
+                        },
+                        vec![NewFile::from_bytes(&name, "image/gif", kept)],
+                        vec![Some(TrayPreview::Gif)],
+                        cx,
+                    );
+                    // "it's in your attachments" only when it is: a refusal keeps the tray's own toast.
+                    if landed {
+                        dilla_desktop_ui::components::toast::show_toast_in(
+                            shown_in,
+                            t("gif.notSent"),
+                            cx,
+                        );
+                    }
+                }
+            }
         });
     })
     .detach();
@@ -1993,6 +2230,78 @@ mod tests {
             .unwrap();
         let kept = cx.update(|cx| ui(cx).targets.len());
         assert_eq!(kept, 1, "a closed window's target is pruned");
+    }
+
+    /// A 1x1 GIF89a of two frames (black, then white), 100ms each.
+    const TWO_FRAMES: &[u8] = &[
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xff, 0xff, 0xff, 0x21, 0xf9, 0x04, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x21, 0xf9, 0x04,
+        0x00, 0x0a, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+        0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b,
+    ];
+
+    /// The GIF picker's decoded previews leave GPUI's asset cache and the atlas when it closes (Escape, a second press,
+    /// a pick); they would otherwise stay for the app's life.
+    #[gpui::test]
+    fn closing_the_picker_releases_its_previews(cx: &mut gpui::TestAppContext) {
+        let open = |cx: &mut gpui::TestAppContext| {
+            let preview = picture(TWO_FRAMES).expect("a GIF");
+            let w = cx.add_window(|_, _| Blank);
+            let decoded = w
+                .update(cx, |_, w, cx| {
+                    ui(cx).gif = Some(GifState {
+                        previews: HashMap::from([("a".to_owned(), preview.clone())]),
+                        ..GifState::default()
+                    });
+                    preview.clone().get_render_image(w, cx)
+                })
+                .unwrap();
+            assert!(decoded.is_none(), "it decodes in the background");
+            cx.run_until_parked();
+            let decoded = w
+                .update(cx, |_, w, cx| preview.clone().get_render_image(w, cx))
+                .unwrap();
+            assert!(decoded.is_some(), "decoded");
+            preview
+        };
+        let preview = open(cx);
+        assert!(cx.update(close_gifs), "it was open");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| !preview.is_asset_cached(cx)), "released");
+        assert!(cx.read(|cx| cx.global::<AttachmentsUi>().gif.is_none()));
+        assert!(!cx.update(close_gifs), "none is open");
+    }
+
+    /// Attachments.tsx's play window: a posted GIF plays while at least half visible and for five minutes from its
+    /// first play; after that it shows its still.
+    #[test]
+    fn a_posted_gif_plays_while_half_visible_for_five_minutes() {
+        let t0 = Instant::now();
+        let unseen = GifPlay::default();
+        assert!(!unseen.may_play(t0), "not yet measured visible");
+        let seen = GifPlay {
+            visible: true,
+            since: None,
+        };
+        assert!(seen.may_play(t0), "visible, never played");
+        let playing = GifPlay {
+            since: Some(t0),
+            ..seen
+        };
+        assert!(playing.may_play(t0 + GIF_PLAY - Duration::from_millis(1)));
+        assert!(
+            !playing.may_play(t0 + GIF_PLAY),
+            "five minutes on: the still"
+        );
+        assert!(
+            !GifPlay {
+                visible: false,
+                ..playing
+            }
+            .may_play(t0),
+            "scrolled away"
+        );
     }
 
     #[test]

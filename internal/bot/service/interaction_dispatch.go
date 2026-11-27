@@ -94,8 +94,9 @@ type InteractionHandlerSpec struct {
 // picker command (the client maps E_FORBIDDEN itself).
 //
 // Mutations carry Revision 0 and Expires sent_at + 120 s (the sent_at window). A picker command does not
-// know the entity's revision: for the operations marked retryConflict a 409 that names the current
-// revision is tried once more with it (last writer wins, as a typed command means), and never looped.
+// know the entity's revision: the operations marked retryConflict run at the current revision (withCurrentRevision:
+// last writer wins, as a typed command means), and a 409 that still names the current revision (the runtime and the
+// store disagreed) is tried once more with it, never looped.
 type SealedDispatcher struct {
 	Community id.ID
 	Handlers  map[protocol.Operation]InteractionHandlerSpec
@@ -667,6 +668,12 @@ func (d *SealedDispatcher) Dispatch(ctx context.Context, req protocol.SealedRequ
 		if mutation {
 			revision, expires := uint64(0), req.SentAt+sealedCommandWindow
 			v1.Revision, v1.Expires = &revision, &expires
+			if adapter.retryConflict {
+				// A typed command acts on the state as it is (last writer wins): the handler takes the revision of the
+				// snapshot it reads, instead of refusing revision 0 and running again (Task 3: every /stop was refused
+				// client_revision_stale once, a wasted handler run with its reads).
+				ctx = withCurrentRevision(ctx)
+			}
 		}
 	}
 	// The v1 request's own validation (argument shapes and bounds) applies to every sealed request.

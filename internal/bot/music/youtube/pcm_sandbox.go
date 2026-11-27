@@ -46,6 +46,9 @@ func launchNetworkWorker(ctx context.Context, bwrap, python string, tools, worke
 		_ = os.RemoveAll(root)
 		return nil, ErrSandboxUnavailable
 	}
+	// The child holds its own copy of the pipe's write end from Start on; the parent's copy closes either way, so the
+	// reader sees EOF once the sandbox's last writer exits.
+	defer closeChildStdout(cmd)
 	var inputs []string
 	if len(workerArgs) > 0 {
 		if workerArgs[0] == "exec" {
@@ -169,11 +172,24 @@ func sandboxCommand(ctx context.Context, bwrap, python string, tools, workerArgs
 	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
 	cmd.Stderr = &sandboxStderr{}
-	stdout, err := cmd.StdoutPipe()
+	// An os.Pipe of our own rather than cmd.StdoutPipe: Wait closes a StdoutPipe as soon as the process is reaped, which
+	// isolatedPCM.wait does concurrently with the reads, so output the process wrote just before exiting was dropped
+	// unread and the read failed with "file already closed" (a 0.5 s track under load). Wait leaves a caller's
+	// *os.File alone: the reader gets the whole output and then EOF, and Close closes the read end.
+	stdout, childStdout, err := os.Pipe()
 	if err != nil {
 		return nil, nil, err
 	}
+	cmd.Stdout = childStdout
 	return cmd, stdout, nil
+}
+
+// closeChildStdout closes the parent's copy of the stdout pipe's write end (sandboxCommand); after Start the child
+// holds its own.
+func closeChildStdout(cmd *exec.Cmd) {
+	if f, ok := cmd.Stdout.(*os.File); ok {
+		_ = f.Close()
+	}
 }
 
 type isolatedPCM struct {
@@ -327,9 +343,10 @@ func (p *isolatedPCM) failure(cause error) *ProcessError {
 		}
 		cause = errors.Join(ErrSandboxUnavailable, p.ctxErr, deadline)
 	} else if p.exitCode == 75 {
-		// Wait may close stdout before its reader observes EOF, or finish
-		// before the launcher selects readiness. Retain the worker's limit
-		// status in all paths rather than reporting an extraction failure.
+		// The worker's stdout is our own os.Pipe, so Wait never closes it under
+		// the reader; the process can still finish before the launcher selects
+		// readiness. Retain the worker's limit status in all paths rather than
+		// reporting an extraction failure.
 		switch {
 		case errors.Is(cause, ErrExtractFailed):
 			cause = errors.Join(ErrMetadataTooLarge, p.ctxErr)
@@ -350,8 +367,8 @@ func (p *isolatedPCM) startupFailure(cause error) *ProcessError {
 	return p.failure(errors.Join(cause, p.ctxErr))
 }
 
-// exec.Cmd.Wait closes StdoutPipe, which can race the reader's final EOF. Read
-// the completed process diagnostics for either pipe termination signal.
+// The reader sees EOF once the process's output is read to its end, and a
+// closed pipe after Close. Read the completed process diagnostics for either.
 func processReadEnded(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
 }

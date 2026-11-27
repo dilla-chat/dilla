@@ -80,7 +80,8 @@ func pageOf(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorde
 	return rec
 }
 
-// C18: the test host serves a built client from its own origin, the same handler production runs.
+// C18, now a test-only seam (Task 12): the test host serves a given directory tree from its own
+// origin, behind the download page, with no embedded client.
 func TestTheHostServesItsWebRootFromItsOwnOrigin(t *testing.T) {
 	const index, script = "<!doctype html><title>harness</title>\n", "export {};\n"
 	root := webRootDir(t, map[string]string{"index.html": index, "assets/main-1a2b.js": script})
@@ -96,6 +97,9 @@ func TestTheHostServesItsWebRootFromItsOwnOrigin(t *testing.T) {
 		rec.Header().Get("Content-Type") != "text/javascript; charset=utf-8" {
 		t.Fatalf("GET /assets/main-1a2b.js = %d %q (%s)", rec.Code, rec.Body.String(), rec.Header().Get("Content-Type"))
 	}
+	if rec := pageOf(t, h.Handler(), "/download"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Download Dilla") {
+		t.Fatalf("GET /download beside the web root = %d %q", rec.Code, rec.Body.String())
+	}
 }
 
 func TestTheHostRefusesAWebRootItsManifestDoesNotDescribe(t *testing.T) {
@@ -104,14 +108,19 @@ func TestTheHostRefusesAWebRootItsManifestDoesNotDescribe(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte(strings.ToUpper(index)), 0o600); err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
-	if _, err := hostWithWebRoot(t, root); err == nil || !strings.HasPrefix(err.Error(), "dillad: web client: ") {
-		t.Fatalf("NewHost = %v, want dillad's web client refusal", err)
+	if _, err := hostWithWebRoot(t, root); err == nil || !strings.HasPrefix(err.Error(), "dillad: web root: ") {
+		t.Fatalf("NewHost = %v, want dillad's web root refusal", err)
 	}
 }
 
-func TestWithoutAWebRootTheHostServesThePlaceholder(t *testing.T) {
+// Without a web root the host is what `dillad serve` is: no browser client, its root a 302 to the
+// download page.
+func TestWithoutAWebRootTheHostRedirectsToTheDownloadPage(t *testing.T) {
 	h := newHost(t)
-	if rec := pageOf(t, h.Handler(), "/"); !strings.Contains(rec.Body.String(), `<meta name="dilla-web" content="placeholder">`) {
-		t.Fatalf("GET / = %d %q, want the embedded placeholder", rec.Code, rec.Body.String())
+	if rec := pageOf(t, h.Handler(), "/"); rec.Code != http.StatusFound || rec.Header().Get("Location") != "/download" {
+		t.Fatalf("GET / = %d %v, want 302 to /download", rec.Code, rec.Header())
+	}
+	if rec := pageOf(t, h.Handler(), "/download"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Download Dilla") {
+		t.Fatalf("GET /download = %d %q", rec.Code, rec.Body.String())
 	}
 }

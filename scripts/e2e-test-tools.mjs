@@ -21,7 +21,7 @@ function context({ repoRoot = REPO_ROOT, env = process.env, platform = process.p
 function toolNames(platform) {
   const suffix = platform === 'win32' ? '.exe' : '';
   return { testhost: `dilla-testhost${suffix}`, testkit: `dilla-testkit${suffix}`,
-    ...(platform === 'linux' ? { bot: 'dillabot', botHelper: 'dilla-bot-core', gpuiPeer: 'dilla-gpui-peer' } : {}) };
+    ...(platform === 'linux' ? { bot: 'dillabot', botHelper: 'dilla-bot-core' } : {}) };
 }
 
 function regularFile(path) {
@@ -88,10 +88,6 @@ export function buildTestTools(root, options) {
     goBuild('bot', './cmd/dillabot', ['-tags', 'dilla_testhost']);
     // Keep separate invocations: testkit's dilla-core feature set must not leak into the production Bot helper.
     cargoBuild('botHelper', 'dilla-bot-core');
-    // The native GPUI client's interop peer (e2e/web/native-interop.spec.ts reads it through DILLA_GPUI_PEER): a release
-    // example build, built here once instead of by every shard of the client job.
-    run(c.env.CARGO ?? 'cargo', ['build', '-p', 'dilla-client', '--example', 'peer', '--release', '--locked']);
-    copyFileSync(join(resolve(c.repoRoot, c.env.CARGO_TARGET_DIR ?? 'target'), 'release', 'examples', 'peer'), join(root, names.gpuiPeer));
   }
   const files = Object.fromEntries(Object.values(names).map(name => {
     const bytes = regularFile(join(root, name));

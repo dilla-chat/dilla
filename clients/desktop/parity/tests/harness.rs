@@ -188,7 +188,7 @@ fn tolerance_file_ships_measured_linux_and_exact_placeholders() {
     assert_eq!(
         profile,
         Tolerance {
-            colour_max_pct: 0.92,
+            colour_max_pct: 0.91,
             ..mac
         }
     );

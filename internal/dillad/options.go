@@ -83,14 +83,13 @@ type Options struct {
 	// Channels is invariant 1's channel-mode source and the registration
 	// ACL; nil means api.StructureChannels over the repository (Plan 2 task 2).
 	Channels ds.Channels
-	// Web is the built browser client dillad serves at its own origin, verified against its
-	// dilla-manifest.json by web.New; nil means web.Embedded().
+	// Web is a test-only seam: a directory tree, verified against its dilla-manifest.json by
+	// web.New, served at the instance's own origin behind the download page (dilladtest's
+	// WebRoot, dilla-testhost's -web-root). `dillad serve` never sets it; nil serves no tree,
+	// and dillad serves no browser client (Task 12).
 	Web fs.FS
-	// DesktopDownloads opts into public download navigation after all desktop
-	// acceptance gates pass. False retains the original browser client/test host.
-	DesktopDownloads bool
-	// DesktopDownloadRoutes answers GET /download/{platform} when DesktopDownloads is on;
-	// nil means desktopdownload.New over the pinned GitHub Pages feed. Tests pass their own.
+	// DesktopDownloadRoutes answers GET /download/{platform}; nil means desktopdownload.New
+	// over the pinned GitHub Pages feed. Tests pass their own.
 	DesktopDownloadRoutes http.Handler
 	// DesktopDownloadChannel is the release line the default routes serve
 	// (`--desktop-downloads-channel`); the zero value is desktopdownload.Beta.

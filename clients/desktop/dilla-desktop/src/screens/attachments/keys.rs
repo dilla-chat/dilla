@@ -91,7 +91,7 @@ fn intercept(e: &KeystrokeEvent, window: &mut Window, cx: &mut App) {
             cx.stop_propagation();
         }
         Key::GifClose => {
-            ui::ui(cx).gif = None;
+            ui::close_gifs(cx);
             cx.refresh_windows();
             cx.stop_propagation();
         }

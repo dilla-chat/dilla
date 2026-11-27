@@ -527,13 +527,11 @@ jobs:
         if: always()
         run: sccache --show-stats
 
-  web-build:
+  core-harness:
     needs: [changes]
     if: needs.changes.outputs.e2e != 'false'
     runs-on: ubuntu-24.04
-    # Build the bundled UI once for the shared core integration, so every
-    # consumer tests the same bytes. The webdist test is web.New's manifest check over
-    # packages/web/dist, where the build left it: nothing is copied into internal/web/dist (ruling 38).
+    # Build the core-worker harness (the wasm core plus client-core's harness bundle) once for core-integration.
     timeout-minutes: 15
     # The wasm C build (sqlite-wasm-rs compiles SQLite3MC through cc) uses clang 23, the dev box's major:
     # the runner's own clang emits about 25 KB more wasm, so the D5 budget would not mean the same bytes here.
@@ -571,12 +569,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      - name: Download Go modules (retried only on known network errors)
-        run: node scripts/retry-on.mjs --pattern 'proxy\.golang\.org[^\n]*:\s(50[0-4]|429)\b|stream error|INTERNAL_ERROR|TLS handshake timeout|connection reset|i/o timeout' -- go mod download
       - run: bash scripts/install-ci-tool.sh wasm-bindgen
       - run: bash scripts/install-ci-tool.sh wasm-pack
       - run: bash scripts/install-ci-tool.sh binaryen
@@ -591,17 +583,7 @@ jobs:
       - run: npm run typecheck -w @dilla/client-core
       - run: npm run typecheck -w @dilla/web
       - run: npm run typecheck:e2e
-      - run: npm run build -w @dilla/web
-      - run: npm run test:noise-release
-      # The dist guard fails (never skips) on any data: URL in the built CSS or JS; it needs the build above.
-      - run: npm run -w @dilla/web test:dist
       - run: npm run build:harness -w @dilla/client-core
-      - run: go test -tags webdist ./internal/web/...
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist/
-          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dilla-core-harness
@@ -612,7 +594,7 @@ jobs:
         run: sccache --show-stats
 
   core-integration:
-    needs: [changes, rust-native, rust-wasi, web-build]
+    needs: [changes, rust-native, rust-wasi, core-harness]
     if: needs.changes.outputs.e2e != 'false'
     # Playwright's --with-deps has no package list for Ubuntu 26.04, which ubuntu-latest now resolves to.
     runs-on: ubuntu-24.04
@@ -643,12 +625,7 @@ jobs:
           name: dilla-testkit
           path: artifacts
       - run: chmod +x artifacts/dilla-testkit
-      - name: Fetch the web client built by the web-build job
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: dilla-web-dist
-          path: packages/web/dist
-      - name: Fetch the core-worker harness built by the web-build job
+      - name: Fetch the core-worker harness built by the core-harness job
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dilla-core-harness
@@ -688,7 +665,7 @@ jobs:
   # A DAG barrier prevents the watcher exiting between root jobs and later matrix/reusable
   # children. This does no build work and never depends on the watcher or final aggregator.
   desktop-work-complete:
-    needs: [changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, web-build, core-integration]
+    needs: [changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, core-harness, core-integration]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -697,7 +674,7 @@ jobs:
 
   # One check for the whole workflow: red on any failure/cancellation, green for success or intentional skips.
   desktop-ok:
-    needs: [ci-watchdog, desktop-work-complete, changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, web-build, core-integration]
+    needs: [ci-watchdog, desktop-work-complete, changes, node, ui, rust-wasm-node, rust-native, rust-wasi, browser-spike, browser-media, core-harness, core-integration]
     if: always()
     runs-on: ubuntu-latest
     steps:

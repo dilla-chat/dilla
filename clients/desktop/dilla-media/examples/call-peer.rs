@@ -339,7 +339,8 @@ async fn main() {
                             let x = (i * f.width / 8) + f.width / 16;
                             let y = 2.min(f.height.saturating_sub(1));
                             let at = ((y * f.width + x) * 4) as usize;
-                            let px = [f.rgba[at], f.rgba[at + 1], f.rgba[at + 2]];
+                            // BGRA rows: red is byte 2.
+                            let px = [f.bgra[at + 2], f.bgra[at + 1], f.bgra[at]];
                             let (bar, d) = dilla_media::capture_source::nearest_bar(px);
                             bar == i as usize && d < 150
                         });

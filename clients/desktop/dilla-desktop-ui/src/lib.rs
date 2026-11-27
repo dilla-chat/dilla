@@ -8,6 +8,7 @@ pub mod icon;
 pub mod icon_names;
 pub mod metrics;
 pub mod motion;
+pub mod picture;
 pub mod popover;
 pub mod roving;
 pub mod text;

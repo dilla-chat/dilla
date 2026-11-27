@@ -418,6 +418,26 @@ func (s *Session) finish(err error) {
 }
 func (s *Session) Done() <-chan struct{} { return s.done }
 func (s *Session) Wait() error           { <-s.done; s.mu.RLock(); defer s.mu.RUnlock(); return s.err }
+
+// InputDone closes when the encoder has read the track to its end while its queued tail still plays (the
+// supervisor's music.DrainingPlayback), or is nil when the encoder cannot tell its input end from its Done.
+func (s *Session) InputDone() <-chan struct{} {
+	if e, ok := s.encoder.(interface{ InputDone() <-chan struct{} }); ok {
+		return e.InputDone()
+	}
+	return nil
+}
+
+// InputErr waits for InputDone and returns the encoder's terminal error.
+func (s *Session) InputErr() error {
+	if e, ok := s.encoder.(interface{ InputErr() error }); ok {
+		return e.InputErr()
+	}
+	return s.Wait()
+}
+
+var _ music.DrainingPlayback = (*Session)(nil)
+
 func (s *Session) Close() error {
 	s.finish(context.Canceled)
 	<-s.done

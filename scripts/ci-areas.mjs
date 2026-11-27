@@ -54,7 +54,6 @@ export const PATH_RULES = [
   { areas: ['go'], patterns: ['packages/design-tokens/**'] },
   // internal/dillad/socket_routes_manifest_test.go holds the mux to the client's socket-route manifest.
   { areas: ['go'], patterns: ['packages/client-core/src/http/socket-routes.ts'] },
-  { areas: ['go'], patterns: ['packages/web/dist', 'packages/web/dist/**'] },
   // packages/client-core/src/profile-text.test.ts reads the RGI sequences the generator writes for the Go tests too.
   { areas: ['web'], patterns: ['internal/auth/testdata/rgi-zwj-sequences.txt'] },
   // packages/media/scripts/check-protocol-schema.mjs compares @livekit/protocol with this Go golden.
@@ -92,7 +91,6 @@ export const WORKFLOWS = {
  * - rust-native and rust-wasi run for any code: go-harness, go-native and the shared integration and desktop suites
  *   download the testkit binary, the native helper and the WASI core they build. rust-native's lint and test steps are
  *   gated on core at step level. Artifacts never cross workflows, so each workflow builds its own.
- * - go-release builds the embedded client; server's web-build exists to feed it, so it shares go-release's gate.
  */
 const RUST_ARTIFACTS = { 'rust-native': ['code'], 'rust-wasi': ['code'] };
 export const JOB_GATES = {
@@ -101,7 +99,6 @@ export const JOB_GATES = {
     'server-scripts': ['code'],
     ...RUST_ARTIFACTS,
     vectors: ['core'],
-    'web-build': ['go', 'web'],
     deny: ['core'],
     go: ['go'],
     'go-checks': ['go'],
@@ -114,7 +111,7 @@ export const JOB_GATES = {
     'go-vuln': ['go'],
     'go-sqlc': ['go'],
     'go-postgres': ['go'],
-    'go-release': ['go', 'web'],
+    'go-release': ['go'],
   },
   desktop: {
     node: ['code'],
@@ -124,7 +121,7 @@ export const JOB_GATES = {
     ...RUST_ARTIFACTS,
     'browser-spike': ['e2e'],
     'browser-media': ['e2e'],
-    'web-build': ['e2e'],
+    'core-harness': ['e2e'],
     'core-integration': ['e2e'],
   },
 };

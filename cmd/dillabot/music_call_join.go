@@ -16,6 +16,7 @@ import (
 	"github.com/dilla-chat/dilla/internal/bot/client"
 	"github.com/dilla-chat/dilla/internal/bot/helper"
 	"github.com/dilla-chat/dilla/internal/bot/music"
+	"github.com/dilla-chat/dilla/internal/bot/music/livekit"
 	"github.com/dilla-chat/dilla/internal/bot/native"
 	"github.com/dilla-chat/dilla/internal/cborx"
 	"github.com/dilla-chat/dilla/internal/id"
@@ -349,7 +350,7 @@ func musicCallGroupJoinAttempt(ctx context.Context, calls musicCallJoinReader, c
 				// The Bot is a member already, but members may have committed since: apply their commits first, so the
 				// media epoch is the call's current one (Bot v2 Task 19 fix round 1, C1).
 				if catchUp := musicCatchUpFrom(ctx); catchUp != nil {
-					if err = timing.run("callCatchUp", func() error { return catchUp(ctx, group) }); err != nil {
+					if err = timing.run("callCatchUp", func() error { return catchUp(livekit.WithStartCatchUp(ctx), group) }); err != nil {
 						return musicCallJoinStageError("catch_up", err)
 					}
 				}

@@ -85,6 +85,9 @@ pub struct PanelModel<'a> {
     /// Push to talk is the input mode (UserPanel.tsx `ptt`): the PTT tag on the mute button, and whether the key is held
     /// now (the avatar's speaking ring).
     pub ptt: Option<bool>,
+    /// This device is speaking now (`voice.speaking` holds it, Task 5): the avatar's speaking ring, as while push to talk
+    /// is held.
+    pub speaking: bool,
     /// Whether the status menu is open (the shell's, as the web keeps `menuOpen`).
     pub status_menu_open: bool,
 }
@@ -204,18 +207,23 @@ fn toggle(
         )
 }
 
+/// The avatar's speaking ring is lit: push to talk is held, or this device is speaking (Task 5).
+pub fn ring_lit(model: &PanelModel<'_>) -> bool {
+    model.ptt == Some(true) || model.speaking
+}
+
 /// The avatar and name block: the trigger's content.
 fn who(model: &PanelModel<'_>) -> impl IntoElement {
     let avatar = Avatar::new("user-panel-avatar", model.name.to_owned())
         .size(AvatarSize::Panel)
         .presence(dot_of(model.choice));
-    // Push to talk held: the speaking ring, 2px of the panel and 1.5px of `--ok`.
-    let held = model.ptt == Some(true);
+    // Push to talk held, or this device speaking: the speaking ring, 2px of the panel and 1.5px of `--ok`.
+    let lit = ring_lit(model);
     let inner = div()
         .flex_none()
         .rounded(radius::AVATAR)
         .border(Pixels::from(css::RING_GAP))
-        .border_color(if held {
+        .border_color(if lit {
             color::BG_2
         } else {
             gpui::transparent_black()
@@ -226,7 +234,7 @@ fn who(model: &PanelModel<'_>) -> impl IntoElement {
         .flex_none()
         .rounded(radius::AVATAR)
         .border(Pixels::from(css::RING))
-        .border_color(if held {
+        .border_color(if lit {
             color::OK
         } else {
             gpui::transparent_black()
@@ -394,6 +402,27 @@ pub fn status_error() -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 5: the avatar's ring lights while push to talk is held and while this device speaks, in either input mode.
+    #[test]
+    fn the_avatar_ring_lights_while_speaking_or_holding_push_to_talk() {
+        let model = |ptt, speaking| PanelModel {
+            name: "Ada",
+            choice: PresenceChoice::Online,
+            status_msg: "",
+            in_room: None,
+            muted: false,
+            deafened: false,
+            ptt,
+            speaking,
+            status_menu_open: false,
+        };
+        assert!(!ring_lit(&model(None, false)));
+        assert!(!ring_lit(&model(Some(false), false)));
+        assert!(ring_lit(&model(Some(true), false)));
+        assert!(ring_lit(&model(None, true)));
+        assert!(ring_lit(&model(Some(false), true)));
+    }
 
     #[test]
     fn the_line_is_the_room_then_the_custom_status_then_the_presence() {

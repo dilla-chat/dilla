@@ -105,7 +105,9 @@ func TestNewAcceptsATreeItsManifestDescribes(t *testing.T) {
 	newSite(t)
 }
 
-func TestBuildVersionEndpointTracksTheEntryAsset(t *testing.T) {
+// The entry script a served tree names is what the gateway's app_build frame reports for it; the browser client's
+// /app-version.json updater is gone (Task 12), so that path is a plain 404.
+func TestBuildEntryTracksTheEntryAsset(t *testing.T) {
 	files := maps.Clone(site)
 	files["index.html"] = `<!doctype html><script type="module" crossorigin src="/assets/app-1a2b.js"></script>`
 	fsys, _ := tree(t, files)
@@ -116,15 +118,8 @@ func TestBuildVersionEndpointTracksTheEntryAsset(t *testing.T) {
 	if h.BuildEntry() != "/assets/app-1a2b.js" {
 		t.Fatalf("served build=%q", h.BuildEntry())
 	}
-	got := do(t, h, http.MethodGet, "/app-version.json", nil)
-	if got.Code != http.StatusOK || got.Body.String() != `{"entry":"/assets/app-1a2b.js"}` {
-		t.Fatalf("version = %d %q", got.Code, got.Body.String())
-	}
-	if got.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("version cache = %q", got.Header().Get("Cache-Control"))
-	}
-	if got.Header().Get("Content-Type") != "application/json" {
-		t.Fatalf("version content type = %q", got.Header().Get("Content-Type"))
+	if got := do(t, h, http.MethodGet, "/app-version.json", nil); got.Code != http.StatusNotFound || got.Body.String() != notFound {
+		t.Fatalf("/app-version.json = %d %q, want a plain 404", got.Code, got.Body.String())
 	}
 }
 
@@ -220,7 +215,8 @@ func TestNewRefusesATreeItsManifestDoesNotDescribe(t *testing.T) {
 	}
 }
 
-// L-HTTP-10's five rules, in order, over the handler alone.
+// L-HTTP-10's five rules, in order, over the handler alone: the test-only seam a served tree (dilladtest WebRoot,
+// dilla-testhost -web-root) still runs, so the core harness keeps its own routes.
 func TestTheHandlerRoutesByItsFiveRules(t *testing.T) {
 	h, _ := newSite(t)
 	index := site["index.html"]
@@ -258,6 +254,8 @@ func TestTheHandlerRoutesByItsFiveRules(t *testing.T) {
 		{http.MethodGet, "/readyz", 404, notFound},
 		{http.MethodGet, "/metrics", 404, notFound},
 		{http.MethodGet, "/debug/sfu", 404, notFound},
+		{http.MethodGet, "/desktop-auth/x", 404, notFound},
+		{http.MethodGet, "/app-version.json", 404, notFound},
 		{http.MethodGet, "/a/../index.html", 404, notFound},
 		{http.MethodGet, "/assets/..%2findex.html", 404, notFound},
 		{http.MethodGet, "/a%00b", 404, notFound},
@@ -443,7 +441,7 @@ func TestFallbackLeavesEveryRouteOfTheMuxAlone(t *testing.T) {
 	mux.Handle("GET /healthz", teapot)
 	mux.Handle("/rtc", teapot)
 	mux.Handle("/rtc/", teapot)
-	f := h.Fallback(mux)
+	f := web.Fallback(mux, h)
 	mux.Handle("GET /v1/late", teapot) // registered after Fallback was built, as Options.Extra is
 	for _, c := range []struct {
 		method, target string
@@ -484,7 +482,7 @@ func TestFallbackLeavesEveryRouteOfTheMuxAlone(t *testing.T) {
 // /welcome/v1/instance; the client's index.html must not answer that with a 200.
 func TestFallbackRefusesDataPathsBelowTheRoot(t *testing.T) {
 	h, _ := newSite(t)
-	f := h.Fallback(server.NewMux())
+	f := web.Fallback(server.NewMux(), h)
 	want := httptest.NewRecorder()
 	server.WriteError(want, server.Errorf(server.CodeNotFound, "the instance address must not have a path"))
 	id := strings.Repeat("a", 32)
@@ -502,7 +500,7 @@ func TestFallbackRefusesDataPathsBelowTheRoot(t *testing.T) {
 	teapot := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	mux := server.NewMux()
 	mux.Handle("GET /v1/instance", teapot)
-	if rec := do(t, h.Fallback(mux), http.MethodGet, "/v1/instance", nil); rec.Code != 418 {
+	if rec := do(t, web.Fallback(mux, h), http.MethodGet, "/v1/instance", nil); rec.Code != 418 {
 		t.Errorf("GET /v1/instance = %d, want the API route", rec.Code)
 	}
 }

@@ -3,12 +3,10 @@
 The desktop client is the native Rust/GPUI program in `clients/desktop`. On Linux it is released as an **alpha**
 (`desktop-gpui-v0.2.0-alpha.N`): an AppImage, a tar.gz, a deb, an rpm and an AUR recipe, [installed by
 hand](#install-the-linux-alpha). From the first signed alpha on it checks for updates itself (the tray's "Check for
-updates"). On macOS and Windows it is built from source. Keep
-using the browser client for everyday use.
+updates"). On macOS and Windows it is built from source.
 
 **The Electron desktop app is discontinued.** Its last release is `desktop-v0.1.0-beta.5`. A copy you already
-installed keeps working against a compatible server, but it gets no further updates and no fixes. The browser
-web client is deprecated as well.
+installed keeps working against a compatible server, but it gets no further updates and no fixes.
 
 The desktop app needs a server at v0.1.0-signal1.5 or later. Passkey and identity-provider sign-in go through the
 server's `/desktop-auth` routes; an older instance cannot take them, and the app says the instance needs an update.
@@ -16,7 +14,7 @@ server's `/desktop-auth` routes; an older instance cannot take them, and the app
 ## The native client (GPUI)
 
 The native client is written in Rust with the GPUI toolkit (`clients/desktop`) and draws the Signal screens at pixel
-parity with the web client on Linux. On Linux you install an alpha release; on macOS and Windows you build it from
+parity with the Electron app on Linux. On Linux you install an alpha release; on macOS and Windows you build it from
 source. The list of what works, screen by screen, is in the
 [README](../../README.md#the-native-desktop-client-gpui).
 
@@ -50,7 +48,7 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 **Everyday use**
 
-- The app moves the way the browser did: new messages, menus, dialogs, toasts, badges, the speaking meter, the typing
+- The app moves the way the Electron app did: new messages, menus, dialogs, toasts, badges, the speaking meter, the typing
   indicator and the caret animate. Settings → Appearance → Motion and your system's reduced-motion setting turn it
   down. Toasts (for example "Files over 25 MB can’t be sent") now show.
 - Author names take the colour of their highest coloured role. Names sort by your system's language (the DM picker, the
@@ -77,10 +75,16 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 - A ban shows its details: who, when, why and for how long.
 - Server settings → Welcome messages sets the channel and text the Bot welcomes new members with.
-- Check boxes match the web's size, and the bio field in your profile can be dragged taller by its corner grip.
-- Compact message density applies to the whole app, as in the browser.
+- Check boxes keep the Electron app's size, and the bio field in your profile can be dragged taller by its corner grip.
+- Compact message density applies to the whole app.
+- GIFs animate in the picker, in messages and in the preview, and stay still under reduced motion. A GIF picked in the
+  picker is sent at once. Pictures and videos follow their rounded corners, and a click outside the picture closes the
+  image preview.
+- The member profile card closes on a click outside it or on Escape; **Message** and the compare (shield) button work.
+- Your own tile, sidebar entry and avatar ring light while you speak, only while your microphone is really sending (not
+  muted, deafened or paused, and not with push to talk up).
 
-**Desktop only.** Two things the browser does not have: a channel's menu also has **Mark as read** and **Copy link**, and a
+**Desktop only.** Two more things: a channel's menu also has **Mark as read** and **Copy link**, and a
 thread's pane has **Load earlier** for a long thread.
 
 ### Install the Linux alpha
@@ -186,13 +190,13 @@ own profile's app. The database keys stay in the operating system's keychain, na
 so the two profiles never share a key. A relative path is refused (the app says it cannot store anything); unset or
 empty, the usual data folder is used.
 
-The client keeps its data apart from the browser and from any installed Electron app. Like them, it is a **new device** on your
+The client keeps its data apart from any installed Electron app. Like it, it is a **new device** on your
 account: sign in, complete your second factor, then enrol it with your saved 52-character recovery key. Messages sent
 before it joined are not shown on it. Keep another signed-in device and the recovery key at hand.
 
 ### How it works
 
-- It is one native program: no embedded browser, no web worker, no bundled web client. The store, the keys (in the
+- It is one native program. The store, the keys (in the
   operating system's keychain) and the end-to-end encryption run in the same process.
 - One window and one client per instance. Opening an instance from "Dilla - your instances" closes that window (the
   instance's window replaces it); "Your instances…" in the tray or the app menu brings it back. Closing a window keeps its client running until you remove the instance or
@@ -202,13 +206,12 @@ before it joined are not shown on it. Keep another signed-in device and the reco
 - Quitting during a call, or with files waiting to be sent or text typed in the last moment, asks first ("Quit
   Dilla?"). Drafts are kept per channel across restarts. A microphone the operating system blocks joins calls
   listen-only, with a notice.
-- Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). Videos play in their card too, as in the
-  browser: WebM and MP4 with VP8, VP9, AV1 or H.264 (H.264 not on macOS yet), with play and pause, the timeline, volume
+- Inline audio plays in the app (MP3, AAC, Vorbis, Opus, FLAC, WAV). Videos play in their card too: WebM and MP4 with VP8, VP9, AV1 or H.264 (H.264 not on macOS yet), with play and pause, the timeline, volume
   and full screen (Escape leaves it). The ⋮ menu downloads the video, sets the playback speed (0.25× to 2×) and moves
   it to a small picture-in-picture window (back returns it to its card; close also pauses it). A video the app cannot decode (Ogg Theora, H.265, and H.264 on macOS) opens
   in your system's player instead; a copy handed to the player is deleted when the app starts and quits.
-- Message search runs on this device's own decrypted history, as in the browser.
-- The screens are drawn, not laid out by a browser, so the keyboard works through the app's own focus order
+- Message search runs on this device's own decrypted history.
+- The screens are drawn by the app itself, so the keyboard works through the app's own focus order
   (Tab and Shift+Tab) and its own shortcuts, below.
 
 ### Logs
@@ -232,7 +235,7 @@ passwords or recovery codes, so you can attach it to a bug report.
 ### Keyboard shortcuts
 
 The Windows and Linux keys use Control; on macOS a chord takes ⌘ where the table says so (Control+End and
-Control+/ stay Control there, as in the browser).
+Control+/ stay Control there).
 
 | Windows and Linux | macOS | What it does |
 |---|---|---|
@@ -253,8 +256,7 @@ Control+/ stay Control there, as in the browser).
 | Enter, Escape on an incoming ring | the same | Answers, declines |
 | Arrow Up, Arrow Down, Tab, Enter, Escape in the `/` list | the same | Chooses, completes, runs, closes |
 
-Settings → Keyboard lists seven of these, as the web does. A direct message's header has no call button, as on the
-web: right-click the direct message in the list for its menu, which starts (or joins) its call and opens its pinned
+Settings → Keyboard lists seven of these. A direct message's header has no call button: right-click the direct message in the list for its menu, which starts (or joins) its call and opens its pinned
 messages.
 
 ### Platform notes
@@ -319,61 +321,31 @@ what the client still does not do.
   (shown while it has the focus) and press it; the key is read once, in groups of four.
 - **Push to talk outside the window:** the key works only while the app has focus. Operating-system-wide push to talk
   comes after the switch.
-- **Video playback speed:** a speed other than Normal changes the pitch of the sound (the browser kept it).
+- **Video playback speed:** a speed other than Normal changes the pitch of the sound.
 - **Picture in picture on Wayland:** the window opens, but the compositor decides whether it stays above the others
-  (as for the browser); on X11 it stays on top but cannot be dragged.
+  (as for any window); on X11 it stays on top but cannot be dragged.
 
-## Browser migration preparation (disabled)
+## Enrolling the desktop app on an existing account
 
-The server has an explicit `dillad serve` flag, `--desktop-downloads`, which defaults
-to **false**. Leave it off until a native desktop build is released: the download page
-links to the fixed `desktop-beta` release aliases, which are the discontinued Electron builds.
-The ordinary server and E2E test host still serve the original browser client.
-This preparation does not retire browser access or publish a desktop release.
+For an existing account the desktop app is a **new device**. Sign in through the configured account flow, complete any
+required second factor, then use the **saved 52-character recovery key** to enrol it. A password alone cannot unlock the
+account's keys on a fresh device. Backup codes replace a second factor; they are not the recovery key. This is the
+ordinary recovery-key enrolment, not device linking or key export.
 
-When selected after acceptance, normal browser navigation and `/download` serve a
-static Signal download page. Linux x64 AppImage, Windows x64 installer and macOS
-Apple Silicon DMG link to the fixed public GitHub `desktop-beta` aliases.
-Downloads start only when a person follows a link. There is no instance-defined
-download host, update feed or executable remote UI. The existing API, gateway,
-RTC, invite content negotiation and browser sign-in handoff retain their routes.
+Messages sent before a new device joins are not shown on it. Keep an already signed-in device until you have confirmed
+that the desktop account, its identity and its conversations are there, and do not sign out, revoke or forget that
+device while it is needed. If the saved recovery key is unavailable, keep the working device and do not remove it.
 
-For an existing account, desktop is a **new device**. Sign in through the configured
-account flow, complete any required second factor, then use the **saved
-52-character recovery key** to enrol it. Password authentication alone cannot
-unlock the account's keys on a fresh desktop device. Backup codes replace a second
-factor; they are not the recovery key. This uses existing recovery-key enrolment,
-not device linking, key export or a transfer of browser storage.
-
-Messages sent before a new device joins are not shown on it. Keep the existing
-browser device until you have confirmed the desktop account, identity and the
-conversations available there. Keep the browser for older conversations you still
-need. Do not sign out, revoke or forget that browser device, or clear its site data,
-while it is needed. A reload retains the existing IndexedDB/OPFS locations.
-
-If the saved recovery key is unavailable, **keep the working browser device**.
-The download page's **Open existing browser device for migration** link goes to
-`/browser-migration`, sets a one-hour Secure, HttpOnly, SameSite=Lax UI preference
-cookie and redirects to `/` on the same origin. The complete original trusted
-client and its assets remain available at their original URLs, so existing device
-storage is reachable. The cookie contains only a UI selection; it confers no
-session, account or device authority. The page never reads or erases browser
-storage, and cannot reveal or export a lost recovery key. Browser chat compatibility
-is not a supported product surface after the eventual switch; this is retained
-migration access, renewable through the explicit entry while needed.
-
-`/download` always displays downloads, including during migration.
-`/browser-migration/exit` clears only that UI preference and redirects to
-`/download`; expiry or exit does not revoke the browser device or clear its data.
-The existing `dilla://invite/<HTTPS host[:port]>/<code>` grammar is reused for
-**Open Dilla desktop** on public invites when downloads are selected. It carries
-no credentials. Path-scoped instances still require connecting to their complete
-HTTPS instance URL and pasting the displayed code; no new deep-link format is added.
+The server has an explicit `dillad serve` flag, `--desktop-downloads`, which defaults to **false**. When it is on, the
+instance's `/download` page offers the desktop app, and **Open Dilla desktop** on a public invite uses the
+`dilla://invite/<HTTPS host[:port]>/<code>` link, which carries no credentials. Path-scoped instances still need the
+complete HTTPS instance URL and the displayed code pasted in. Leave the flag off until a native desktop build is
+released: the download page links to the fixed `desktop-beta` release aliases, which are the discontinued Electron builds.
 
 ## Electron app (discontinued)
 
 The Electron client was a bundled copy of the React client with a local shell. Its last release is
 [`desktop-v0.1.0-beta.5`](https://github.com/dilla-chat/dilla/releases/tag/desktop-v0.1.0-beta.5); its source is at that
 tag under `packages/desktop`. It is no longer built, tested or released from this repository, and installed copies
-get no further updates. If you still run it, move to the browser client or a native build, and
+get no further updates. If you still run it, move to the native client, and
 enrol the new device with your recovery key as described above.

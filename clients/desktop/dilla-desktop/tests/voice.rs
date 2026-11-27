@@ -128,23 +128,23 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
     cx.run_until_parked();
 }
 
-/// A synthetic sent frame (never a screen's content): its left half one colour, its right half another, so a mirrored
-/// image reads the right half first.
+/// A synthetic sent frame (never a screen's content), BGRA as dilla-media makes it: its left half red, its right half
+/// blue, so a mirrored image reads the right half first.
 fn sent_frame(w: u32, h: u32, frames: u64) -> dilla_media::RemoteFrame {
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    let mut bgra = Vec::with_capacity((w * h * 4) as usize);
     for _ in 0..h {
         for x in 0..w {
-            rgba.extend_from_slice(if x < w / 2 {
-                &[250, 10, 10, 255]
-            } else {
+            bgra.extend_from_slice(if x < w / 2 {
                 &[10, 10, 250, 255]
+            } else {
+                &[250, 10, 10, 255]
             });
         }
     }
     dilla_media::RemoteFrame {
         width: w,
         height: h,
-        rgba: Arc::new(rgba),
+        bgra: Arc::new(bgra),
         frames,
         stream_height: h,
     }
@@ -502,6 +502,95 @@ fn profile_opens_the_card_under_the_tile(cx: &mut TestAppContext) {
     );
 }
 
+/// Final review R4a (MemberCardHost.tsx `onAction`): the stage's profile card closes when its Message or Compare is
+/// chosen, as every action closes it, and the DM opens.
+#[gpui::test]
+fn the_stage_s_profile_card_closes_on_message_and_compare(cx: &mut TestAppContext) {
+    use dilla_client::state::dms::{DM_KIND_PAIR, DmState, DmSummary};
+    use dilla_desktop::screens::dms::{self, Nav};
+    const DM: ChannelId = ChannelId([5; 16]);
+    let mut s = (*state(3)).clone();
+    s.communities.push(dilla_client::state::Community {
+        id: COMMUNITY,
+        name: "Midgard".into(),
+        owner: UserId([0; 16]),
+        policy_version: 0,
+    });
+    s.dms = DmState {
+        list: Some(vec![DmSummary {
+            id: DM,
+            kind: DM_KIND_PAIR,
+            members: vec![UserId([0; 16]), UserId([1; 16])],
+            name: "person1".into(),
+            group: ChannelGroupState::Unsupported,
+        }]),
+    };
+    let s = Arc::new(s);
+    let cx = host(cx, s.clone());
+    let went: Rc<std::cell::RefCell<Vec<Nav>>> = Rc::default();
+    let log = went.clone();
+    cx.update(|window, cx| {
+        let w = voice::wid(window);
+        dilla_desktop::screens::members::sync(
+            w,
+            &dilla_desktop::slots::SlotCx {
+                state: s.clone(),
+                community: Some(COMMUNITY),
+                ..Default::default()
+            },
+            cx,
+        );
+        dms::set_navigator(w, Rc::new(move |nav, _, _| log.borrow_mut().push(nav)), cx);
+    });
+    let open_card = |cx: &mut VisualTestContext| {
+        let tiles = area(cx, |ui| voice::tiles(&ui.state, VOICE));
+        let person1 = tiles
+            .iter()
+            .find(|k| !k.screen && k.device == DeviceId([101; 16]))
+            .cloned()
+            .expect("person 1's tile");
+        let tile = area(cx, |ui| ui.menu.bounds.borrow().get(&person1).copied()).unwrap();
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Right,
+            position: tile.center(),
+            modifiers: gpui::Modifiers::none(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.run_until_parked();
+        let item = cx
+            .debug_bounds("menu-item-profile")
+            .expect("Profile")
+            .center();
+        cx.simulate_click(item, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("voice-profile-card").is_some(), "the card");
+    };
+    open_card(cx);
+    let message = cx
+        .debug_bounds("profile-action-message")
+        .expect("Message")
+        .center();
+    cx.simulate_click(message, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("voice-profile-card").is_none(),
+        "Message closes the card"
+    );
+    assert_eq!(*went.borrow(), vec![Nav::Dm(DM)]);
+    open_card(cx);
+    let compare = cx
+        .debug_bounds("profile-action-compare")
+        .expect("Compare")
+        .center();
+    cx.simulate_click(compare, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("voice-profile-card").is_none(),
+        "Compare closes the card"
+    );
+}
+
 /// Package 8c (VoiceChannelRow.tsx): a bot in a voice channel's row says "playback only" after its name; a person does not.
 #[gpui::test]
 fn a_bot_s_voice_row_says_playback_only(cx: &mut TestAppContext) {
@@ -542,6 +631,7 @@ fn the_user_panel_tags_push_to_talk(cx: &mut TestAppContext) {
                     muted: false,
                     deafened: false,
                     ptt: self.0,
+                    speaking: false,
                 },
                 &handlers,
             ))
@@ -601,6 +691,7 @@ fn the_user_panel_opens_the_status_menu_and_picks_a_status(cx: &mut TestAppConte
                         muted: false,
                         deafened: false,
                         ptt: None,
+                        speaking: false,
                     },
                     &handlers,
                 ))
@@ -3325,4 +3416,95 @@ fn native_voice_tile_states() {
 )]
 fn parity_music_stage_bar() {
     shoot_fixture("music-stage-bar", "music-stage-bar", &[]);
+}
+
+/// Task 10 (Jonas, 2026-11-26: two people talking in a voice channel were both moved to AFK): the window's call reports
+/// activity (`POST …/afk/activity`), so a device in a call with input is not moved. The community's AFK timeout is 60 s;
+/// alice joins, her window reads the AFK snapshot, and 45 s (the host's clock) later her window has input: 90 s after the
+/// join, 45 s after that input, she is still in the call. Then, with only hidden input, 75 s past the last report, the
+/// sweep moves her (the host's clock and sweep are live).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn input_in_a_call_keeps_it_from_the_afk_move(cx: &mut TestAppContext) {
+    let tag = "t-afk-activity";
+    let media = media_slot();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (host, alice, community, voice) = rt.block_on(async {
+        let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
+            .await
+            .unwrap();
+        let invite = host.invites.last().unwrap().clone();
+        let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
+        let (host, alice, c, v) = tokio::task::spawn_blocking(move || {
+            let (c, v) = call_world::voice_community(&host, &alice, &[]);
+            call_world::clear_session(&alice);
+            (host, alice, CommunityId(c), ChannelId(v))
+        })
+        .await
+        .unwrap();
+        let a = call_world::start(&alice).await;
+        call_world::connected(&a).await;
+        a.voice().start();
+        until(&a, "the voice channel is listed", |s| {
+            s.channel(v).is_some()
+        })
+        .await;
+        a.server_admin()
+            .set_afk(c, 60)
+            .wait()
+            .await
+            .expect("the AFK timeout is 60 s");
+        (host, Rc::new(a), c, v)
+    });
+    cx.update(dilla_desktop::install);
+    let win = window_for(cx, &alice);
+    let wa = win.window_id();
+    cx.update(|cx| voice::join(voice, wa, cx));
+    cx.run_until_parked();
+    rt.block_on(until(&alice, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    }));
+    // The shell syncs every new state: the window reads the community's AFK snapshot, then reports the join.
+    let resync = |cx: &mut TestAppContext| {
+        let s = alice.state().borrow().clone();
+        cx.update(|cx| voice::sync(wa, s, Some(&alice), cx));
+    };
+    resync(cx);
+    rt.block_on(until(&alice, "the AFK snapshot is read", |s| {
+        s.ring
+            .afk
+            .get(&community)
+            .is_some_and(|a| a.channel.is_some())
+    }));
+    resync(cx);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    call_world::advance_clock(&host.control, 45, false);
+    // The report throttle is 5 s of real time.
+    std::thread::sleep(std::time::Duration::from_millis(5_200));
+    cx.update(|cx| voice::afk_input(wa, true, cx));
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    call_world::advance_clock(&host.control, 45, false);
+    // A few of the host's sweep ticks.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(
+        phase_of(&alice),
+        CallPhase::In,
+        "90 s after the join and 45 s after input, alice is still in the call"
+    );
+    // Input while the window is hidden does not count: 75 s after the last report the sweep moves her.
+    std::thread::sleep(std::time::Duration::from_millis(5_200));
+    cx.update(|cx| voice::afk_input(wa, false, cx));
+    call_world::advance_clock(&host.control, 30, false);
+    rt.block_on(until(
+        &alice,
+        "the sweep moves alice out of the call",
+        |s| s.voice.call.phase == CallPhase::Idle,
+    ));
+    drop((win, alice, host, rt));
+    // The process's call media slot goes last.
+    drop(media);
 }

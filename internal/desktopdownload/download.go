@@ -378,9 +378,3 @@ func unavailable(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_, _ = io.Copy(w, bytes.NewReader(unavailablePage))
 }
-
-// NotFound answers /download/{platform} on an instance without --desktop-downloads,
-// so the browser client's navigation fallback never serves it.
-func NotFound() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
-}

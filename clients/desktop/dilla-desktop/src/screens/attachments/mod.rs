@@ -140,6 +140,26 @@ fn with_state(element: AnyElement, width: f32, height: f32, state: Option<(Strin
     }
 }
 
+/// Measures, as the GIF card `key` paints, whether at least half of it is visible in its scroll viewport (the content
+/// mask it paints under: the timeline's list and the window), as the web's IntersectionObserver at 0.5 did; a change
+/// asks for one more frame, which plays or stills the GIF.
+fn gif_visibility(key: CardKey) -> gpui::Canvas<()> {
+    gpui::canvas(
+        move |bounds, window, cx| {
+            let seen = bounds.intersect(&window.content_mask().bounds);
+            let area =
+                |b: gpui::Bounds<gpui::Pixels>| f32::from(b.size.width) * f32::from(b.size.height);
+            let half = area(bounds) > 0.0 && 2.0 * area(seen) >= area(bounds);
+            if ui::set_gif_visible(key, half, cx) {
+                window.request_animation_frame();
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+}
+
 /// A message's attachment cards and image grid (`slots::message_extras`, after the reply chip).
 pub fn attachment_cards(
     item: &TimelineItem,
@@ -216,16 +236,21 @@ pub fn attachment_cards(
             }
             AttachmentKind::Image => {
                 let gif = a.mime == "image/gif";
-                // A GIF plays in its card up to 8 MB (the whole file, GPUI animates it); else and until then, the still.
-                let full = key
-                    .filter(|_| gif && a.size <= GIF_AUTOPLAY_MAX && live)
-                    .map(|k| ImageKey {
-                        client: owner,
-                        channel,
-                        seq: k.seq,
-                        index: k.index,
-                        thumb: false,
-                    });
+                // Attachments.tsx's autoplay rules: a GIF plays in its card (the whole file, GPUI animates it) only up to
+                // 8 MB, never under reduced motion, while at least half of it is visible (measured as it paints, below)
+                // and for five minutes from its first play; else, and until then, the still.
+                let playable = gif && a.size <= GIF_AUTOPLAY_MAX && live && !cx.reduce_motion();
+                let now = std::time::Instant::now();
+                let plays = key
+                    .filter(|_| playable)
+                    .filter(|k| ui::ui(cx).gif_plays.get(k).is_some_and(|p| p.may_play(now)));
+                let full = plays.map(|k| ImageKey {
+                    client: owner,
+                    channel,
+                    seq: k.seq,
+                    index: k.index,
+                    thumb: false,
+                });
                 let thumb_key = key.map(|k| ImageKey {
                     client: owner,
                     channel,
@@ -245,6 +270,9 @@ pub fn attachment_cards(
                     _ => None,
                 };
                 let moving = ready(full, cx);
+                if let (Some(k), Some(_)) = (plays, &moving) {
+                    ui::gif_played(k, now, cx);
+                }
                 let fixture = (!live)
                     .then(|| {
                         ctx.state
@@ -304,9 +332,11 @@ pub fn attachment_cards(
                         shown.as_ref().and_then(|i| ui::dimensions(i)),
                         shown,
                         badge,
+                        moving.is_some(),
                         open.map(|o| (tf("shell.attachment.open", &[("name", &name)]).into(), o)),
                     ))
                     .child(probe)
+                    .children(key.filter(|_| playable).map(gif_visibility))
                     .into_any_element();
                 cards.push(with_state(el, w, tile_height(w), state_text));
             }
@@ -457,10 +487,14 @@ pub fn raises_over_cap_toast(sizes: &[u64], in_tray: usize) -> bool {
     sizes.iter().any(|&s| over_the_cap(s)) && in_tray + sizes.len() <= MAX_ATTACHMENTS
 }
 
-/// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar).
+/// The attachment tray over the composer's box (`slots::composer_tray`, after the reply bar), under the "Sending GIF…"
+/// line while a picked GIF of this client goes to this channel ([`gif_status`]).
 pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyElement> {
     let channel = ctx.channel?;
     let client = ctx.client.clone();
+    let sending = client
+        .as_deref()
+        .is_some_and(|c| ui::gif_sending(c, channel, cx));
     let items = ctx.state.attachments.tray(channel).to_vec();
     let entries = items
         .into_iter()
@@ -506,7 +540,35 @@ pub fn tray(ctx: &SlotCx, _window: &mut Window, cx: &mut App) -> Option<AnyEleme
             }
         })
         .collect();
-    tray_view::tray(entries, cx)
+    let tray = tray_view::tray(entries, cx);
+    if !sending {
+        return tray;
+    }
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .child(gif_status())
+            .children(tray)
+            .into_any_element(),
+    )
+}
+
+/// Jonas 2026-11-26 ("Show sending GIF"): the small line over the composer while a picked GIF is sealed and uploaded
+/// (`gif.sending`). It is read out politely once, as it starts ([`ui::send_gif`]); it never blocks typing or sending.
+fn gif_status() -> AnyElement {
+    let h = dilla_desktop_ui::text::root_line_height(text::SM).max(20.0);
+    div()
+        .id("composer-gif-sending")
+        .debug_selector(|| "composer-gif-sending".to_owned())
+        .pb(px(tray_view::GAP))
+        .child(dilla_desktop_ui::text::line(
+            t("gif.sending"),
+            text::SM,
+            h,
+            color::FG_2,
+        ))
+        .into_any_element()
 }
 
 /// A 26x24 tool of the composer's foot (`.d-composer__tool`).
@@ -1013,10 +1075,13 @@ fn gif_overlay(here: gpui::WindowId, window: &mut Window, cx: &mut App) -> Optio
         if !query.is_empty() {
             input.update(cx, |s, cx| s.set_value(query, window, cx));
         }
+        // The focus the picker took it from (the message box): a pick gives it back.
+        let back = window.focused(cx);
         let focus = input.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         if let Some(g) = ui::ui(cx).gif.as_mut() {
             g.search = Some(input);
+            g.return_focus = back;
         }
     }
     let input = ui::ui(cx).gif.as_ref()?.search.clone()?;

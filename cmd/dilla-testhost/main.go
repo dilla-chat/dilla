@@ -86,7 +86,7 @@ func parseFlags(args []string) (options, error) {
 		"SP-27 only: render advertise_internal_ip: false (Firefox then cannot pair with the loopback node_ip)")
 	sfuAV1 := fs.Bool("sfu-av1", false, "browser test only: enable AV1 in the real SFU")
 	sfuDeparture := fs.Uint("sfu-departure-timeout", 0, "the in-process LiveKit's room departure_timeout in seconds (0: the instance default, 20)")
-	webRoot := fs.String("web-root", "", "a built web client directory (with its dilla-manifest.json) served at the public listener's origin instead of the embedded placeholder")
+	webRoot := fs.String("web-root", "", "a directory tree (with its dilla-manifest.json) served at the public listener's origin behind the download page (test-only: the core harness, the GPUI parity strings)")
 	productionACL := fs.Bool("production-acl", false, "build the instance with production's ACL and channel seams (api.ResolverACL, api.StructureChannels) instead of the scenario harness's")
 	webauthnOrigin := fs.String("webauthn-origin", "", "the origin a browser reaches this host from (for example http://localhost:9999): passkeys bind to its hostname and rp_origins is exactly it (empty: the instance domain's own relying party)")
 	botRuntimeSecret := fs.String("bot-runtime-secret", "", "test only: create an operator runtime credential at this owner-only path")

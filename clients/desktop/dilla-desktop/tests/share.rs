@@ -158,28 +158,45 @@ struct World {
     alice: Rc<dilla_client::Client>,
     bob: Rc<dilla_client::Client>,
     voice: ChannelId,
+    /// A second voice channel of the community (only [`world_with_two`]'s): where a move goes.
+    upstairs: Option<ChannelId>,
     _slot: MediaSlot,
 }
 
 fn world(tag: &'static str) -> World {
+    world_of(tag, false)
+}
+
+/// [`world`] with a second voice channel ([`World::upstairs`]).
+fn world_with_two(tag: &'static str) -> World {
+    world_of(tag, true)
+}
+
+fn world_of(tag: &'static str, two: bool) -> World {
     let slot = media_slot();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .unwrap();
-    let (host, alice, bob, voice) = rt.block_on(async {
+    let (host, alice, bob, voice, upstairs) = rt.block_on(async {
         let host = tokio::task::spawn_blocking(move || call_world::start_host_reachable(tag))
             .await
             .unwrap();
         let invite = host.invites.last().unwrap().clone();
         let alice = call_world::sign_up(&host, &invite, "alice", tag).await;
         let bob = call_world::sign_up(&host, &invite, "bob", tag).await;
-        let (host, alice, bob, voice) = tokio::task::spawn_blocking(move || {
-            let (_, v) = call_world::voice_community(&host, &alice, &[&bob]);
+        let (host, alice, bob, voice, upstairs) = tokio::task::spawn_blocking(move || {
+            let (c, v) = call_world::voice_community(&host, &alice, &[&bob]);
+            let upstairs = two.then(|| {
+                let (u, _, _) = call_world::ds_of(&host, &alice)
+                    .create_channel(&c, 1, "upstairs")
+                    .unwrap();
+                ChannelId(u)
+            });
             call_world::clear_session(&alice);
             call_world::clear_session(&bob);
-            (host, alice, bob, ChannelId(v))
+            (host, alice, bob, ChannelId(v), upstairs)
         })
         .await
         .unwrap();
@@ -190,12 +207,12 @@ fn world(tag: &'static str) -> World {
         call_world::connected(&b).await;
         b.voice().start();
         for c in [&a, &b] {
-            until(c, "the voice channel is listed", |s| {
-                s.channel(voice).is_some()
+            until(c, "the voice channels are listed", |s| {
+                s.channel(voice).is_some() && upstairs.is_none_or(|u| s.channel(u).is_some())
             })
             .await;
         }
-        (host, a, b, voice)
+        (host, a, b, voice, upstairs)
     });
     World {
         rt,
@@ -203,6 +220,7 @@ fn world(tag: &'static str) -> World {
         alice: Rc::new(alice),
         bob: Rc::new(bob),
         voice,
+        upstairs,
         _slot: slot,
     }
 }
@@ -302,6 +320,206 @@ fn alice_shares(cx: &mut TestAppContext, w: &World, rec: &Recorder) -> gpui::Win
     a
 }
 
+/// Holds (or lets go) the window's media session before it takes up a call's media link (`voice::hold_media_pickup`).
+fn hold_pickup(cx: &mut TestAppContext, w: gpui::WindowId, hold: bool) {
+    assert!(
+        cx.update(|cx: &mut App| voice::session_of(w, cx)).is_some(),
+        "the window has a media session"
+    );
+    cx.update(|cx| voice::hold_media_pickup(w, hold, cx));
+}
+
+/// Presses Share in `a` and picks the first screen in its picker; answers once the pick was made.
+fn press_and_pick(cx: &mut TestAppContext, a: &gpui::WindowHandle<Host>) {
+    let wa = a.window_id();
+    press_share(cx, a);
+    wait_listed(cx, wa);
+    assert!(cx.update(|cx| share_picker::share(wa, &"screen:1".into(), cx)));
+    cx.run_until_parked();
+}
+
+/// Runs the UI (its clock following real time: a join from the UI waits on its timers) and keeps `window` on alice's
+/// newest state until `pred` holds on it.
+fn pump(
+    cx: &mut TestAppContext,
+    w: &World,
+    window: gpui::WindowId,
+    what: &str,
+    pred: impl Fn(&AppState) -> bool,
+) -> Arc<AppState> {
+    let deadline = Instant::now() + CALL_WAIT;
+    let mut moved = Instant::now();
+    loop {
+        let s = w.alice.state().borrow().clone();
+        if pred(&s) {
+            resync(cx, window, &w.alice);
+            return s;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: never; voice {:?}",
+            s.voice
+        );
+        resync(cx, window, &w.alice);
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(30));
+        cx.executor().advance_clock(moved.elapsed());
+        moved = Instant::now();
+    }
+}
+
+/// Share-drop flake (2026-11-26): the client reports the call `In` before the window's media session has taken up the
+/// call's media link. A share pressed and picked in that gap is kept for the call and starts once the media is up (it
+/// was dropped without a word, and the share never came on).
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_share_pressed_before_the_media_takes_the_call_still_starts(cx: &mut TestAppContext) {
+    let w = world("t-share-held");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    hold_pickup(cx, wa, true);
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    pump(cx, &w, wa, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    });
+    press_and_pick(cx, &a);
+    assert!(
+        w.alice.state().borrow().voice.call.ping_ms.is_none(),
+        "the press came before the media took the call"
+    );
+    hold_pickup(cx, wa, false);
+    w.rt.block_on(until(&w.alice, "alice's share is on", |s| {
+        s.voice.share.screen
+    }));
+    wait(cx, "the capture runs", || rec.alive() == 1);
+    assert_eq!(rec.opened(), 1);
+}
+
+/// As above, after a move: alice moves to another voice channel and her session takes up the new call only after a
+/// while (as when the old room's close holds it). A share pressed in the new call meanwhile starts there.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_share_pressed_while_a_move_closes_the_old_room_starts_in_the_new_call(
+    cx: &mut TestAppContext,
+) {
+    let w = world_with_two("t-share-move");
+    let upstairs = w.upstairs.expect("a second voice channel");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    let s = pump(cx, &w, wa, "alice's media is up in the first call", |s| {
+        s.voice.call.phase == CallPhase::In
+            && s.voice.call.channel == Some(w.voice)
+            && s.voice.call.ping_ms.is_some()
+    });
+    let first = s.voice.call.call_id;
+    hold_pickup(cx, wa, true);
+    cx.update(|cx| voice::join(upstairs, wa, cx));
+    let s = pump(cx, &w, wa, "alice is in the second call", |s| {
+        s.voice.call.phase == CallPhase::In && s.voice.call.channel == Some(upstairs)
+    });
+    assert_ne!(s.voice.call.call_id, first, "a new call");
+    press_and_pick(cx, &a);
+    hold_pickup(cx, wa, false);
+    w.rt.block_on(until(
+        &w.alice,
+        "alice's share is on in the second call",
+        |s| s.voice.share.screen && s.voice.call.channel == Some(upstairs),
+    ));
+    wait(cx, "the capture runs", || rec.alive() == 1);
+    assert_eq!(rec.opened(), 1);
+}
+
+/// The other side of the same rule: a share pressed for one call never carries into the next. Alice presses and picks
+/// while her session has not taken up the call, then leaves and joins another voice channel (a new call id: a rejoin of
+/// the same channel within seconds is the same call, whose room has not finished): nothing opens there.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_press_for_an_earlier_call_does_not_carry_over(cx: &mut TestAppContext) {
+    let w = world_with_two("t-share-earlier");
+    let upstairs = w.upstairs.expect("a second voice channel");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    hold_pickup(cx, wa, true);
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    let s = pump(cx, &w, wa, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    });
+    let first = s.voice.call.call_id;
+    press_and_pick(cx, &a);
+    cx.update(|cx| voice::leave(wa, cx));
+    pump(cx, &w, wa, "alice left the call", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    });
+    cx.update(|cx| voice::join(upstairs, wa, cx));
+    let s = pump(cx, &w, wa, "alice is in the other channel's call", |s| {
+        s.voice.call.phase == CallPhase::In && s.voice.call.channel == Some(upstairs)
+    });
+    assert!(s.voice.call.call_id.is_some() && s.voice.call.call_id != first);
+    hold_pickup(cx, wa, false);
+    w.rt.block_on(until(&w.alice, "the new call's media is up", |s| {
+        s.voice.call.ping_ms.is_some()
+    }));
+    for _ in 0..20 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(rec.opened(), 0, "the earlier call's press opened nothing");
+    assert!(
+        !w.alice.state().borrow().voice.share.screen,
+        "nothing is shared"
+    );
+}
+
+/// Security review S2: the person's leave cancels a share pressed in the call that the media session has not run yet,
+/// even when the rejoin of the same channel is the same call (its room has not finished): nothing opens there.
+#[gpui::test]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core (the desktop-gpui CI job runs it with --ignored on Linux)"]
+fn a_leave_cancels_a_press_the_media_has_not_run(cx: &mut TestAppContext) {
+    let w = world("t-share-leave");
+    cx.update(dilla_desktop::install);
+    let rec = Arc::new(Recorder::default());
+    rec.install(cx);
+    let a = window_for(cx, &w.alice);
+    let wa = a.window_id();
+    hold_pickup(cx, wa, true);
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    pump(cx, &w, wa, "alice is in the call", |s| {
+        s.voice.call.phase == CallPhase::In
+    });
+    press_and_pick(cx, &a);
+    cx.update(|cx| voice::leave(wa, cx));
+    pump(cx, &w, wa, "alice left the call", |s| {
+        s.voice.call.phase == CallPhase::Idle
+    });
+    cx.update(|cx| voice::join(w.voice, wa, cx));
+    pump(cx, &w, wa, "alice is in the channel's call again", |s| {
+        s.voice.call.phase == CallPhase::In && s.voice.call.channel == Some(w.voice)
+    });
+    hold_pickup(cx, wa, false);
+    w.rt.block_on(until(&w.alice, "the rejoined call's media is up", |s| {
+        s.voice.call.ping_ms.is_some()
+    }));
+    for _ in 0..20 {
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(rec.opened(), 0, "the left call's press opened nothing");
+    assert!(
+        !w.alice.state().borrow().voice.share.screen,
+        "nothing is shared"
+    );
+}
+
 /// screen-capture.spec.ts "owner navigation releases its native broker": closing the window whose call shares the
 /// screen stops the capture at once (its media session goes, and with it the share's source).
 #[gpui::test]
@@ -359,10 +577,22 @@ fn another_instance_cannot_stop_or_reconfigure_a_capture(cx: &mut TestAppContext
     let session_b = cx
         .update(|cx: &mut App| voice::session_of(wb, cx))
         .expect("bob's session");
-    session_b.quality(ShareOptions {
-        resolution: ShareResolution::P720,
-        fps: 15,
-    });
+    // Bob's request even names alice's call: it still reaches only his own session.
+    let alices_call = w
+        .alice
+        .state()
+        .borrow()
+        .voice
+        .call
+        .call_id
+        .expect("alice's call id");
+    session_b.quality(
+        ShareOptions {
+            resolution: ShareResolution::P720,
+            fps: 15,
+        },
+        alices_call,
+    );
     for _ in 0..20 {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(50));
@@ -436,7 +666,7 @@ fn the_own_share_s_sent_frames_reach_its_window_until_it_stops(cx: &mut TestAppC
         session
             .local_videos()
             .get(&kind)
-            .map(|f| (f.width, f.height, f.rgba.len()))
+            .map(|f| (f.width, f.height, f.bgra.len()))
     };
     wait(cx, "alice's own share frame", || {
         sent(ShareKind::Screen).is_some()
@@ -669,7 +899,9 @@ fn sound_world(
 /// The state of a live call, with or without a screen share.
 fn call_state(screen: bool) -> Arc<AppState> {
     let mut state = AppState::default();
+    // A call is `In` with its id, as the client sets them: a share start names the call it is for.
     state.voice.call.phase = CallPhase::In;
+    state.voice.call.call_id = Some([7; 16]);
     state.voice.share.screen = screen;
     Arc::new(state)
 }

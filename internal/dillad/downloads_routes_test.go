@@ -11,32 +11,31 @@ import (
 	"github.com/dilla-chat/dilla/internal/dillad"
 )
 
-// /download/{platform} is a 404 without --desktop-downloads (never the browser client's
-// navigation fallback), and the desktop download routes with it.
-func TestDesktopDownloadRoutesFollowTheServerOption(t *testing.T) {
-	const page = `<!doctype html><script type="module" src="/assets/app-1a2b.js"></script>`
+// /download/{platform} is always the desktop download routes (Task 12: no option turns them on), and /download is
+// always the download page, with or without a served tree behind it (the test-only seam).
+func TestDesktopDownloadRoutesAreAlwaysMounted(t *testing.T) {
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "https://github.com/dilla-chat/dilla/releases/download/desktop-v0.1.0-beta.2/dilla-0.1.0-beta.2-"+r.PathValue("platform"))
 		w.WriteHeader(http.StatusFound)
 	})
-	for _, selected := range []bool{false, true} {
-		t.Run(map[bool]string{false: "default", true: "downloads"}[selected], func(t *testing.T) {
+	for name, tree := range map[string]bool{"no tree": false, "a served tree": true} {
+		t.Run(name, func(t *testing.T) {
 			cfg, _ := testConfigInvite(t)
-			srv, err := dillad.New(t.Context(), dillad.Options{Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t), Web: webTree(t, map[string]string{"index.html": page, "assets/app-1a2b.js": "/* original client */"}), DesktopDownloads: selected, DesktopDownloadRoutes: routes})
+			o := dillad.Options{Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t), DesktopDownloadRoutes: routes}
+			if tree {
+				o.Web = webTree(t, map[string]string{"index.html": `<!doctype html><title>tree</title>`})
+			}
+			srv, err := dillad.New(t.Context(), o)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer srv.Shutdown(context.Background())
 			rec := serveOne(t, srv.Handler(), "GET", "/download/linux-deb", "")
-			if selected {
-				if rec.Code != http.StatusFound || !strings.HasSuffix(rec.Header().Get("Location"), "-linux-deb") {
-					t.Fatalf("downloads route = %d %v", rec.Code, rec.Header())
-				}
-			} else if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "<script") {
-				t.Fatalf("flag off = %d %q", rec.Code, rec.Body.String())
+			if rec.Code != http.StatusFound || !strings.HasSuffix(rec.Header().Get("Location"), "-linux-deb") {
+				t.Fatalf("downloads route = %d %v", rec.Code, rec.Header())
 			}
-			if root := serveOne(t, srv.Handler(), "GET", "/download", ""); selected && !strings.Contains(root.Body.String(), "Download Dilla") {
-				t.Fatalf("download page = %q", root.Body.String())
+			if page := serveOne(t, srv.Handler(), "GET", "/download", ""); !strings.Contains(page.Body.String(), "Download Dilla") {
+				t.Fatalf("download page = %q", page.Body.String())
 			}
 		})
 	}
@@ -57,7 +56,7 @@ func TestDesktopDownloadChannelReachesTheDefaultRoutes(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, _ := testConfigInvite(t)
-			srv, err := dillad.New(t.Context(), dillad.Options{Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t), Web: webTree(t, map[string]string{"index.html": `<!doctype html>`}), DesktopDownloads: true, DesktopDownloadChannel: tc.ch})
+			srv, err := dillad.New(t.Context(), dillad.Options{Config: cfg, Clock: clock.System(), Wasm: sharedRuntime(t), DesktopDownloadChannel: tc.ch})
 			if err != nil {
 				t.Fatal(err)
 			}

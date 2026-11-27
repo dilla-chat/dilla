@@ -1,9 +1,11 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"os"
@@ -582,4 +584,45 @@ func serverBotReplyPerSecond(t *testing.T) float64 {
 		t.Fatal("dillad's bot_reply rate changed: update the client's reply pacing and this check")
 	}
 	return 200
+}
+
+// Task 3: a limiter wait over 20 ms is logged once, with its class and route template: never an id from the path.
+func TestRateLimiterLogsLongWaitsWithClassAndRouteTemplate(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var logs bytes.Buffer
+		c, err := New(Config{BaseURL: "https://example.invalid", InstanceID: testID(99), Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		group := testID(1).String()
+		for range 40 {
+			if err := c.waitRate(t.Context(), "device", http.MethodGet, "groups/"+group+"/info"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if logs.Len() != 0 {
+			t.Fatalf("waits within the burst were logged: %s", logs.String())
+		}
+		if err := c.waitRate(t.Context(), "device", http.MethodGet, "groups/"+group+"/info?after=17"); err != nil {
+			t.Fatal(err)
+		}
+		out := logs.String()
+		if strings.Count(out, "\n") != 1 || !strings.Contains(out, "class=read") || !strings.Contains(out, "route=groups/{id}/info") ||
+			!strings.Contains(out, "wait_ms=125") || strings.Contains(out, group) || strings.Contains(out, "17") {
+			t.Fatalf("wait log = %q", out)
+		}
+	})
+}
+
+func TestRouteTemplateKeepsOnlyRouteWords(t *testing.T) {
+	for _, tc := range []struct{ path, want string }{
+		{"groups/" + testID(1).String() + "/info", "groups/{id}/info"},
+		{"/bot-runtime/state-hints", "bot-runtime/state-hints"},
+		{"communities/x1/bot/receipts/42/resolve?x=1", "communities/{id}/bot/receipts/{id}/resolve"},
+		{"devices/AbC/keypackage", "devices/{id}/keypackage"},
+	} {
+		if got := routeTemplate(tc.path); got != tc.want {
+			t.Errorf("routeTemplate(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
 }

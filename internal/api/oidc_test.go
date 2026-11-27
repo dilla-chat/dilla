@@ -181,11 +181,56 @@ func setCookie(t *testing.T, res *httptest.ResponseRecorder, name string) *http.
 	return nil
 }
 
-// startOIDC runs the start leg and returns the state cookie the browser would
-// keep and the state and nonce the provider was given.
-func startOIDC(t *testing.T, h http.Handler) (cookie *http.Cookie, state, nonce string) {
+// desktopOIDCCookieName is the state cookie of the desktop OIDC flow (auth.DesktopOIDCStateCookie),
+// the only OIDC flow dillad runs since Task 12 refused the browser one.
+const desktopOIDCCookieName = "__Secure-dilla-desktop-oidc"
+
+// desktopPost is a JSON POST from the desktop-auth page, on the instance's own origin.
+func desktopPost(h http.Handler, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://dilla.test")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
+}
+
+// oidcStart is one desktop OIDC start leg: its answer, the state cookie the browser keeps, the
+// state and nonce the provider was given, the desktop request it belongs to, and consume, which
+// hands the desktop the request's result with its PKCE verifier.
+type oidcStart struct {
+	res                   *httptest.ResponseRecorder
+	cookie                *http.Cookie
+	state, nonce, request string
+	consume               func() (assertion string, needs uint8)
+}
+
+// startOIDC runs the desktop OIDC start leg: the desktop's request, the browser's page cookie and
+// launch ticket, then GET /v1/auth/oidc/start with both.
+func startOIDC(t *testing.T, h http.Handler) oidcStart {
 	t.Helper()
-	res := getWithCookies(h, "/v1/auth/oidc/start")
+	verifier := strings.Repeat("a", 43)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	created := desktopPost(h, "/desktop-auth/request", `{"kind":"oidc","options":"","challenge":"`+challenge+`"}`, nil)
+	var request struct {
+		ID string `json:"id"`
+	}
+	if created.Code != http.StatusCreated || json.Unmarshal(created.Body.Bytes(), &request) != nil {
+		t.Fatal(created.Code, created.Body)
+	}
+	page := getWithCookies(h, "/desktop-auth/"+request.ID+"/")
+	launch := desktopPost(h, "/desktop-auth/"+request.ID+"/oidc", `{}`, setCookie(t, page, "__Secure-dilla-desktop"))
+	var ticket struct {
+		Ticket string `json:"ticket"`
+	}
+	if launch.Code != http.StatusOK || json.Unmarshal(launch.Body.Bytes(), &ticket) != nil {
+		t.Fatal(launch.Code, launch.Body)
+	}
+	res := getWithCookies(h, "/v1/auth/oidc/start?desktop_request="+request.ID+"&desktop_ticket="+ticket.Ticket)
 	if res.Code != http.StatusFound {
 		t.Fatalf("start answered %d, want 302; body %x", res.Code, res.Body.Bytes())
 	}
@@ -194,7 +239,25 @@ func startOIDC(t *testing.T, h http.Handler) (cookie *http.Cookie, state, nonce 
 		t.Fatalf("parse Location: %v", err)
 	}
 	q := loc.Query()
-	return setCookie(t, res, oidcStateCookieName), q.Get("state"), q.Get("nonce")
+	consume := func() (string, uint8) {
+		t.Helper()
+		result := desktopPost(h, "/desktop-auth/"+request.ID+"/consume", `{"verifier":"`+verifier+`"}`, nil)
+		var completed struct {
+			Assertion string `json:"assertion"`
+			Needs     uint8  `json:"needs"`
+		}
+		if result.Code != http.StatusOK || json.Unmarshal(result.Body.Bytes(), &completed) != nil {
+			t.Fatal(result.Code, result.Body)
+		}
+		return completed.Assertion, completed.Needs
+	}
+	return oidcStart{res: res, cookie: setCookie(t, res, desktopOIDCCookieName), state: q.Get("state"), nonce: q.Get("nonce"),
+		request: request.ID, consume: consume}
+}
+
+// parts is the state cookie, the state and the nonce: what a callback test needs of a start.
+func (s oidcStart) parts() (cookie *http.Cookie, state, nonce string) {
+	return s.cookie, s.state, s.nonce
 }
 
 func errorCode(t *testing.T, res *httptest.ResponseRecorder) string {
@@ -219,10 +282,8 @@ func errorCode(t *testing.T, res *httptest.ResponseRecorder) string {
 // may leave the server.
 func TestTheOIDCStartLegSetsAStateCookieMatchingTheAuthorizationRequest(t *testing.T) {
 	h, _, _ := newOIDCAPI(t, false)
-	res := getWithCookies(h, "/v1/auth/oidc/start")
-	if res.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302; body %x", res.Code, res.Body.Bytes())
-	}
+	start := startOIDC(t, h)
+	res := start.res
 	loc, err := url.Parse(res.Header().Get("Location"))
 	if err != nil {
 		t.Fatalf("parse Location: %v", err)
@@ -234,19 +295,58 @@ func TestTheOIDCStartLegSetsAStateCookieMatchingTheAuthorizationRequest(t *testi
 	if q.Get("code_challenge") == "" || q.Get("nonce") == "" || q.Get("state") == "" {
 		t.Fatalf("authorization request is missing a challenge, a nonce or a state: %v", q)
 	}
-	c := setCookie(t, res, oidcStateCookieName)
+	c := start.cookie
 	if c.Value != q.Get("state") {
 		t.Fatalf("cookie %q and state %q differ; the callback compares them", c.Value, q.Get("state"))
 	}
-	if c.Path != "/v1/auth/oidc/callback" || !c.Secure || !c.HttpOnly ||
-		c.SameSite != http.SameSiteLaxMode || c.Domain != "" {
+	if c.Path != "" || !c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteLaxMode || c.Domain != "" {
 		t.Fatalf("state cookie flags: %+v", c)
+	}
+	for _, set := range res.Header().Values("Set-Cookie") {
+		if strings.HasPrefix(set, oidcStateCookieName+"=") {
+			t.Fatalf("the start leg set the browser flow's cookie: %s", set)
+		}
 	}
 	// The two secrets stay behind. A verifier in the cookie jar would make PKCE
 	// ceremonial, and a nonce there would let a replayed id_token pass.
 	jar := strings.Join(res.Header().Values("Set-Cookie"), " ")
 	if strings.Contains(jar, q.Get("nonce")) || strings.Contains(jar, q.Get("code_challenge")) {
 		t.Fatalf("the nonce or the challenge reached the browser: %s", jar)
+	}
+}
+
+// Task 12 (Jonas 2026-11-26, "Refuse it"): dillad serves no browser client, so the browser OIDC flow,
+// which returned to https://<domain>/#assertion=, is refused at the start leg with a clear error,
+// before the identity provider is asked anything: no state, no cookie, no redirect. And no callback
+// completes a login for anything but a pending desktop request, whatever cookie it carries.
+func TestTheBrowserOIDCFlowIsRefused(t *testing.T) {
+	h, _, idp := newOIDCAPI(t, false)
+	for _, target := range []string{"/v1/auth/oidc/start", "/v1/auth/oidc/start?desktop_ticket=x", "/v1/auth/oidc/start?desktop_request="} {
+		res := getWithCookies(h, target)
+		if res.Code != http.StatusForbidden || errorCode(t, res) != "E_FORBIDDEN" {
+			t.Fatalf("%s = %d %x, want 403 E_FORBIDDEN", target, res.Code, res.Body.Bytes())
+		}
+		if !strings.Contains(res.Body.String(), "sign in from Dilla desktop") {
+			t.Fatalf("%s: the refusal does not say what to do instead: %q", target, res.Body.String())
+		}
+		if res.Header().Get("Location") != "" || len(res.Header().Values("Set-Cookie")) != 0 {
+			t.Fatalf("%s: a refused start redirected or set a cookie: %v", target, res.Header())
+		}
+	}
+	// A live desktop state presented under the browser flow's cookie name finishes nothing.
+	start := startOIDC(t, h)
+	idp.setNonce(start.nonce)
+	browserCookie := &http.Cookie{Name: oidcStateCookieName, Value: start.state}
+	res := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state="+url.QueryEscape(start.state), browserCookie)
+	if res.Code != http.StatusUnauthorized || strings.Contains(res.Header().Get("Location"), "assertion") {
+		t.Fatalf("a callback with the browser cookie = %d %v, want 401", res.Code, res.Header())
+	}
+	if n := idp.exchanges(); n != 0 {
+		t.Fatalf("a refused callback reached the token endpoint (%d exchanges)", n)
+	}
+	// The desktop flow is untouched: the same login still finishes from the browser that started it.
+	if res := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state="+url.QueryEscape(start.state), start.cookie); res.Code != http.StatusForbidden {
+		t.Fatalf("the desktop callback = %d, want 403 (no account is mapped to the subject)", res.Code)
 	}
 }
 
@@ -261,32 +361,33 @@ func TestAnOIDCCallbackIsSpentOnceAndAReplayNeverReachesTheTokenEndpoint(t *test
 	if err := d.Repo.PutOIDCIdentity(ctx, idp.URL, "sub-123", user.ID, d.Clock.Now().Unix()); err != nil {
 		t.Fatalf("PutOIDCIdentity: %v", err)
 	}
-	cookie, state, nonce := startOIDC(t, h)
-	idp.setNonce(nonce)
+	start := startOIDC(t, h)
+	cookie := start.cookie
+	idp.setNonce(start.nonce)
 
-	target := "/v1/auth/oidc/callback?code=code-good&state=" + url.QueryEscape(state)
+	target := "/v1/auth/oidc/callback?code=code-good&state=" + url.QueryEscape(start.state)
 	res := getWithCookies(h, target, cookie)
 	if res.Code != http.StatusFound {
 		t.Fatalf("callback answered %d, want 302; body %x", res.Code, res.Body.Bytes())
 	}
-	const want = "https://dilla.test/#assertion="
-	loc := res.Header().Get("Location")
-	if !strings.HasPrefix(loc, want) {
-		t.Fatalf("Location = %q, want the assertion in the fragment of %q", loc, want)
+	// The browser goes back to the desktop-auth page; the assertion never travels through it.
+	if loc := res.Header().Get("Location"); loc != "../../../desktop-auth/"+start.request+"/?done=1" || strings.Contains(loc, "assertion") {
+		t.Fatalf("Location = %q, want the desktop-auth page of %s", loc, start.request)
 	}
 	// The assertion is the login: it must name the mapped account.
-	got, needs2FA, ok := d.Assertions.Spend(strings.TrimPrefix(loc, want))
+	assertion, needs := start.consume()
+	got, needs2FA, ok := d.Assertions.Spend(assertion)
 	if !ok || got != user.ID {
 		t.Fatalf("the assertion resolved to %s, %v; want %s", got, ok, user.ID)
 	}
-	if needs2FA {
+	if needs2FA || needs != 0 {
 		t.Fatal("this account has no confirmed second factor, so none is owed")
 	}
 	if n := idp.exchanges(); n != 1 {
 		t.Fatalf("the token endpoint was called %d times for one login, want 1", n)
 	}
 	// The cookie is cleared whatever happens, so nothing is left to replay.
-	if c := setCookie(t, res, oidcStateCookieName); c.Value != "" || c.MaxAge > 0 {
+	if c := setCookie(t, res, desktopOIDCCookieName); c.Value != "" || c.MaxAge > 0 {
 		t.Fatalf("the state cookie survived the callback: %+v", c)
 	}
 
@@ -304,7 +405,7 @@ func TestAnOIDCCallbackIsSpentOnceAndAReplayNeverReachesTheTokenEndpoint(t *test
 // is spent.
 func TestAnOIDCCallbackWhoseStateDoesNotMatchTheCookieIsRefused(t *testing.T) {
 	h, _, idp := newOIDCAPI(t, false)
-	cookie, state, nonce := startOIDC(t, h)
+	cookie, state, nonce := startOIDC(t, h).parts()
 	idp.setNonce(nonce)
 
 	res := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state=not-the-cookie", cookie)
@@ -328,7 +429,7 @@ func TestAnOIDCCallbackWhoseStateDoesNotMatchTheCookieIsRefused(t *testing.T) {
 	// victim's browser onto the callback carrying it. Only the comparison
 	// against the victim's own cookie stands between that browser and an
 	// assertion for the attacker's identity.
-	attackerCookie, attackerState, attackerNonce := startOIDC(t, h)
+	attackerCookie, attackerState, attackerNonce := startOIDC(t, h).parts()
 	res = getWithCookies(h,
 		"/v1/auth/oidc/callback?code=code-good&state="+url.QueryEscape(attackerState), cookie)
 	if res.Code != http.StatusUnauthorized {
@@ -370,7 +471,7 @@ func TestAnOIDCLoginWithNoMappedAccountIsForbidden(t *testing.T) {
 		t.Run(fmt.Sprintf("auto_create=%v", autoCreate), func(t *testing.T) {
 			h, _, idp := newOIDCAPI(t, autoCreate)
 			idp.setSubject("sub-nobody")
-			cookie, state, nonce := startOIDC(t, h)
+			cookie, state, nonce := startOIDC(t, h).parts()
 			idp.setNonce(nonce)
 			res := getWithCookies(h, "/v1/auth/oidc/callback?code=code-good&state="+url.QueryEscape(state), cookie)
 			if res.Code != http.StatusForbidden {

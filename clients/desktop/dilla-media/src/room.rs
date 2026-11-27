@@ -343,18 +343,19 @@ impl VerifiedCache {
     }
 }
 
-/// The newest frame of one video stream, as RGBA rows: a remote stream's decoded frame, or this device's own as sent
+/// The newest frame of one video stream, as BGRA rows: a remote stream's decoded frame, or this device's own as sent
 /// ([`LocalVideos`]). Its `Debug` says its size and counter only, and it has no `PartialEq`: pixels (this device's own
 /// screen among them) never reach a log or a test's output.
 #[derive(Clone)]
 pub struct RemoteFrame {
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<Vec<u8>>,
+    /// The pixels as BGRA rows (libyuv's `ARGB`, stored little-endian), the order gpui draws: the stage swaps nothing.
+    pub bgra: Arc<Vec<u8>>,
     /// Frames decoded on this stream so far.
     pub frames: u64,
     /// The stream's own frame height, what a tile's stat says: `height` for a remote frame; for a self-view frame, which
-    /// is scaled down ([`SELF_VIEW_MAX_SIDE`]), the height that is sent.
+    /// is the sent frame at its own size, the same height.
     pub stream_height: u32,
 }
 
@@ -365,7 +366,7 @@ impl std::fmt::Debug for RemoteFrame {
             .field("height", &self.height)
             .field("frames", &self.frames)
             .field("stream_height", &self.stream_height)
-            .field("bytes", &self.rgba.len())
+            .field("bytes", &self.bgra.len())
             .finish()
     }
 }
@@ -470,17 +471,12 @@ pub fn rtt_ms_of(report: &[livekit::webrtc::stats::RtcStats]) -> Option<u32> {
 type SharedSource = Arc<Mutex<Option<Box<dyn CaptureSource>>>>;
 
 /// What this device sends, for its own tile's self-view (session.ts `localCamera` / `localScreen`): each running share's
-/// newest frame as sent (after the share's scaling), as RGBA rows. Its `frames` is the count the share has sent, so a
+/// newest frame as sent (after the share's scaling), as BGRA rows. Its `frames` is the count the share has sent, so a
 /// view's rate reads the sent rate. Never a received stream.
 pub type LocalVideos = BTreeMap<ShareKind, RemoteFrame>;
 
 /// The self-view's frame cap: at most this many sent frames a second are copied for the own tile.
-pub const SELF_VIEW_FPS: u32 = 15;
-
-/// The self-view's longest side, in pixels: a larger sent frame is scaled down to it (keeping its aspect) before it is
-/// copied, so the copy, the colour swap and the mirror cost a tile's worth of pixels, not the sent frame's (a 1080p or
-/// 4K screen share).
-pub const SELF_VIEW_MAX_SIDE: u32 = 640;
+pub const SELF_VIEW_FPS: u32 = 30;
 
 /// One share's place in [`LocalVideos`]: live from its publish until its share stops ([`SelfViewTap::stop`]). A frame
 /// is kept only while the tap is live, checked under the map's lock, so a stopped share never leaves a frame behind,
@@ -511,14 +507,17 @@ impl SelfViewTap {
     }
 }
 
-/// A feeder's side of its [`SelfViewTap`]: copies a sent frame at most [`SELF_VIEW_FPS`] times a second, scaled to at
-/// most [`SELF_VIEW_MAX_SIDE`], while a receiver of the map is alive (the desktop holds one for the whole call, so in
-/// practice while the share runs). Never blocks: the copy is a libyuv scale and conversion of a frame already sent, and
-/// the map's lock is held only to swap one entry.
+/// A feeder's side of its [`SelfViewTap`]: copies a sent frame at most [`SELF_VIEW_FPS`] times a second, at the sent
+/// frame's own size (the stage stretches it, so a downscale would show), while a receiver of the map is alive (the
+/// desktop holds one for the whole call, so in practice while the share runs). Never blocks: the copy is a libyuv
+/// conversion of a frame already sent, and the map's lock is held only to swap one entry.
 struct SelfView {
     tap: SelfViewTap,
     every: Duration,
     last: Option<std::time::Instant>,
+    /// The buffer of the frame the newest one replaced: written again by the next frame once no viewer holds it any
+    /// more, so a 4K share does not allocate ~33 MB a frame (final review I1).
+    spare: Option<Arc<Vec<u8>>>,
 }
 
 impl SelfView {
@@ -527,13 +526,14 @@ impl SelfView {
             tap,
             every: Duration::from_micros(1_000_000 / u64::from(SELF_VIEW_FPS)),
             last: None,
+            spare: None,
         }
     }
 
-    /// `i420` was just sent, the share's `frames`th frame. A frame larger than the tile needs is scaled first
-    /// ([`SELF_VIEW_MAX_SIDE`]): the scale makes a new buffer (libyuv reads the sent one, never writes it), so what is
-    /// sent is untouched. `&mut` only because the binding's `scale` takes it.
-    fn offer(&mut self, i420: &mut I420Buffer, frames: u64, now: std::time::Instant) {
+    /// `i420` was just sent, the share's `frames`th frame. It is converted to BGRA at its own size (libyuv reads the
+    /// sent one, never writes it), so what is sent is untouched: into the replaced frame's buffer when nobody holds that
+    /// one any more (`Arc::try_unwrap`: a viewer's frame is never written), else into a new one.
+    fn offer(&mut self, i420: &I420Buffer, frames: u64, now: std::time::Instant) {
         use livekit::webrtc::video_frame::VideoBuffer as _;
         use livekit::webrtc::video_frame::VideoFormatType;
         use livekit::webrtc::video_frame::native::VideoFrameBufferExt as _;
@@ -550,35 +550,36 @@ impl SelfView {
         if w == 0 || h == 0 || w > MAX_VIDEO_W || h > MAX_VIDEO_H {
             return;
         }
-        let sent_height = h;
-        let max = SELF_VIEW_MAX_SIDE;
-        let scaled = (w.max(h) > max).then(|| {
-            let (sw, sh) = fit(w, h, Some((max, max)));
-            (i420.scale(sw as i32, sh as i32), sw, sh)
-        });
-        let (view, w, h) = match &scaled {
-            Some((buffer, sw, sh)) => (buffer, *sw, *sh),
-            None => (&*i420, w, h),
+        let len = (w * h * 4) as usize;
+        let mut bgra = match self.spare.take().map(Arc::try_unwrap) {
+            Some(Ok(mut reused)) => {
+                // Every byte is written below: a size change only grows or shrinks the buffer.
+                reused.resize(len, 0);
+                reused
+            }
+            _ => vec![0u8; len],
         };
-        let mut rgba = vec![0u8; (w * h * 4) as usize];
-        view.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
+        // libyuv's ARGB is B, G, R, A in memory: what gpui draws.
+        i420.to_argb(VideoFormatType::ARGB, &mut bgra, w * 4, w as i32, h as i32);
         self.last = Some(now);
         let next = RemoteFrame {
             width: w,
             height: h,
-            rgba: Arc::new(rgba),
+            bgra: Arc::new(bgra),
             frames,
-            stream_height: sent_height,
+            stream_height: h,
         };
         let (kind, live) = (self.tap.kind, &self.tap.live);
-        self.tap.videos.send_if_modified(move |v| {
+        let mut replaced = None;
+        self.tap.videos.send_if_modified(|v| {
             // Checked under the lock a stop takes too: a stop that came first wins.
             if !live.load(Ordering::Acquire) {
                 return false;
             }
-            v.insert(kind, next);
+            replaced = v.insert(kind, next);
             true
         });
+        self.spare = replaced.map(|f| f.bgra);
     }
 }
 
@@ -899,7 +900,7 @@ async fn feed(
             }
         };
         let size = fit(frame.width, frame.height, bound);
-        let Some(mut i420) = to_i420(&frame, size) else {
+        let Some(i420) = to_i420(&frame, size) else {
             log::warn!("dilla-media: a malformed {kind:?} frame dropped");
             continue;
         };
@@ -910,7 +911,7 @@ async fn feed(
             buffer: &i420,
         });
         let frames = sent.fetch_add(1, Ordering::Relaxed) + 1;
-        self_view.offer(&mut i420, frames, std::time::Instant::now());
+        self_view.offer(&i420, frames, std::time::Instant::now());
         resend
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -943,6 +944,8 @@ pub struct Call {
     videos: watch::Receiver<RemoteVideos>,
     /// What this device sends, for its own tile ([`Call::local_videos`]).
     local_videos: watch::Sender<LocalVideos>,
+    /// The level of what the microphone sends ([`Call::local_audio_level`]).
+    local_level: watch::Sender<f32>,
     shares: Shares,
     app_audio: Arc<Mutex<Option<LocalAppAudio>>>,
     app_audio_ended: mpsc::UnboundedSender<()>,
@@ -1189,6 +1192,7 @@ impl Call {
             muted,
             videos,
             local_videos: watch::Sender::new(LocalVideos::new()),
+            local_level: watch::Sender::new(0.0),
             shares: Shares::default(),
             app_audio: Arc::default(),
             app_audio_ended,
@@ -1296,7 +1300,7 @@ impl Call {
                 frames,
                 processor,
                 source,
-                self.muted.clone(),
+                (self.muted.clone(), self.local_level.clone()),
             )));
         }
         self.local = Some(track);
@@ -1382,6 +1386,13 @@ impl Call {
         self.levels.clone()
     }
 
+    /// The level of what this device's microphone sends (RMS of the last 100 ms, 0 to 1, as [`RemoteLevels`]): measured
+    /// after the noise suppressor and gain, so a suppressed noise reads low, and 0 while muted. It stays 0 for a call
+    /// without a microphone. A number only: no audio leaves through it.
+    pub fn local_audio_level(&self) -> watch::Receiver<f32> {
+        self.local_level.subscribe()
+    }
+
     /// The last second of decoded audio from `device` (hex), once it is verified.
     pub fn remote_audio_tail(&self, device: &str) -> Option<Vec<i16>> {
         if !self.media.is_verified(device) {
@@ -1451,8 +1462,7 @@ impl Call {
 
     /// What this device sends, for its own tile's self-view ([`LocalVideos`]): each running share's newest sent frame,
     /// gone once the share stops. Frames are copied only while a receiver of this is alive (the desktop's media session
-    /// holds one for the whole call, so in practice for every share), scaled to the tile's size first
-    /// ([`SELF_VIEW_MAX_SIDE`]).
+    /// holds one for the whole call, so in practice for every share), at the sent frame's own size.
     pub fn local_videos(&self) -> watch::Receiver<LocalVideos> {
         self.local_videos.subscribe()
     }
@@ -1970,13 +1980,43 @@ pub(crate) fn retry_safe(e: MediaError, sealed: bool) -> MediaError {
     }
 }
 
-/// Feeds the application's 10 ms frames through the noise processor into the published source.
+/// The level of what the microphone sends (Task 5, session.ts `ownMeter`): the RMS (0 to 1) of each 100 ms, the window
+/// the remote levels are read over ([`read_audio`]).
+#[derive(Default)]
+pub(crate) struct LevelWindow {
+    sum: f32,
+    samples: usize,
+}
+
+impl LevelWindow {
+    /// Adds one frame; answers the window's RMS once it holds 100 ms, and starts the next.
+    pub(crate) fn push(&mut self, frame: &[i16]) -> Option<f32> {
+        self.sum += frame
+            .iter()
+            .map(|s| {
+                let x = f32::from(*s) / 32768.0;
+                x * x
+            })
+            .sum::<f32>();
+        self.samples += frame.len();
+        if self.samples < RATE as usize / 10 {
+            return None;
+        }
+        let rms = (self.sum / self.samples as f32).sqrt();
+        *self = Self::default();
+        Some(rms)
+    }
+}
+
+/// Feeds the application's 10 ms frames through the noise processor into the published source. The level of each
+/// 100 ms sent (after the device chain's or this processor's noise suppression and gain, and the mute) goes to `level`.
 async fn feed_pcm(
     mut frames: mpsc::Receiver<Vec<i16>>,
     mut processor: NoiseProcessor,
     source: NativeAudioSource,
-    muted: Arc<AtomicBool>,
+    (muted, level): (Arc<AtomicBool>, watch::Sender<f32>),
 ) {
+    let mut window = LevelWindow::default();
     while let Some(mut samples) = frames.recv().await {
         if samples.len() != FRAME_SAMPLES {
             log::warn!(
@@ -1990,6 +2030,9 @@ async fn feed_pcm(
         } else if let Err(e) = processor.process(&mut samples) {
             // The processor silenced the frame: never the unprocessed samples.
             log::warn!("dilla-media: noise processor: {e}");
+        }
+        if let Some(rms) = window.push(&samples) {
+            level.send_replace(rms);
         }
         let frame = AudioFrame {
             data: samples.into(),
@@ -2314,7 +2357,7 @@ impl Drop for Gone {
     }
 }
 
-/// Decodes one verified remote video stream into RGBA, keeping only its newest frame (a slow view
+/// Decodes one verified remote video stream into BGRA (what gpui draws), keeping only its newest frame (a slow view
 /// drops frames, never queues them). Frames of a device that has not authenticated are not shown.
 async fn read_video(
     track: livekit::webrtc::prelude::RtcVideoTrack,
@@ -2334,7 +2377,7 @@ async fn read_video(
         }
         let buffer = frame.buffer.as_ref();
         let (w, h) = (buffer.width(), buffer.height());
-        // A stream larger than 4K is not converted: its RGBA would be unbounded memory per frame.
+        // A stream larger than 4K is not converted: its BGRA would be unbounded memory per frame.
         if w == 0 || h == 0 || w > MAX_VIDEO_W || h > MAX_VIDEO_H {
             if !warned {
                 log::warn!(
@@ -2345,11 +2388,12 @@ async fn read_video(
             }
             continue;
         }
-        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        // libyuv's ARGB is B, G, R, A in memory: the order gpui draws, so the stage swaps nothing.
+        let mut bgra = vec![0u8; (w * h * 4) as usize];
         if let Some(native) = buffer.as_native() {
-            native.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
+            native.to_argb(VideoFormatType::ARGB, &mut bgra, w * 4, w as i32, h as i32);
         } else if let Some(i420) = buffer.as_i420() {
-            i420.to_argb(VideoFormatType::ABGR, &mut rgba, w * 4, w as i32, h as i32);
+            i420.to_argb(VideoFormatType::ARGB, &mut bgra, w * 4, w as i32, h as i32);
         } else {
             continue;
         }
@@ -2357,7 +2401,7 @@ async fn read_video(
         let next = RemoteFrame {
             width: w,
             height: h,
-            rgba: Arc::new(rgba),
+            bgra: Arc::new(bgra),
             frames,
             stream_height: h,
         };
@@ -2477,7 +2521,7 @@ mod self_view_tests {
     fn shown(rx: &watch::Receiver<LocalVideos>, kind: ShareKind) -> Option<(u32, u32, usize, u64)> {
         rx.borrow()
             .get(&kind)
-            .map(|f| (f.width, f.height, f.rgba.len(), f.frames))
+            .map(|f| (f.width, f.height, f.bgra.len(), f.frames))
     }
 
     /// Review I3: a source that repeats while idle (KWin's) gets its last sent buffer again on an idle tick: the very
@@ -2546,17 +2590,17 @@ mod self_view_tests {
         let tap = SelfViewTap::new(ShareKind::Screen, tx);
         let mut view = SelfView::new(tap.clone());
         let t0 = Instant::now();
-        view.offer(&mut sent(64, 32), 1, t0);
+        view.offer(&sent(64, 32), 1, t0);
         assert_eq!(
             shown(&rx, ShareKind::Screen),
             Some((64, 32, 64 * 32 * 4, 1))
         );
         // Under the cap: the frame is not copied again.
-        view.offer(&mut sent(64, 32), 2, t0 + Duration::from_millis(5));
+        view.offer(&sent(64, 32), 2, t0 + Duration::from_millis(5));
         assert_eq!(shown(&rx, ShareKind::Screen).map(|s| s.3), Some(1));
         // A cap's interval later the newest frame replaces it, carrying the sent count.
         let next = t0 + Duration::from_micros(1_000_000 / u64::from(SELF_VIEW_FPS));
-        view.offer(&mut sent(48, 16), 3, next);
+        view.offer(&sent(48, 16), 3, next);
         assert_eq!(
             shown(&rx, ShareKind::Screen),
             Some((48, 16, 48 * 16 * 4, 3))
@@ -2565,7 +2609,7 @@ mod self_view_tests {
         // The share stops: the frame goes, and a late frame of the stopped feeder is not kept.
         tap.stop();
         assert_eq!(shown(&rx, ShareKind::Screen), None);
-        view.offer(&mut sent(64, 32), 4, next + Duration::from_secs(1));
+        view.offer(&sent(64, 32), 4, next + Duration::from_secs(1));
         assert!(rx.borrow().is_empty(), "a stopped share shows nothing");
     }
 
@@ -2575,45 +2619,54 @@ mod self_view_tests {
         let old = SelfViewTap::new(ShareKind::Camera, tx.clone());
         old.stop();
         let mut newer = SelfView::new(SelfViewTap::new(ShareKind::Camera, tx));
-        newer.offer(&mut sent(32, 32), 1, Instant::now());
+        newer.offer(&sent(32, 32), 1, Instant::now());
         // The old feeder's source ends after the newer share started: its stop is a no-op the second time.
         old.stop();
         assert_eq!(shown(&rx, ShareKind::Camera).map(|s| s.3), Some(1));
     }
 
-    /// Self-view review m1: a large sent frame is scaled down to the tile's size (its long side at most
-    /// [`SELF_VIEW_MAX_SIDE`]) before the RGBA copy; a small one is copied as it is. The frame that was sent keeps its
-    /// size: the scaling makes a new buffer, it never touches what is sent.
+    /// Task 6: the self-view is the sent frame at its own size, 1080p and 4K included (the stage stretches it, so a
+    /// downscale shows as blur). The frame that was sent keeps its size: the copy never touches it.
     #[test]
-    fn a_large_sent_frame_is_scaled_down_before_it_is_copied() {
+    fn a_sent_frame_reaches_the_self_view_at_its_own_size() {
         let next = Duration::from_micros(1_000_000 / u64::from(SELF_VIEW_FPS));
         let (tx, rx) = watch::channel(LocalVideos::new());
         let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx));
         let t0 = Instant::now();
-        for (n, (w, h), shown_as) in [
-            (1, (1920, 1080), (640, 360)),
-            (2, (3840, 2160), (640, 360)),
-            (3, (1080, 1920), (360, 640)),
-            (4, (480, 270), (480, 270)),
+        for (n, (w, h)) in [
+            (1, (1920, 1080)),
+            (2, (3840, 2160)),
+            (3, (1080, 1920)),
+            (4, (480, 270)),
         ] {
-            let mut i420 = I420Buffer::new(w, h);
-            view.offer(&mut i420, n, t0 + next * n as u32);
-            let (sw, sh) = shown_as;
+            let i420 = I420Buffer::new(w, h);
+            view.offer(&i420, n, t0 + next * n as u32);
             assert_eq!(
                 shown(&rx, ShareKind::Screen),
-                Some((sw, sh, (sw * sh * 4) as usize, n)),
+                Some((w, h, (w * h * 4) as usize, n)),
                 "{w}x{h}"
             );
-            assert_eq!(
-                rx.borrow()[&ShareKind::Screen].stream_height,
-                h,
-                "the tile's stat says the height that is sent"
-            );
+            assert_eq!(rx.borrow()[&ShareKind::Screen].stream_height, h);
             {
                 use livekit::webrtc::video_frame::VideoBuffer as _;
                 assert_eq!((i420.width(), i420.height()), (w, h), "the sent frame");
             }
         }
+    }
+
+    /// Task 6: the self-view runs at 30 fps: a frame within one 30 fps interval of the last is skipped, one a full
+    /// interval later is copied.
+    #[test]
+    fn the_self_view_runs_at_30_fps() {
+        assert_eq!(SELF_VIEW_FPS, 30);
+        let (tx, rx) = watch::channel(LocalVideos::new());
+        let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx));
+        let t0 = Instant::now();
+        view.offer(&sent(64, 32), 1, t0);
+        view.offer(&sent(64, 32), 2, t0 + Duration::from_millis(30));
+        assert_eq!(shown(&rx, ShareKind::Screen).map(|s| s.3), Some(1));
+        view.offer(&sent(64, 32), 3, t0 + Duration::from_millis(34));
+        assert_eq!(shown(&rx, ShareKind::Screen).map(|s| s.3), Some(3));
     }
 
     /// Self-view review m2: a frame's `Debug` says its size and counter, never its pixels (this device's own screen
@@ -2623,7 +2676,7 @@ mod self_view_tests {
         let frame = RemoteFrame {
             width: 2,
             height: 1,
-            rgba: Arc::new(vec![173u8; 8]),
+            bgra: Arc::new(vec![173u8; 8]),
             frames: 5,
             stream_height: 1,
         };
@@ -2634,12 +2687,121 @@ mod self_view_tests {
         }
     }
 
+    /// Counts this thread's allocations of exactly [`Big::SIZE`] bytes: a self-view buffer of a 96x48 frame.
+    struct Big;
+
+    impl Big {
+        const SIZE: usize = 96 * 48 * 4;
+
+        fn count() -> usize {
+            BIG.with(std::cell::Cell::get)
+        }
+    }
+
+    thread_local! {
+        static BIG: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    // The test binary's allocator: the system's, counting the self-view-sized allocations of each thread.
+    #[allow(unsafe_code)]
+    unsafe impl std::alloc::GlobalAlloc for Big {
+        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+            Big::seen(layout);
+            unsafe { std::alloc::System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+            Big::seen(layout);
+            unsafe { std::alloc::System.alloc_zeroed(layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+            if size == Big::SIZE {
+                let _ = BIG.try_with(|c| c.set(c.get() + 1));
+            }
+            unsafe { std::alloc::System.realloc(ptr, layout, size) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+            unsafe { std::alloc::System.dealloc(ptr, layout) }
+        }
+    }
+
+    impl Big {
+        fn seen(layout: std::alloc::Layout) {
+            if layout.size() == Big::SIZE {
+                let _ = BIG.try_with(|c| c.set(c.get() + 1));
+            }
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: Big = Big;
+
+    /// Final review I1: at 4K a self-view frame is ~33 MB. Once the viewer let go of an earlier frame, its buffer is
+    /// written again instead of a new one being allocated each frame; a buffer a viewer still holds is never written.
+    #[test]
+    fn the_self_view_reuses_a_released_buffer_and_never_writes_a_held_one() {
+        let next = Duration::from_micros(1_000_000 / u64::from(SELF_VIEW_FPS));
+        let (tx, rx) = watch::channel(LocalVideos::new());
+        let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx));
+        let t0 = Instant::now();
+        let red = sent(96, 48);
+        let black = to_i420(
+            &Frame::rgba(96, 48, [0u8, 0, 0, 255].repeat(96 * 48)),
+            (96, 48),
+        )
+        .unwrap();
+        let fresh = |f: &mut dyn FnMut()| {
+            let before = Big::count();
+            f();
+            Big::count() - before
+        };
+        // Frames 1 and 2 need buffers of their own; frame 2 replaced frame 1, which nobody holds now.
+        assert_eq!(fresh(&mut || view.offer(&red, 1, t0)), 1);
+        assert_eq!(fresh(&mut || view.offer(&red, 2, t0 + next)), 1);
+        assert_eq!(
+            fresh(&mut || view.offer(&red, 3, t0 + next * 2)),
+            0,
+            "frame 3 is written into frame 1's released buffer"
+        );
+        assert_eq!(
+            fresh(&mut || view.offer(&red, 4, t0 + next * 3)),
+            0,
+            "and frame 4 into frame 2's"
+        );
+        // A viewer keeps frame 4 (its bytes are being drawn): the frames after it never write that buffer.
+        let held = rx.borrow()[&ShareKind::Screen].bgra.clone();
+        let before = held.as_ref().clone();
+        view.offer(&black, 5, t0 + next * 4);
+        assert_eq!(
+            fresh(&mut || view.offer(&black, 6, t0 + next * 5)),
+            1,
+            "the held buffer is not reused: a new one"
+        );
+        view.offer(&black, 7, t0 + next * 6);
+        assert!(*held == before, "a held buffer is never written");
+    }
+
+    /// Final review I1: a self-view frame's bytes are BGRA, the order gpui draws, so the stage needs no R/B swap. The
+    /// synthetic frame is red (200, 40, 40): blue comes first.
+    #[test]
+    fn a_self_view_frame_is_bgra() {
+        let (tx, rx) = watch::channel(LocalVideos::new());
+        let mut view = SelfView::new(SelfViewTap::new(ShareKind::Camera, tx));
+        view.offer(&sent(16, 8), 1, Instant::now());
+        let px: [u8; 4] = rx.borrow()[&ShareKind::Camera].bgra[..4]
+            .try_into()
+            .unwrap();
+        assert!(
+            px[2] > 150 && px[0] < 90 && px[3] == 255,
+            "red lands in byte 2 (BGRA), got {px:?}"
+        );
+    }
+
     #[test]
     fn nothing_is_copied_while_nobody_views_it() {
         let (tx, rx) = watch::channel(LocalVideos::new());
         drop(rx);
         let mut view = SelfView::new(SelfViewTap::new(ShareKind::Screen, tx.clone()));
-        view.offer(&mut sent(64, 32), 1, Instant::now());
+        view.offer(&sent(64, 32), 1, Instant::now());
         assert!(tx.borrow().is_empty());
     }
 }
@@ -2655,6 +2817,23 @@ mod edge_tests {
                 ((std::f32::consts::TAU * 440.0 * t).sin() * amplitude * 32767.0) as i16
             })
             .collect()
+    }
+
+    /// Task 5: the microphone's level is the RMS of each 100 ms it sends (the remote levels' window), none in between.
+    #[test]
+    fn the_mic_level_is_the_rms_of_each_100_ms_sent() {
+        let mut window = LevelWindow::default();
+        let loud = tone(0.5);
+        for _ in 0..9 {
+            assert_eq!(window.push(&loud), None);
+        }
+        let rms = window.push(&loud).expect("100 ms");
+        assert!((rms - 0.5 / 2f32.sqrt()).abs() < 0.01, "{rms}");
+        let silent = vec![0i16; 480];
+        for _ in 0..9 {
+            assert_eq!(window.push(&silent), None);
+        }
+        assert_eq!(window.push(&silent), Some(0.0));
     }
 
     /// The receive-side first-audio measurement: an edge at each change between quiet and audible frames, none while a

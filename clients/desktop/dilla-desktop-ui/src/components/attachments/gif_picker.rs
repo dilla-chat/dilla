@@ -6,11 +6,12 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Image, InteractiveElement, IntoElement, ObjectFit, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, StyledImage, div, img, px,
+    SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 
 use super::OnClick;
 use crate::metrics::LABEL_TRACKING;
+use crate::picture::rounded_picture;
 use crate::text::line;
 use crate::tokens::{color, motion, radius, text};
 
@@ -96,9 +97,10 @@ pub fn gif_picker(p: GifPickerProps, cx: &App) -> AnyElement {
         let active = p.active == Some(i);
         let pick = tile.on_pick.clone();
         let body: AnyElement = match tile.image {
-            Some(image) => img(image)
-                .size_full()
-                .object_fit(ObjectFit::Contain)
+            // The id keeps the GIF's frame clock: GPUI's `Img` animates only with one. The picture carries the
+            // tile's rounded corners itself (GPUI clips no child to them).
+            Some(image) => rounded_picture(image, radius::MD, px(1.0), ObjectFit::Contain)
+                .id(gpui::ElementId::Name(format!("gif-img-{}", tile.id).into()))
                 .into_any_element(),
             None => div().size_full().bg(color::SURFACE_HI).into_any_element(),
         };
@@ -221,5 +223,48 @@ mod tests {
             120.0,
             "unknown dimensions are square"
         );
+    }
+
+    fn picker_with(image: Option<Arc<Image>>, cx: &App) -> AnyElement {
+        gif_picker(
+            GifPickerProps {
+                search: div().into_any_element(),
+                powered: "".into(),
+                tiles: vec![GifTile {
+                    id: "a".into(),
+                    width: 1,
+                    height: 1,
+                    image,
+                    on_pick: std::rc::Rc::new(|_, _, _| {}),
+                }],
+                active: None,
+                picking: None,
+                status: None,
+                more: None,
+            },
+            cx,
+        )
+    }
+
+    /// A preview plays: its picture has an id (GPUI keeps a GIF's frame clock only for one), so a render a frame's
+    /// delay later paints its next frame; under reduced motion it holds its first.
+    #[gpui::test]
+    fn a_gif_preview_paints_its_next_frame(cx: &mut gpui::TestAppContext) {
+        use crate::components::attachments::testing::{frames_painted, gif};
+        let image = gif();
+        let draw = move |_: &mut gpui::Window, cx: &mut App| picker_with(Some(image.clone()), cx);
+        assert_eq!(frames_painted(cx, false, draw.clone()), 2, "it plays");
+        assert_eq!(frames_painted(cx, true, draw), 1, "reduced motion");
+    }
+
+    /// A tile's picture follows the tile's rounded corners (radius `md` inside its 1px border): GPUI clips no child
+    /// to its parent's corners.
+    #[gpui::test]
+    fn a_tile_s_picture_follows_its_rounded_corners(cx: &mut gpui::TestAppContext) {
+        use crate::picture::{inner_radius, testing::picture_corner};
+        let image = crate::components::attachments::testing::gif_sized(64, 64);
+        cx.update(|cx| cx.set_reduce_motion(true));
+        let corner = picture_corner(cx, move |_, cx| picker_with(Some(image.clone()), cx));
+        assert_eq!(corner, inner_radius(radius::MD, px(1.0)));
     }
 }

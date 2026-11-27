@@ -894,7 +894,7 @@ async function main() {
     console.log(USAGE);
     return;
   }
-  // A run that died during go-release left the real client in internal/web/dist: put the tracked tree back first.
+  // A run that died while a job had a snapshot pending: put the tracked tree back first.
   for (const p of recoverSnapshots(ROOT, SNAPSHOTS)) console.log(`ci-local: restored ${p} from the snapshot an interrupted run left`);
   const problems = localMirrorProblems(loadTexts());
   if (problems.length > 0) {

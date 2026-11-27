@@ -3124,6 +3124,14 @@ impl Window {
         self.rendered_frame.scene.quads.clone()
     }
 
+    /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the seventh change): the pictures (polychrome sprites) in
+    /// the most recently rendered frame's scene, as [`Self::painted_quads`] answers its quads, so a test outside this
+    /// crate can assert on a picture's bounds and corner radii.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_sprites(&self) -> Vec<PolychromeSprite> {
+        self.rendered_frame.scene.polychrome_sprites.clone()
+    }
+
     /// DILLA PATCH (core/vendor/README.md, "gpui-pre 0.3.12", the fourth change): the scale factor the most recently rendered
     /// frame's scene says it was painted at (what the wgpu renderer sizes thin dashes by).
     #[cfg(any(test, feature = "test-support"))]

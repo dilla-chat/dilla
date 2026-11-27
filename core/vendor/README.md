@@ -488,3 +488,10 @@ built and cloned every frame even with no screen reader. Test-support hooks `Win
 and `Window::a11y_tree_for_activation`; tests `activation_hands_a_lazy_adapter_the_whole_tree` in
 `clients/desktop/dilla-desktop/tests/vendored_patches.rs` and `activation_hands_over_the_last_frames_whole_tree` in
 `src/window/a11y.rs`. Keep it until upstream's activation callback returns a full tree.
+
+A seventh change (Task 11 of the desktop test-flakes plan, 2026-11-26), marked `DILLA PATCH`, test support only:
+`Window::painted_sprites` (`src/window.rs`) answers the last frame's pictures (polychrome sprites), as upstream's
+`Window::painted_quads` answers its quads; `rendered_frame` is private, so a test outside this crate could not see a
+picture's bounds or corner radii. `#[cfg(any(test, feature = "test-support"))]`, so a release build has none. Tests: the
+`dilla-desktop-ui` attachment and picture tests (a GIF tile paints one picture; a picture's corners follow its box).
+Keep it until upstream exposes the painted sprites.

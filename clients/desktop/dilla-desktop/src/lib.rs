@@ -123,11 +123,30 @@ pub fn install(cx: &mut App) {
     dilla_client::features::collate::set_locale(&format::date_locale());
     dilla_desktop_ui::theme::install(cx);
     gpui_component::init(cx);
+    signal_theme(cx);
     keys::bind_all(cx);
     // Task 21's Bot page asks for a fresh second factor through Task 26's step-up dialog (drawn by the overlays slot).
     cx.set_global(screens::bot_admin::bot_page::StepUp(std::rc::Rc::new(
         screens::factor::ask_step_up,
     )));
+}
+
+/// gpui-component's theme starts as its Light default, and dilla draws its own surfaces, so only the fields its input
+/// widgets still read from the theme are set here, each to the Signal token the web uses:
+/// - `caret`: the text colour `--fg` (a browser caret follows `currentColor`); Light's #0A0A0A is invisible on the field.
+/// - `muted_foreground`: `--fg-faint`, the web's `::placeholder` colour (the input paints an empty field's placeholder in it).
+///
+/// `selection` is read too but the web sets no `::selection` colour, so it is left on the library's default.
+///
+/// It runs once, at install. gpui-component's `Theme::change` and `Theme::sync_system_appearance` load the Light or Dark
+/// theme config again over the colours and would drop these fields: dilla calls neither today, so whoever adds a call to
+/// either must run this again right after it (else the caret goes back to Light's #0A0A0A, invisible on the fields).
+fn signal_theme(cx: &mut App) {
+    use dilla_desktop_ui::tokens::color;
+    gpui_component::Theme::update(cx, |theme| {
+        theme.caret = color::FG;
+        theme.muted_foreground = color::FG_FAINT;
+    });
 }
 
 /// Opens the main window on the OS data dir and keychain: the start window (400x280), which takes the authentication and
@@ -548,6 +567,31 @@ mod tests {
         });
         let b = cx.add_empty_window();
         b.update(|window, cx| assert_eq!(desktop_card_height(window, cx), None));
+    }
+
+    /// Every text field draws its caret in `theme().caret`; gpui-component's Light default #0A0A0A is invisible on the dark
+    /// field, so the caret takes the text colour, as a browser caret follows `currentColor`.
+    #[gpui::test]
+    fn the_theme_caret_is_the_text_colour(cx: &mut gpui::TestAppContext) {
+        cx.update(super::install);
+        cx.update(|cx| {
+            use gpui_component::ActiveTheme as _;
+            assert_eq!(cx.theme().caret, dilla_desktop_ui::tokens::color::FG);
+        });
+    }
+
+    /// A field's placeholder is painted in `theme().muted_foreground` (Light neutral-500 by default); the web's
+    /// `::placeholder` is `--fg-faint`.
+    #[gpui::test]
+    fn the_theme_placeholder_is_the_faint_text_colour(cx: &mut gpui::TestAppContext) {
+        cx.update(super::install);
+        cx.update(|cx| {
+            use gpui_component::ActiveTheme as _;
+            assert_eq!(
+                cx.theme().muted_foreground,
+                dilla_desktop_ui::tokens::color::FG_FAINT
+            );
+        });
     }
 
     #[gpui::test]

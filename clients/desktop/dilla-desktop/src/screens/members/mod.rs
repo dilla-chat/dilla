@@ -14,10 +14,12 @@ pub mod modlog;
 pub mod roles;
 mod self_roles;
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
 use dilla_client::Client;
+use dilla_client::ClientError;
 use dilla_client::features::members::{
     GroupKind as Kind, MenuAction, member_card, member_groups, member_name, shown_presence,
 };
@@ -30,12 +32,12 @@ use dilla_client::features::roles::{
 };
 use dilla_client::state::members::{BanSummary, Member, Presence as Wire};
 use dilla_client::state::roles::{RoleId, RoleSummary};
-use dilla_client::state::{AppState, CommunityId, UserId};
+use dilla_client::state::{AppState, ChannelId, CommunityId, UserId};
 use dilla_client::sync::api::ApiError;
 use gpui::{
-    AnyElement, App, AppContext, Entity, InteractiveElement, IntoElement, ParentElement, Pixels,
-    Point, SharedString, Styled, Window, WindowId, anchored, deferred, div, point,
-    prelude::FluentBuilder as _,
+    AnyElement, App, AppContext, Bounds, Entity, FocusHandle, InteractiveElement, IntoElement,
+    MouseDownEvent, ParentElement, Pixels, Point, SharedString, Styled, Window, WindowId, anchored,
+    deferred, div, point, prelude::FluentBuilder as _,
 };
 use gpui_component::input::InputState;
 
@@ -100,6 +102,16 @@ pub struct MembersUi {
     pub ctx: Option<SlotCx>,
     /// The member whose card is open, and where.
     pub card: Option<(UserId, Point<Pixels>)>,
+    /// The card's focus: its own handle and one per button in tab order (Message, the glyph actions, the close ×).
+    card_focus: Option<(FocusHandle, Vec<FocusHandle>)>,
+    /// What held the focus when the card opened: it gets it back when the card closes with the focus inside
+    /// (ProfileCard.tsx `opener`).
+    card_opener: Option<FocusHandle>,
+    /// What held the focus when the person menu opened (its row, from the keyboard): the card its Profile opens gives
+    /// the focus back there, not to the menu item that is gone by then (final review R4c).
+    menu_opener: Option<FocusHandle>,
+    /// The open card's row as last laid out: a press on it is the row's own (it toggles), not a press outside.
+    open_row: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The member whose person menu is open, and where.
     pub menu: Option<(UserId, Point<Pixels>)>,
     pub dialog: Option<ModDialog>,
@@ -432,28 +444,33 @@ fn list_with_overlays(
     let groups = groups(&state, community);
     let loading = groups.is_none() || !state.people.presence.contains_key(&community);
     let open_id = ui(w, cx).card.map(|(u, _)| SharedString::from(u.hex()));
+    let open_row = ui(w, cx).open_row.clone();
+    let opening = ctx.clone();
     let mut list = MemberList::new("members-list", groups.unwrap_or_default())
         .loading(loading, t("members.loading"))
         .empty_label(t("members.empty"))
         .bot_label(t("layout.profile.bot"))
         .open_id(open_id)
-        .on_open(move |id, window, cx| {
+        .open_row_bounds(open_row)
+        .on_open_from(move |id, row, window, cx| {
             let Some(user) = user_of(id) else { return };
-            let at = window.mouse_position();
-            let u = ui(w, cx);
-            u.menu = None;
-            u.card = if u.card.is_some_and(|(c, _)| c == user) {
-                None
-            } else {
-                Some((user, at))
-            };
-            cx.refresh_windows();
+            // The open member's row toggles its card (the press on it did not close it: see `card_overlay`).
+            if ui(w, cx).card.is_some_and(|(c, _)| c == user) {
+                close_card(w, window, cx);
+                return;
+            }
+            // A click places the card by the pointer; Enter by the row (final review R4b).
+            let at = row.map_or_else(|| window.mouse_position(), key_anchor);
+            let opener = window.focused(cx);
+            open_card(w, &opening, community, user, at, opener, window, cx);
         })
-        .on_menu(move |id, at, _window, cx| {
+        .on_menu(move |id, at, window, cx| {
             let Some(user) = user_of(id) else { return };
+            let opener = window.focused(cx);
             let u = ui(w, cx);
             u.card = None;
             u.menu = Some((user, at));
+            u.menu_opener = opener;
             cx.refresh_windows();
         });
     #[cfg(feature = "automation")]
@@ -535,8 +552,167 @@ fn action_label(a: MenuAction, name: &str) -> String {
     }
 }
 
-/// Runs a chosen action on `user` (the card's buttons and the person menu's items).
-fn choose(w: WindowId, community: CommunityId, user: UserId, id: &str, cx: &mut App) {
+/// The card's focus handles, at least `n` buttons' worth (they live as long as the window's members area).
+fn card_focus(w: WindowId, n: usize, cx: &mut App) -> (FocusHandle, Vec<FocusHandle>) {
+    let have = ui(w, cx).card_focus.as_ref().map_or(0, |(_, v)| v.len());
+    let root = ui(w, cx)
+        .card_focus
+        .is_none()
+        .then(|| cx.focus_handle().tab_stop(true));
+    let fresh: Vec<FocusHandle> = (have..n)
+        .map(|_| cx.focus_handle().tab_stop(true))
+        .collect();
+    let u = ui(w, cx);
+    if let Some(root) = root {
+        u.card_focus = Some((root, Vec::new()));
+    }
+    let (root, items) = u.card_focus.as_mut().expect("set above");
+    items.extend(fresh);
+    (root.clone(), items[..n].to_vec())
+}
+
+/// Test hook: the open card's focus handles (its own, then its buttons in tab order).
+#[doc(hidden)]
+pub fn card_focus_for_tests(w: WindowId, cx: &mut App) -> Option<(FocusHandle, Vec<FocusHandle>)> {
+    let u = ui(w, cx);
+    u.card?;
+    u.card_focus.clone()
+}
+
+/// Where a card opened from the keyboard is placed for its row laid out at `row`: [`card_overlay`] puts the card
+/// beside an anchor and [`space::POINTER_RISE`] above it, so this anchor puts it level with the row's top, beside it.
+fn key_anchor(row: Bounds<Pixels>) -> Point<Pixels> {
+    point(row.left(), row.top() + space::POINTER_RISE)
+}
+
+/// Opens `user`'s card at `at` (ProfileCard.tsx): the person menu closes, and the focus moves into the card, to its first
+/// button (else the card itself), remembering `opener` (what held the focus before: the row) to give it back.
+#[allow(clippy::too_many_arguments)]
+fn open_card(
+    w: WindowId,
+    ctx: &SlotCx,
+    community: CommunityId,
+    user: UserId,
+    at: Point<Pixels>,
+    opener: Option<FocusHandle>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let buttons = profile_card(w, ctx, community, user).map_or(0, |c| c.focusables());
+    let (root, items) = card_focus(w, buttons.max(1), cx);
+    let u = ui(w, cx);
+    u.menu = None;
+    u.menu_opener = None;
+    u.card = Some((user, at));
+    u.card_opener = opener;
+    window.focus(if buttons > 0 { &items[0] } else { &root }, cx);
+    cx.refresh_windows();
+}
+
+/// Closes window `w`'s card, if one is open (a press outside, Escape, the ×, an action, the row again); the focus goes
+/// back to what held it before when it was inside the card (ProfileCard.tsx's unmount). Answers whether one was open.
+pub fn close_card(w: WindowId, window: &mut Window, cx: &mut App) -> bool {
+    if crate::per_window::get::<MembersUi>(w, cx).is_none_or(|u| u.card.is_none()) {
+        return false;
+    }
+    let u = ui(w, cx);
+    u.card = None;
+    u.open_row.set(None);
+    let opener = u.card_opener.take();
+    let root = u.card_focus.as_ref().map(|(r, _)| r.clone());
+    let inside =
+        window.focused(cx).is_none() || root.is_some_and(|r| r.contains_focused(window, cx));
+    if inside && let Some(opener) = opener {
+        window.focus(&opener, cx);
+    }
+    cx.refresh_windows();
+    true
+}
+
+/// Message (Shell.tsx `startDm`): the DM with `user`, made when there is none, then opened. A DM already listed opens
+/// at once.
+fn message(
+    state: &AppState,
+    client: Option<Rc<Client>>,
+    user: UserId,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use crate::screens::dms::{Nav, navigate};
+    if let Some(dm) = state.dms.with(user, state.account.user_id) {
+        navigate(Nav::Dm(dm.id), window, cx);
+        return;
+    }
+    let Some(client) = client else { return };
+    open_dm(&client, user, window, cx);
+}
+
+/// Opens (or makes) the DM with `user` and goes there once it answers (Shell.tsx `startDm`; the member card's and the
+/// stage's Message).
+pub fn open_dm(client: &Client, user: UserId, window: &mut Window, cx: &mut App) {
+    let answer = client.dms().open_dm(user);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let answer = answer.await;
+        let _ = cx.update_window(handle, |_, window, cx| {
+            dm_opened(handle.window_id(), answer, window, cx);
+        });
+    })
+    .detach();
+}
+
+/// What [`open_dm`] does with the client's answer in window `w`: an opened DM is gone to; a refusal is a toast.
+#[doc(hidden)]
+pub fn dm_opened(
+    w: WindowId,
+    answer: Result<Result<ChannelId, ClientError>, tokio::sync::oneshot::error::RecvError>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let code = match answer {
+        Ok(Ok(channel)) => {
+            crate::screens::dms::navigate(crate::screens::dms::Nav::Dm(channel), window, cx);
+            return;
+        }
+        Ok(Err(ClientError::Sync(code))) => code,
+        Ok(Err(_)) => "E_NETWORK".to_owned(),
+        Err(_) => "E_STOPPED".to_owned(),
+    };
+    // Final review R4e: a DM that could not be opened says so, as every failed command does.
+    show_toast_in(
+        Some(w),
+        tf("shell.banner.commandError", &[("code", &code)]),
+        cx,
+    );
+}
+
+/// Compare (Shell.tsx `onCompare`): the safety-number comparison with `user`, from the trust record the window holds;
+/// with none held yet, Settings -> Privacy, as the web goes there.
+fn compare(
+    w: WindowId,
+    state: &AppState,
+    client: Option<Rc<Client>>,
+    user: UserId,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use crate::screens::dms::{Nav, compare, navigate};
+    match state.trust.contact(user) {
+        Some(record) => compare::open(w, record, client, cx),
+        None => navigate(Nav::Privacy, window, cx),
+    }
+}
+
+/// Runs a chosen action on `user` (the card's buttons and the person menu's items). Every action closes the card
+/// (MemberCardHost.tsx `onAction`).
+pub(crate) fn choose(
+    w: WindowId,
+    community: CommunityId,
+    user: UserId,
+    id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let Some(ctx) = ui(w, cx).ctx.clone() else {
         return;
     };
@@ -548,6 +724,7 @@ fn choose(w: WindowId, community: CommunityId, user: UserId, id: &str, cx: &mut 
     else {
         return;
     };
+    close_card(w, window, cx);
     let server = state
         .communities
         .iter()
@@ -562,7 +739,16 @@ fn choose(w: WindowId, community: CommunityId, user: UserId, id: &str, cx: &mut 
             open_assign(w, community, user, member_name(member).to_owned(), cx);
             return;
         }
-        // Message and compare hand over to the DM and trust views (Tasks 13 and 28 wire them).
+        "message" => {
+            ui(w, cx).menu = None;
+            message(&state, ctx.client.clone(), user, window, cx);
+            return;
+        }
+        "compare" => {
+            ui(w, cx).menu = None;
+            compare(w, &state, ctx.client.clone(), user, window, cx);
+            return;
+        }
         _ => return,
     };
     let u = ui(w, cx);
@@ -592,7 +778,16 @@ fn card_overlay(
 ) -> Option<AnyElement> {
     let w = window.window_handle().window_id();
     let (user, at) = ui(w, cx).card?;
-    let view = profile_card(w, ctx, community, user)?;
+    // Escape (also `keys`' interceptor, wherever the focus is) and the keyboard's close × close it.
+    let view = profile_card(w, ctx, community, user)?.on_close(
+        t("layout.profile.close"),
+        move |window, cx| {
+            close_card(w, window, cx);
+        },
+    );
+    let (root, items) = card_focus(w, view.focusables(), cx);
+    let view = view.focus(root, items);
+    let open_row = ui(w, cx).open_row.clone();
     // ProfileCard.tsx (the prototype's rule): right of the pointer by 14px, else left of it; 24px above it; 8px from the
     // window's edges.
     let viewport = window.viewport_size();
@@ -609,7 +804,24 @@ fn card_overlay(
             anchored()
                 .position(point(x, y))
                 .snap_to_window_with_margin(space::CARD_EDGE)
-                .child(view),
+                .child({
+                    // ProfileCard.tsx: a press outside the card closes it, except on its own row, whose click
+                    // toggles it (so that press neither closes it nor lets the click open it again).
+                    let wrap = div()
+                        .id("members-profile-card")
+                        .debug_selector(|| "members-profile-card".into())
+                        .relative()
+                        .on_mouse_down_out(move |e: &MouseDownEvent, window, cx| {
+                            if open_row.get().is_some_and(|b| b.contains(&e.position)) {
+                                return;
+                            }
+                            close_card(w, window, cx);
+                        })
+                        .child(view);
+                    #[cfg(feature = "automation")]
+                    let wrap = wrap.child(crate::automation::bounds_probe("members-profile-card"));
+                    wrap
+                }),
         )
         .with_priority(1)
         .into_any_element(),
@@ -669,7 +881,7 @@ pub fn profile_card(
             .collect(),
     )
     .actions(actions)
-    .on_action(move |id, _w, cx| choose(w, community, user, id, cx));
+    .on_action(move |id, window, cx| choose(w, community, user, id, window, cx));
     if !card.is_bot {
         view = view.client(t("layout.profile.web"));
     }
@@ -726,6 +938,7 @@ fn menu_overlay(
         items.push(item);
     }
     let username = card.username.clone();
+    let opening = ctx.clone();
     let head = div()
         .flex()
         .items_center()
@@ -778,11 +991,13 @@ fn menu_overlay(
         })
         .on_select(move |id, window, cx| {
             if id == "profile" {
-                let at = window.mouse_position();
+                // At the menu's own anchor (the pointer of the right-click, else the row the keyboard opened it under),
+                // and giving the focus back to what held it before the menu (final review R4b, R4c).
                 let u = ui(w, cx);
+                let at = u.menu.map_or_else(|| window.mouse_position(), |(_, at)| at);
+                let opener = u.menu_opener.take();
                 u.menu = None;
-                u.card = Some((user, at));
-                cx.refresh_windows();
+                open_card(w, &opening, community, user, at, opener, window, cx);
             } else if id == "copy" {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(format!("@{username}")));
                 ui(w, cx).menu = None;
@@ -792,7 +1007,7 @@ fn menu_overlay(
                     cx,
                 );
             } else {
-                choose(w, community, user, id, cx);
+                choose(w, community, user, id, window, cx);
             }
         })
         .into_any_element(),
@@ -1060,9 +1275,9 @@ pub fn pane(route: &Route, window: &mut Window, cx: &mut App) -> Option<AnyEleme
             .size_full()
             .bg(color::BG_2)
             .key_context("MembersPane")
-            .on_action(move |_: &keys::CloseCard, _w, cx| {
-                let u = ui(w, cx);
-                if u.card.take().is_some() || u.menu.take().is_some() {
+            .on_action(move |_: &keys::CloseCard, window, cx| {
+                let card = close_card(w, window, cx);
+                if ui(w, cx).menu.take().is_some() && !card {
                     cx.refresh_windows();
                 }
             })

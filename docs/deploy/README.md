@@ -10,7 +10,7 @@ writes, and the Proxmox LXC helper. There is no container image.
 
 ### Upgrading to Bot v2 (wire 6)
 
-Bot v2 is wire 6 with no compatibility: every desktop app has to update, and a browser tab reloads once. The
+Bot v2 is wire 6 with no compatibility: every desktop app has to update. The
 [release notes](releases/v0.1.0-bot2.md) have the order. In short, upgrade `dillad` first, then the Bot, in one
 maintenance window:
 
@@ -67,86 +67,24 @@ credentials.
 
 ### Open tabs during an upgrade
 
-Music player (task 8b): upgrade `dillad` with its web client first and reload open tabs, then `dillabot`. An older
-web client cannot read the newer Bot's music snapshot; an older Bot simply does not post the "started music" message.
-
-Server settings (task 10c): upgrade `dillad` and `dillabot` together and reload open tabs. Until then:
-
-- A tab opened before the upgrade still shows the old DJ roles card on the Music page. The upgrade removes that setting:
-  every DJ role becomes a role with the **Control music (DJ)** permission, so that card can no longer be saved. Reload
-  the tab.
-- A tab opened before the upgrade can still save the Bot's capabilities. Its request does not mention Polls and
-  Reminders, so the server keeps them as they are.
-- A tab opened before the upgrade drops **Control music** (bit 25) from any role or channel permissions it saves, because its permission mask is the old one. Reload before editing roles or channel permissions.
-- An older `dillabot` reports no version, so Glenn's card shows none. A Restart stays "not picked up yet" until the newer
-  `dillabot` runs. The Music page's default volume and idle-leave time take effect only with the newer `dillabot`, and
-  the older one cannot read the new permission bit, so it refuses commands from owners, administrators and DJs.
-  Upgrade both together.
+`dillad` no longer serves a browser client (see [the release notes](releases/unreleased.md)), so there are no tabs to
+reload: upgrade `dillad` and `dillabot` together, as the notes of each release say. Older notes below that tell you
+to reload a tab describe releases that served one.
 
 Wire 5 adds ephemeral build, presence and coarse-call telemetry frames on the existing gateway. See
 [transport inventory and rollback](../realtime-transport.md) for transport behavior, authorization and native-state
 requirements. API and Bot artifacts must come from the same complete combined release.
 
-Account kind (task S1, wire 4): a tab opened before the upgrade keeps talking wire 3 and works as before; after a reload it
-negotiates wire 4 and starts checking each person's signed account kind. `dillabot` stays on wire 3 next to wire-4
-people, so the order above still holds. Once browsers run wire 4, do not roll `dillad` back below it (see
+Account kind (task S1, wire 4): `dillabot` stays on wire 3 next to wire-4 people, so the order above still holds. Once
+clients run wire 4, do not roll `dillad` back below it (see
 [Client data version per release](#client-data-version-per-release)).
 
 For upgrades already running the media sidecar, the normal path is:
 
-```mermaid
-sequenceDiagram
-    actor Operator
-    participant Rollout as Upgrade process
-    participant API as dillad API and web
-    participant Media as dillad media
-    participant Tab as Open browser tab
-    participant Store as Browser IndexedDB
-
-    Operator->>Rollout: Upgrade to a new release
-    Rollout->>API: Replace binary and web assets, then restart
-    Note over Media: Existing rooms survive the API restart
-    Rollout->>Media: Restart after API checks
-    Note over Media: A media restart closes its rooms
-    API-->>Tab: Verified build entry on gateway ready/resume
-    loop On load, visibility/network return, reconnect or a new build hint
-        Tab->>API: GET /app-version.json (no-store)
-        API-->>Tab: Current JavaScript entry path
-    end
-    alt Entry differs from the tab's loaded entry
-        Note over Tab: Wait for modal forms and live/recovering calls to finish
-        Tab->>Store: Save encrypted view, drafts, files, and call choice
-        Tab->>API: Reload the page
-        API-->>Tab: Serve the new web build
-        Tab->>Store: Read checkpoint
-        Store-->>Tab: Return encrypted checkpoint
-        Tab->>Tab: Decrypt and restore view, drafts, files, and call choice
-        Tab->>Store: Delete checkpoint
-        opt Previously in community voice
-            Tab->>API: Reconnect and request call admission
-            API-->>Tab: Allow the call join
-            Tab->>Media: Establish a new media connection
-        end
-    else Entry is unchanged
-        Note over Tab: Keep the current page
-    end
-```
-
-The current browser verifies `/app-version.json` on startup, foreground, network return and
-gateway reconnect, and when wire 5 supplies a new build entry. It never polls versions periodically.
-An unresolved new hint retries with bounded backoff; verification stops those retries. A changed
-entry waits for open modal forms and live/recovering calls, then checkpoints the view, drafts and
-selected attachments before reloading and restoring them. Pre-login pages and browsers without
-working checkpoint storage offer a manual reload. Screen sharing needs another click after
-rejoining because the browser requires a user gesture. An older tab retains its older updater
-until it reloads; reload it once to receive the current WSS-only activity and coarse-stats producers.
-
-The media sidecar keeps the SFU room alive during an API restart, but the API's signalling and TURN
-connections reset. The browser attempts to rejoin voice after a lost connection. Restarting the
-media process closes its rooms. During the two minutes after an app update is detected or restored,
-the browser also reopens a community voice room that closes with `E_CALL_ENDED`. A DM call that
-ends stays ended. Outside that window, and on tabs from before this feature, a person must choose
-Join again. A network or browser permission refusal can also require a manual join.
+The desktop app updates itself and reconnects; `dillad` serves no web assets and no `/app-version.json`, and the
+gateway sends no build hint. The media sidecar keeps the SFU room alive during an API restart, but the API's signalling
+and TURN connections reset. The app attempts to rejoin voice after a lost connection. Restarting the media process
+closes its rooms. A DM call that ends stays ended. A network or permission refusal can require a manual join.
 
 `dillad doctor --config=/etc/dilla/dilla.toml` checks the configuration, the database, the data
 directory's mode and ownership, the wasi core, the clock, the certificate, the TURN relay, the
@@ -362,34 +300,17 @@ What it fixes, and the keys that change it:
 
 ## 2. Building from source
 
-### Build dillad with the web client from source
+### Build dillad from source
 
-The committed `internal/web/dist/index.html` is a placeholder. Build the browser client before
-compiling dillad from source, then place the built files in the directory that `go:embed` reads.
-These are the build and manifest-check commands used by CI's `web-build` and `go-release` jobs,
-run from the repository root:
+`dillad` embeds no browser client, so there is nothing to build first. Build the two release binaries from the
+repository root:
 
 ```sh
-wasm-pack build core/dilla-core-wasm --target web --profile wasm-release --mode no-install --out-dir ../../packages/core-wasm/pkg
-node scripts/check-wasm-size.mjs packages/core-wasm/pkg/dilla_core_wasm_bg.wasm
-npm ci
-npm run typecheck -w @dilla/core-wasm
-npm run typecheck -w @dilla/client-core
-npm run typecheck -w @dilla/web
-npm run build -w @dilla/web
-npm run build:harness -w @dilla/client-core
-go test -tags webdist ./internal/web/...
-rm -rf internal/web/dist
-cp -a packages/web/dist internal/web/dist
-test -f internal/web/dist/index.html
-if grep -q 'content="placeholder"' internal/web/dist/index.html; then echo "internal/web/dist still holds the placeholder client"; exit 1; fi
-DILLA_WEB_DIST="$PWD/internal/web/dist" go test -tags webdist ./internal/web/...
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-amd64 ./cmd/dillad
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o dist/dillad-linux-arm64 ./cmd/dillad
 ```
 
-CI downloads the `dilla-web-dist` artifact into `internal/web/dist` in place of the local `cp`.
-The `DILLA_WEB_DIST` test checks those exact bytes before either release binary is compiled.
+The MLS core `dilla_core_wasi.wasm` stays a separate file beside the binary (see the top of this page).
 
 ## 3. systemd
 
@@ -452,17 +373,20 @@ Two directives are absent on purpose, and each has a comment in the unit:
 Exit status 78 means `dilla.toml` is wrong; the unit does not restart on it
 (`RestartPreventExitStatus=78`), so read `journalctl -u dilla`, fix the file and start it again.
 
-### Desktop downloads: `--desktop-downloads` and `--desktop-downloads-channel`
+### Desktop downloads: `--desktop-downloads-channel` (and the deprecated `--desktop-downloads`)
 
-`dillad serve --desktop-downloads` (off by default) shows browser visitors the Download Dilla page, and
+**`--desktop-downloads` is deprecated and has no effect.** `dillad` always serves the Download Dilla page at
+`/download` (every old browser-client URL redirects there) and `/download/<platform>`. The flag is still accepted, so an
+`ExecStart` that carries it keeps starting; it logs one warning that names the flag. Remove it from `ExecStart` when
+convenient, or leave it: both work.
+
 `/download/<platform>` redirects to the current desktop release. dillad reads the channel's signed feed from GitHub
 Pages and its `.sig`, and verifies the Ed25519 signature under the metadata key it pins. It checks the feed's
 `channel` field, version form and expiry. The redirect is built from the verified version and goes only to
 `github.com/dilla-chat/dilla/releases/download/<tag>/`. A feed that does not verify gets a 503 page that links to
 the releases page.
 
-`--desktop-downloads-channel` picks the release line. It has an effect only with `--desktop-downloads`, but its
-value is checked either way:
+`--desktop-downloads-channel` picks the release line. Its value is always checked:
 
 | Value | Feed | Feed `channel` | Release tag | Platforms |
 |---|---|---|---|---|
@@ -474,13 +398,12 @@ server never serves a beta document, and a `beta` server never serves a GPUI one
 at startup with a usage error (exit 2, and no fallback to `beta`). Exit 2 is not in `RestartPreventExitStatus`, so
 check `journalctl -u dilla` after changing the flag. To switch an instance to the native GPUI client, add the flag
 to `ExecStart` with `systemctl edit dilla` and restart. The empty `ExecStart=` clears the unit's own line first.
-A second `ExecStart=` in a drop-in replaces the whole command line, so repeat `--desktop-downloads` next to
-`--desktop-downloads-channel` (the channel flag alone does nothing), and keep the empty `ExecStart=` before it:
+A second `ExecStart=` in a drop-in replaces the whole command line, so keep the empty `ExecStart=` before it:
 
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/dillad serve --config=%E/dilla/dilla.toml --desktop-downloads --desktop-downloads-channel=gpui-alpha
+ExecStart=/usr/local/bin/dillad serve --config=%E/dilla/dilla.toml --desktop-downloads-channel=gpui-alpha
 ```
 
 Switch only after the GPUI feed is live (the first signed GPUI release). Until then every `/download/<platform>`
@@ -554,8 +477,9 @@ What it does, in order:
    alone on stdout.
 
 The link is printed on every exit after init, even a failed one, because it cannot be shown again.
-It is valid for 24 hours and one sign-up: open it in a browser to make the first account, then start a server and
-invite people from the web client ([Start a server](../user/getting-started.md#start-a-server)).
+It is valid for 24 hours and one sign-up: open it in Dilla desktop (the link's page has an "Open Dilla desktop" button, or paste the code into the app's first
+step) to make the first account, then start a server and invite people from the app
+([Start a server](../user/getting-started.md#start-a-server)).
 If a step after init fails, the script says how to start over:
 `systemctl disable --now dilla; rm -rf /var/lib/dillad /var/lib/dillabot /etc/dilla/dilla.toml`, then run it again.
 
@@ -1173,8 +1097,11 @@ new one, and putting the old `rp_id` back brings back only the ones registered u
 
 ### Client data version per release
 
-The web client keeps its data in the browser, in a store with a schema number. A client refuses a store whose number
-is newer than the one it knows (web-3.6 onwards) and shows "This version of dilla is too old for the data saved in
+(Historical: this section describes the browser client, which `dillad` no longer serves since 2026-11-26. Dilla
+desktop keeps its data in its own per-instance stores.)
+
+The web client kept its data in the browser, in a store with a schema number. A client refused a store whose number
+was newer than the one it knew (web-3.6 onwards) and showed "This version of dilla is too old for the data saved in
 this browser" with both numbers: "That data needs data version {found}; this version of dilla reads up to
 {supported}. Update to the newer version of dilla, or ask the host of this server."
 

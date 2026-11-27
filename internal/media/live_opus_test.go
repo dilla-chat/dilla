@@ -226,3 +226,89 @@ func TestPausedProviderSendsSilenceAndNoSourceSamples(t *testing.T) {
 		t.Fatalf("resume sample=%v position=%d err=%v", sample.Data, p.PositionMS(), err)
 	}
 }
+
+func TestLiveOpusDrainedClosesAfterLastSample(t *testing.T) {
+	p, err := NewLiveOpusProvider(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := byte(1); i <= 3; i++ {
+		if err := p.WriteSample(context.Background(), []byte{0xfc, i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	drained := p.Drained()
+	if err := p.CloseInput(); err != nil {
+		t.Fatal(err)
+	}
+	for i := byte(1); i <= 3; i++ {
+		select {
+		case <-drained:
+			t.Fatalf("Drained closed with %d queued samples left", 4-i)
+		default:
+		}
+		sample, err := p.NextSample(context.Background())
+		if err != nil || sample.Data[1] != i {
+			t.Fatalf("sample %d = %v, %v", i, sample.Data, err)
+		}
+	}
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("Drained stayed open after the last queued sample was handed out")
+	}
+	if _, err := p.NextSample(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("NextSample after drain = %v, want EOF", err)
+	}
+}
+
+func TestLiveOpusHeldFirstSampleWaitsForGate(t *testing.T) {
+	p, err := NewLiveOpusProvider(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	gate := make(chan struct{})
+	p.HoldFirstSample(gate)
+	if err := p.WriteSample(context.Background(), []byte{0xfc, 1}); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan error, 1)
+	go func() { _, err := p.NextSample(context.Background()); got <- err }()
+	select {
+	case err := <-got:
+		t.Fatalf("first sample handed out before its gate opened: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(gate)
+	select {
+	case err := <-got:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first sample stayed held after its gate opened")
+	}
+}
+
+// A held provider's writer must start only once its gate opened (publishWithCompletion reads startGate): LiveKit's
+// writer paces from its first call, so one that waited inside NextSample would send the held audio in a burst.
+func TestLiveOpusStartGateIsOpenOnlyWhileHeld(t *testing.T) {
+	p, err := NewLiveOpusProvider(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if p.startGate() != nil {
+		t.Fatal("an unheld provider has a start gate")
+	}
+	gate := make(chan struct{})
+	p.HoldFirstSample(gate)
+	if p.startGate() == nil {
+		t.Fatal("a held provider has no start gate")
+	}
+	close(gate)
+	if p.startGate() != nil {
+		t.Fatal("a released provider still has a start gate")
+	}
+}
