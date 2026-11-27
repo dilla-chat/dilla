@@ -922,7 +922,6 @@ mod tests {
     #[cfg(feature = "automation")]
     #[gpui::test]
     fn the_search_shrinks_before_the_end_group_overlaps_it(cx: &mut gpui::TestAppContext) {
-        use crate::automation::probed;
         cx.update(crate::install);
         let long = "Stark's Pond, the long room name of a very large call";
         let (host, vcx) = cx.add_window_view(|_, _| BarHost {
@@ -945,6 +944,8 @@ mod tests {
             vcx.run_until_parked();
             vcx.update(|window, cx| window.simulate_next_frame(cx));
             vcx.run_until_parked();
+            let window = vcx.update(|window, _| window.window_handle().window_id());
+            let probed = |id| crate::automation::probed(window, id);
             let slot = probed("topbar-search-slot").expect("slot");
             let field = probed("topbar-search-field").expect("field");
             let end = probed("topbar-end").expect("end");

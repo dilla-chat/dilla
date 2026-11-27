@@ -122,7 +122,9 @@ fn measure(cx: &mut VisualTestContext) -> Measure {
     // Paint once more so the probes record this frame.
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
-    let row = dilla_desktop::automation::probed("message-row-1").expect("the second message's row");
+    let window = cx.update(|window, _| window.window_handle().window_id());
+    let row = dilla_desktop::automation::probed(window, "message-row-1")
+        .expect("the second message's row");
     let avatar = cx.debug_bounds("probe-avatar").expect("the avatar");
     let picker = cx.debug_bounds("probe-picker").expect("the picker list");
     Measure {
