@@ -65,14 +65,13 @@ compile_error!(
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::sync::Mutex;
 
 use dilla_client::testing::spec;
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, FocusHandle, HeadlessAppContext, IntoElement, Keystroke,
     Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
     PlatformInput, Point, Render, ScrollDelta, ScrollEvent, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, point, prelude::*, px,
+    StatefulInteractiveElement, Styled, Window, WindowId, canvas, div, point, prelude::*, px,
 };
 
 use dilla_desktop_ui::tokens::color;
@@ -99,12 +98,20 @@ pub fn fixture_window_controls() -> bool {
 /// Marks a binary as an automation build. The release-build test greps for it.
 pub const AUTOMATION_MARKER: &str = "dilla-automation-interface/1";
 
-/// The painted bounds of every probed element in the latest frame.
-static BOUNDS: Mutex<Option<HashMap<&'static str, Bounds<Pixels>>>> = Mutex::new(None);
-/// The visible line boxes of every text line painted in the latest frame.
-static TEXT: Mutex<Vec<Bounds<Pixels>>> = Mutex::new(Vec::new());
+/// The painted bounds of every probed element in the latest frame, by window and probe id. A probe id such as
+/// `topbar-voice` is painted by every window that draws a title bar, so the registry is kept per window, and per
+/// thread ([`BOUNDS`]): a [`WindowId`] only numbers the windows of one app, and parallel tests each own an app.
+type BoundsMap = HashMap<(WindowId, &'static str), Bounds<Pixels>>;
 
 thread_local! {
+    /// The painted bounds of every probed element in the latest frame. GPUI paints on the thread that drives its app
+    /// (a test's, or the session's), so each app's windows have this thread's registry to themselves: tests running
+    /// in parallel threads never read each other's paints (a process-global map keyed by id alone let one test's
+    /// title bar overwrite the bounds another was about to assert on).
+    static BOUNDS: RefCell<BoundsMap> = RefCell::new(HashMap::new());
+    /// The visible line boxes of every text line painted in the latest frame, by window: kept per thread and window
+    /// for the same reason as [`BOUNDS`].
+    static TEXT: RefCell<Vec<(WindowId, Bounds<Pixels>)>> = const { RefCell::new(Vec::new()) };
     /// The focus handles of the elements that registered one through [`focus_probe`], by element id, in the latest
     /// frame. GPUI draws on the thread that drives the session, so the registry is that thread's.
     static FOCUS: RefCell<Vec<(&'static str, FocusHandle)>> = const { RefCell::new(Vec::new()) };
@@ -129,22 +136,27 @@ pub fn followed(window: AnyWindowHandle) -> AnyWindowHandle {
     })
 }
 
-fn with_bounds<R>(f: impl FnOnce(&mut HashMap<&'static str, Bounds<Pixels>>) -> R) -> R {
-    let mut guard = BOUNDS.lock().expect("bounds registry");
-    f(guard.get_or_insert_with(HashMap::new))
+fn with_bounds<R>(f: impl FnOnce(&mut BoundsMap) -> R) -> R {
+    BOUNDS.with(|map| f(&mut map.borrow_mut()))
 }
 
-/// The bounds the probe `id` recorded when it last painted: what the driver's `element` answers, for an in-process test.
-pub fn probed(id: &str) -> Option<Bounds<Pixels>> {
-    with_bounds(|map| map.get(id).copied())
+/// The bounds the probe `id` recorded in `window` when it last painted: what the driver's `element` answers, for an
+/// in-process test. Only that window's own paints are read, so tests running in parallel never see each other's.
+pub fn probed(window: WindowId, id: &str) -> Option<Bounds<Pixels>> {
+    with_bounds(|map| {
+        map.iter()
+            .find(|((w, probe), _)| *w == window && *probe == id)
+            .map(|(_, b)| *b)
+    })
 }
 
 /// An invisible overlay that records the bounds of its parent under `id` each time it paints.
 pub fn bounds_probe(id: &'static str) -> impl gpui::IntoElement {
     canvas(
-        move |bounds, _window, _cx| {
+        move |bounds, window, _cx| {
+            let window_id = window.window_handle().window_id();
             with_bounds(|map| {
-                map.insert(id, bounds);
+                map.insert((window_id, id), bounds);
             })
         },
         |_, (), _, _| {},
@@ -171,6 +183,22 @@ pub fn focus_probe(id: &'static str, handle: &FocusHandle) -> impl gpui::IntoEle
     .size_full()
 }
 
+fn record_text(window: &Window, visible: Bounds<Pixels>) {
+    let id = window.window_handle().window_id();
+    TEXT.with(|t| t.borrow_mut().push((id, visible)));
+}
+
+/// The text line boxes `window` painted in its latest frame, as [`text_probe`] and the typed-text probes recorded them.
+pub fn text_lines(window: WindowId) -> Vec<Bounds<Pixels>> {
+    TEXT.with(|t| {
+        t.borrow()
+            .iter()
+            .filter(|(w, _)| *w == window)
+            .map(|(_, b)| *b)
+            .collect()
+    })
+}
+
 /// An invisible overlay that records its parent's box as a text line each time it paints. Only the part inside the
 /// current clip is kept: a line scrolled out or clipped away reports nothing.
 pub fn text_probe() -> impl gpui::IntoElement {
@@ -178,7 +206,7 @@ pub fn text_probe() -> impl gpui::IntoElement {
         move |bounds, window, _cx| {
             let visible = window.content_mask().bounds.intersect(&bounds);
             if visible.size.width > px(0.) && visible.size.height > px(0.) {
-                TEXT.lock().expect("text registry").push(visible);
+                record_text(window, visible);
             }
         },
         |_, (), _, _| {},
@@ -203,7 +231,7 @@ pub fn typed_text_probe(text: String, size: Pixels, line: f32) -> impl gpui::Int
                 let b = Bounds::new(bounds.origin + rect.origin, rect.size);
                 let visible = window.content_mask().bounds.intersect(&b);
                 if visible.size.width > px(0.) && visible.size.height > px(0.) {
-                    TEXT.lock().expect("text registry").push(visible);
+                    record_text(window, visible);
                 }
             }
         },
@@ -232,7 +260,7 @@ pub fn typed_line_probe(text: String, size: Pixels, line: f32) -> impl gpui::Int
             );
             let visible = window.content_mask().bounds.intersect(&b);
             if visible.size.width > px(0.) && visible.size.height > px(0.) {
-                TEXT.lock().expect("text registry").push(visible);
+                record_text(window, visible);
             }
         },
         |_, (), _, _| {},
@@ -467,10 +495,10 @@ impl Session {
         self.cx.run_until_parked();
         // After the parked work: the account's motion setting is applied when its state moves, which that work may do.
         self.cx.update(|cx| cx.set_reduce_motion(true));
-        with_bounds(HashMap::clear);
-        TEXT.lock().expect("text registry").clear();
-        FOCUS.with(|f| f.borrow_mut().clear());
         let window = self.window();
+        with_bounds(|map| map.retain(|(w, _), _| *w != window.window_id()));
+        TEXT.with(|t| t.borrow_mut().retain(|(w, _)| *w != window.window_id()));
+        FOCUS.with(|f| f.borrow_mut().clear());
         let _ = self
             .cx
             .update_window(window, |_, window: &mut Window, cx: &mut App| {
@@ -483,10 +511,12 @@ impl Session {
 
     /// Draws until two frames in a row describe the same screen (bounds and text lines), at most 60 frames.
     fn wait_idle(&mut self) -> Option<usize> {
+        let window = self.window().window_id();
         let snapshot = || {
             let mut bounds: Vec<(String, [f32; 4])> = with_bounds(|m| {
                 m.iter()
-                    .map(|(k, b)| {
+                    .filter(|((w, _), _)| *w == window)
+                    .map(|((_, k), b)| {
                         (
                             (*k).to_owned(),
                             [
@@ -500,12 +530,7 @@ impl Session {
                     .collect()
             });
             bounds.sort_by(|a, b| a.0.cmp(&b.0));
-            let text: Vec<String> = TEXT
-                .lock()
-                .expect("text registry")
-                .iter()
-                .map(rect)
-                .collect();
+            let text: Vec<String> = text_lines(window).iter().map(rect).collect();
             (bounds, text)
         };
         let mut previous = None;
@@ -523,7 +548,8 @@ impl Session {
 
     fn element(&mut self, id: &str) -> Option<Bounds<Pixels>> {
         self.frame();
-        with_bounds(|map| map.get(id).copied())
+        let window = self.window().window_id();
+        probed(window, id)
     }
 
     fn event(&mut self, event: PlatformInput) {
@@ -697,7 +723,7 @@ impl Session {
 
     fn text_bounds(&mut self) -> Vec<Bounds<Pixels>> {
         self.frame();
-        TEXT.lock().expect("text registry").clone()
+        text_lines(self.window().window_id())
     }
 
     fn screenshot(&mut self, path: &str) -> Result<(u32, u32), String> {
@@ -979,9 +1005,11 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
         }
         (Some("elements"), None, None) => {
             session.frame();
+            let window = session.window().window_id();
             let mut all: Vec<String> = with_bounds(|map| {
                 map.iter()
-                    .map(|(id, b)| format!("{id} {}", rect(b)))
+                    .filter(|((w, _), _)| *w == window)
+                    .map(|((_, id), b)| format!("{id} {}", rect(b)))
                     .collect()
             });
             all.sort();
@@ -1129,6 +1157,69 @@ mod tests {
         assert_eq!(followed(start), again);
         assert_eq!(followed(workspace), again);
         assert_eq!(followed(other), other, "another window is not moved");
+    }
+
+    /// Two windows paint a probe of the same id at different sizes: each is read back with its own bounds, whichever
+    /// painted last (the registry once kept one entry per id, so parallel tests read each other's paints).
+    #[gpui::test]
+    fn a_probe_is_read_back_per_window(cx: &mut gpui::TestAppContext) {
+        struct Probed(f32);
+        impl Render for Probed {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(self.0))
+                    .h(px(10.))
+                    .child(bounds_probe("per-window-probe"))
+            }
+        }
+        let a: AnyWindowHandle = cx.add_window(|_, _| Probed(100.)).into();
+        let b: AnyWindowHandle = cx.add_window(|_, _| Probed(200.)).into();
+        let (wa, wb) = (a.window_id(), b.window_id());
+        for window in [a, b, a] {
+            cx.update_window(window, |_, w: &mut Window, cx: &mut App| {
+                w.refresh();
+                w.draw(cx).clear(cx);
+            })
+            .expect("draw");
+        }
+        let width = |w| probed(w, "per-window-probe").map(|r| f32::from(r.size.width));
+        assert_eq!(width(wa), Some(100.));
+        assert_eq!(width(wb), Some(200.));
+    }
+
+    /// The same for text lines: two windows each paint one line of a different width, and each reports only its own (the
+    /// registry is cleared by the driver's frame, so each window paints once here).
+    #[gpui::test]
+    fn a_text_line_is_read_back_per_window(cx: &mut gpui::TestAppContext) {
+        struct Lined(f32);
+        impl Render for Lined {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(self.0)).h(px(10.)).child(text_probe())
+            }
+        }
+        let a: AnyWindowHandle = cx.add_window(|_, _| Lined(100.)).into();
+        let b: AnyWindowHandle = cx.add_window(|_, _| Lined(200.)).into();
+        let (wa, wb) = (a.window_id(), b.window_id());
+        for window in [a, b] {
+            cx.update_window(window, |_, w: &mut Window, cx: &mut App| {
+                w.refresh();
+                w.draw(cx).clear(cx);
+            })
+            .expect("draw");
+        }
+        let widths = |w| -> Vec<f32> {
+            text_lines(w)
+                .iter()
+                .map(|r| f32::from(r.size.width))
+                .collect()
+        };
+        // A window's frames each add their line (the driver clears them per frame), so judge by what is there: only
+        // its own width, and some.
+        for (window, want) in [(wa, 100.), (wb, 200.)] {
+            let got = widths(window);
+            assert!(!got.is_empty(), "the window painted a line");
+            assert!(got.iter().all(|w| *w == want), "{got:?} is not all {want}");
+        }
     }
 
     #[test]
