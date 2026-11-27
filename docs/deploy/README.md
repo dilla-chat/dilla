@@ -67,7 +67,7 @@ credentials.
 
 ### Open tabs during an upgrade
 
-`dillad` no longer serves a browser client (see [the release notes](releases/unreleased.md)), so there are no tabs to
+`dillad` no longer serves a browser client (see [the release notes](releases/v0.1.0-gpui4.md)), so there are no tabs to
 reload: upgrade `dillad` and `dillabot` together, as the notes of each release say. Older notes below that tell you
 to reload a tab describe releases that served one.
 
