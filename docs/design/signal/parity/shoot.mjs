@@ -390,7 +390,7 @@ async function openAppPage(browser, state, pair) {
     return { page, mobile, cdp: undefined, restore: async () => {}, done: () => context.close() };
   }
   const port = state.cdp?.[who];
-  if (port === undefined) throw new Error(`state has no browser "${who}": the browser world (ux:world) was removed`);
+  if (port === undefined) throw new Error(`state has no browser "${who}": the state file lists no such browser (the browser world was removed)`);
   const remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
   let page, cdp, orig;
   try {
