@@ -11,14 +11,14 @@ listen.
 
 ## Join and leave a voice channel
 
-![Ada in the voice channel Lounge of Midgard Crew: Mira, Sam (LIVE), Björn (muted), Ada and Lin listed under it,
-Ada's own tile on the stage, the call panel above her user panel, and Mute, Deafen, Camera, Share and Leave along the
-bottom](screenshots/voice-stage-group.png)
+![Ada alone in the voice channel Lounge of Midgard Crew: her name under Lounge in the channel list, her tile "Ada
+(you)" on the stage, the call panel above her user panel, and Mute, Deafen, Camera, Share and Leave along the
+bottom](screenshots/gpui-voice-stage.png)
 
 A server's voice channels sit in the channel list among its text channels, in the server's order, each with a speaker
 icon ([One channel list](getting-started.md#one-channel-list)). A new server starts with one called general, and its
-owner can add more with the **+** at the top of the list ([Add a channel](getting-started.md#add-a-channel)); here Ada
-added "harbour". While people are in one, it shows how many are in it, and the people are listed under it, one line
+owner can add more with the **+** at the top of the list ([Add a channel](getting-started.md#add-a-channel)); here the
+voice channel is Lounge. While people are in one, it shows how many are in it, and the people are listed under it, one line
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
 the server after you opened the app are shown by name too.
 

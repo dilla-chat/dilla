@@ -218,8 +218,9 @@ mean are in [Bot commands](bot-commands.md#webhooks).
 A command you cannot run yet stays in the picker, greyed, with the reason. See [Greyed
 commands](bot-commands.md#greyed-commands).
 
-![Server settings → Bot: Glenn's card ("No bot is installed for this server.") with Enable, and a switch for each
-part of the Bot](screenshots/bot-admin-health-channels.png)
+![Server settings → Bot: Glenn, "Managed bot · online", with Restart and ⋯, a switch for each part of the Bot (Polls,
+Reminders and Welcome messages on), Voice access, "Commands are working", the Bot channel #bot-log, and Webhooks with
+Create webhook](screenshots/bot-admin-installed.png)
 
 ### Members
 
@@ -233,7 +234,7 @@ over the screen: focus moves into it, and **close members**, Escape or a click o
 **members**.
 
 ![The member list beside #general with Björn's profile card open: his name, "@bjorn · offline", Message and the
-buttons beside it](screenshots/members-profile-card.png)
+buttons beside it](screenshots/members-profile-card-native.png)
 
 A whole row is one button. Click it, press Enter on it, right-click it, or press Shift+F10 or the ContextMenu key with the
 row focused, and it opens that person's **profile card**. The card is a popover beside the row; it closes on a click outside it or on Escape, and its banner follows the round corners. A long name wraps and a long bio scrolls. **Message** opens the direct message and the shield button opens the safety-number comparison. The card shows a large avatar, the name, the @username, the status ("online", "idle", "do not
@@ -517,7 +518,7 @@ You choose one of two kinds, and can have both:
 
 ### Setting it up
 
-At sign-up it is [step 4 of 6](#step-4-of-6-add-a-second-factor): the choice, then the set-up. The same screens
+At sign-up the choice is [step 4 of 6](#step-4-of-6-add-a-second-factor) and the set-up step 5. The same screens
 appear when an account has none (for example after an operator reset it) and in Settings → Sign-in.
 
 For an app: "In the app, add an account and scan this code. If you cannot scan it, type the setup key instead." The
@@ -670,9 +671,9 @@ or **Passkey** ("Touch ID, Windows Hello or a security key"), then **Continue**.
 There is no way to skip this step and no way back to the key: the account exists now. If you close the app here, the
 next time you open this instance it asks for the second factor before anything else.
 
-The screen that sets the factor up still says step 4 of 6; the step after it is step 6.
+### Step 5 of 6: Enter your code
 
-![Still step 4 of 6, "Enter your code": the QR code, the setup key with Copy, "Six digits. The app shows a new one
+![Step 5 of 6, "Enter your code": the QR code, the setup key with Copy, "Six digits. The app shows a new one
 every 30 seconds.", the six code boxes, Verify and Back](screenshots/factor-app.png)
 
 For an authenticator app: scan the QR code with the app on your phone, or type the setup key, then type the six digits
@@ -734,8 +735,8 @@ From left to right:
   messages](#home-and-direct-messages)); under a line come your servers, one tile each with its initials, and under
   them one dashed **+** tile, "add a server". The **+** opens "add a server" with two choices: **join a server**, where
   you paste a server invite ("A server invite, as a code or a link.") and press **Join**, and **new server**
-  ([Start a server](#start-a-server)). A number on a server tile counts its unread channels, and on the **@** tile your
-  unread direct messages. The rail has no settings button: settings are the button in the top bar.
+  ([Start a server](#start-a-server)). A number on a server tile counts your mentions there; the **@** tile has no count
+  yet. The rail has no settings button: settings are the button in the top bar.
 - **The channel list.** The server's name with the **⌄** server menu beside it (**Server settings**, **Mute server** and the notification choices; leave server is in Settings → Overview; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
   [categories](#servers-and-categories), with a **+** at the top for people who may manage channels ([Add a
   channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
@@ -758,8 +759,8 @@ app](screenshots/shell-reconnecting.png)
 ### Home and direct messages
 
 The **@** tile at the top of the rail opens your direct messages, The sidebar then lists
-your direct messages instead of a server's channels, and the **@** tile stays selected until you pick a server. A badge
-on the **@** tile counts your unread direct messages. A link to a direct message opens it with **@** selected too.
+your direct messages instead of a server's channels, and the **@** tile stays selected until you pick a server. A direct
+message with unread messages has a dot in that list. A link to a direct message opens it with **@** selected too.
 
 ![Home: the @ tile selected and the list of direct messages, Mira with an unread dot and Björn](screenshots/dms-home.png)
 
@@ -932,7 +933,8 @@ For an account whose factor is a passkey, step 2 is "Use your passkey": "This ac
 browser asks for it when you continue." The button is **Use passkey**, and your system's browser opens for it. A
 passkey from another account says "That passkey belongs to another account." Choose the right key, your app code or
 a backup code. If the passkey did not check that it is you, the screen asks for your code as well: "This passkey did
-not check that it is you, so {instance} also asks for your code."
+not check that it is you, so {instance} also asks for your code." A passkey the instance does not know says
+"{instance} does not know this passkey. It may belong to another account or another server."
 
 **Use a backup code** replaces either with one of your backup codes: "Type one of the backup codes you saved when you
 added your second factor. Each code works once." The app keeps the code until the key step and does not use it up
@@ -989,8 +991,8 @@ for example "active 2 days ago · 8b20ce". The id stays on every row, because a 
 changed there. "not yet in the device list" marks a device that signed in with your password but was never added;
 "removed" marks one that was removed. **Rename** is in each row's menu (right-click, a long press, or Shift+F10).
 
-![Settings → Devices: this device, tagged THIS DEVICE, with "this device · active now" and Sign out, and an unnamed
-second device with its id and Remove](screenshots/user-settings-devices.png)
+![Settings → Devices: this device, "Dilla on Linux" with the tags DESKTOP · LINUX and THIS DEVICE, "this device ·
+active now" and Sign out, and a second device, "Ada's laptop", with its id and Remove](screenshots/user-settings-devices-named.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1008,7 +1010,7 @@ second device with its id and Remove](screenshots/user-settings-devices.png)
   confirm." **Sign out** removes it and returns to the first screen.
 
 ![The dialog "Sign out and remove this device?" with the Recovery key field, "0 of 52 characters", Close and Sign
-out](screenshots/user-settings-devices-sign-out.png)
+out](screenshots/user-settings-devices-sign-out-named.png)
 
 **If the recovery data is not yours.** If the instance holds recovery data that this account did not make,
 a red warning stays at the top of the app and of Settings → Devices: "The recovery data stored for this
@@ -1028,14 +1030,12 @@ If you changed your account's identity key from another device, a device still o
 
 ## 8. Badges, direct messages and notifications
 
-![Ada in #general: the channel loot under Raids shows "1 new"](screenshots/notify-dm-badge.png)
+![Mira in #general: the channel loot under Raids shows "1 new"](screenshots/notify-unread-badge.png)
 
-A channel with unread messages shows a count, and mentions have their own count. The server's tile in the
-rail counts its unread channels, and the **@** tile counts your unread direct messages: here #loot has one new
-message. Opening a channel or a direct message marks it read. Your own messages, from any
-of your devices, never count as unread.
-
-![Mira's view of the same server: loot under Raids shows "1 new"](screenshots/notify-unread-badge.png)
+A channel with unread messages shows how many are new ("1 new"), and mentions have their own count. A server's tile in
+the rail shows a count only for mentions. A direct message with unread messages has a dot in the direct-message list
+([Home and direct messages](#home-and-direct-messages)); the **@** tile carries no count yet. Opening a channel or a
+direct message marks it read. Your own messages, from any of your devices, never count as unread.
 
 Under the **@** tile, choose **message someone** ("Pick a member of this server."), choose **message** next
 to a person and write. A direct message someone else starts appears at once. Direct messages stay

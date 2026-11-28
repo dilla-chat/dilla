@@ -3059,3 +3059,23 @@ fn a_poll_card_votes_and_its_creator_closes_it(cx: &mut gpui::TestAppContext) {
     vcx.update(|_, cx| dilla_desktop::release::release_client(&client, cx));
     Rc::try_unwrap(client).ok().expect("the last handle").stop();
 }
+
+/// A GPUI-only reference (`native/commands-reminders-panel`, the docs' reminders panel): the bell's Reminders panel open
+/// over #general, in a world of fictional chat (the web's `commands/reminders` frame is kept for parity as it is).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_commands_reminders_panel() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("commands/reminders-native.json"),
+        "commands-reminders-panel",
+        |app| {
+            app.click("header-members");
+            app.wait_idle();
+            app.click("topbar-bell");
+        },
+    )
+    .unwrap_or_else(|e| panic!("commands/reminders-native differs from its golden shot: {e}"));
+}

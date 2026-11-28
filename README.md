@@ -34,7 +34,8 @@ Revoke](docs/user/screenshots/server-settings-invites.png)
 
 ![Step 3 of 6 of the sign-up: the recovery key, shown once, with Print and Save as file](docs/user/screenshots/gpui-onboarding-recovery-key.png)
 
-![Settings → Devices with two devices of one account: this device with Sign out, another with Remove](docs/user/screenshots/user-settings-devices.png)
+![Settings → Devices with two devices of one account: this device, Dilla on Linux, with Sign out, and Ada's laptop with
+Remove](docs/user/screenshots/user-settings-devices-named.png)
 
 ![Settings → Sign-in: the password, an authenticator app, a passkey and backup codes (8 of 10 left)](docs/user/screenshots/user-settings-sign-in.png)
 
@@ -42,7 +43,7 @@ Revoke](docs/user/screenshots/server-settings-invites.png)
 
 ![The voice channel Lounge with five people listed under it, Ada's tile on the stage, and the call controls](docs/user/screenshots/voice-stage-group.png)
 
-![The member list with Björn's profile card open](docs/user/screenshots/members-profile-card.png)
+![The member list with Björn's profile card open](docs/user/screenshots/members-profile-card-native.png)
 
 ![The bottom row in a call: Ada's user panel, the channel and its ping, and Mute, Deafen, Camera, Share and
 Leave](docs/user/screenshots/voice-dock.png)

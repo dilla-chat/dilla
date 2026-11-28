@@ -358,3 +358,41 @@ async fn appearance_density_saves_on_a_real_instance() {
     })
     .await;
 }
+
+/// GPUI-only references (`native/user-settings-devices-named`, `-sign-out-named`, the docs' Devices): this device names
+/// itself as the native app does ("Dilla on <os>") and the sign-up device is "Ada's laptop" (`fixture::devices`); the web
+/// references name the shooter's browser.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_user_settings_devices_named() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture_path("devices-named"),
+        "user-settings-devices-named",
+        |app| {
+            app.wait_for("device-0-action", Duration::from_secs(60));
+        },
+    )
+    .unwrap_or_else(|e| panic!("user-settings/devices-named differs from its golden shot: {e}"));
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_user_settings_devices_sign_out_named() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture_path("devices-sign-out-named"),
+        "user-settings-devices-sign-out-named",
+        |app| {
+            app.wait_for("device-0-action", Duration::from_secs(60));
+            app.click("device-0-action");
+        },
+    )
+    .unwrap_or_else(|e| {
+        panic!("user-settings/devices-sign-out-named differs from its golden shot: {e}")
+    });
+}

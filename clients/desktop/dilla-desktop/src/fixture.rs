@@ -344,7 +344,7 @@ pub fn build_state(
         ..AppState::default()
     };
     attachments::apply(world, viewer, &mut state);
-    devices::apply(world, viewer, &mut state);
+    devices::apply(&fixture.name, world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
     diagnostics::apply_removed(fixture, ids, &mut state);
     dms::apply(world, viewer, shift, ids, &mut state);

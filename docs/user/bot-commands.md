@@ -55,8 +55,9 @@ earlier stay where they are. A poll in a channel that is not a Bot channel stays
 ![Server settings → Channels, the dialog "Edit #dev": Channel name, Topic, Category, Slow mode and the Bot channel
 switch on, "The Bot joins this channel and can post here."](screenshots/server-settings-bot-channel.png)
 
-![Server settings → Bot: Glenn's card ("No bot is installed for this server.") with Enable, and a switch for each
-part of the Bot](screenshots/bot-admin-health-channels.png)
+![Server settings → Bot: Glenn, "Managed bot · online", with Restart and ⋯, a switch for each part of the Bot (Polls,
+Reminders and Welcome messages on), Voice access, "Commands are working", the Bot channel #bot-log, and Webhooks with
+Create webhook](screenshots/bot-admin-installed.png)
 
 If the Bot section says **The Bot needs adding to this channel again**, press **Add the Bot again**. This can happen when
 marking a channel and a Bot restart land at the same moment. It takes a minute at most.
@@ -98,8 +99,8 @@ the active chip. Escape leaves command mode and keeps your text.
 ![The command list in a thread's message box: /help, /me, /shrug, /tableflip, /unflip and /code, each marked
 built-in](screenshots/threads-command-list.png)
 
-![The reminders panel from the bell in the top bar: Due 0, Upcoming 0 and "No upcoming reminders. Try
-/remind."](screenshots/commands-reminders.png)
+![The reminders panel from the bell in the top bar over #general: Due 0, Upcoming 0 and "No upcoming reminders. Try
+/remind."](screenshots/commands-reminders-panel.png)
 
 ![A private result in #general: "No self-assignable roles are available." with Done, "Only you can see this" and
 Dismiss](screenshots/commands-private-result.png)

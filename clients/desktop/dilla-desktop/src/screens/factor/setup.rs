@@ -1145,8 +1145,14 @@ impl Render for FactorSetupView {
             return dialog.into_any_element();
         }
         let (step, progress) = match &self.origin {
-            Origin::SignIn { step, progress } | Origin::Signup { step, progress } => {
-                (step.clone(), Some(*progress))
+            Origin::SignIn { step, progress } => (step.clone(), Some(*progress)),
+            Origin::Signup { step, progress } => {
+                let (step, progress) = signup_step(
+                    step,
+                    *progress,
+                    matches!(self.step, Step::Totp | Step::Passkey),
+                );
+                (step, Some(progress))
             }
             _ => (String::new(), None),
         };
@@ -1196,6 +1202,40 @@ impl Drop for FactorSetupView {
     /// A ceremony left waiting on the system browser ends with the view.
     fn drop(&mut self) {
         self.cancel_ceremony();
+    }
+}
+
+/// The sign-up's step line and dots: the choice is the host's step (4 of 6), the app or passkey set-up the next one (5 of
+/// 6), so no two screens of the sign-up share a number.
+fn signup_step(choice: &str, (n, total): (u8, u8), setting_up: bool) -> (String, (u8, u8)) {
+    if !setting_up {
+        return (choice.to_owned(), (n, total));
+    }
+    let next = n + 1;
+    (
+        tf(
+            "onboarding.step",
+            &[("n", &next.to_string()), ("total", &total.to_string())],
+        ),
+        (next, total),
+    )
+}
+
+#[cfg(test)]
+mod step_tests {
+    #[test]
+    fn the_signup_set_up_is_step_5_after_the_choice_at_4() {
+        let choice = crate::strings::tf("onboarding.step", &[("n", "4"), ("total", "6")]);
+        assert_eq!(
+            super::signup_step(&choice, (4, 6), false),
+            (choice.clone(), (4, 6))
+        );
+        let (line, dots) = super::signup_step(&choice, (4, 6), true);
+        assert_eq!(dots, (5, 6));
+        assert_eq!(
+            line,
+            crate::strings::tf("onboarding.step", &[("n", "5"), ("total", "6")])
+        );
     }
 }
 
