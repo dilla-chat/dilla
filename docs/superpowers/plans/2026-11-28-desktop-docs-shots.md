@@ -276,9 +276,11 @@ native_factor_app; fixture TOTP secret `JBSWY3DPEHPK3PXP`-style fictional base32
   (`dilla_client::features::notify::should_notify`: the device switch, the permission, mutes, the channel on screen):
   what raises one (messages, mentions, rings with Answer/Decline), what a click does, replacing per conversation,
   closed to the tray, Windows Start-menu entry and macOS app bundle requirements, how to turn them off.
-- [ ] **Step 2: The shot.** Run a local `target/dilla-testhost` with two fictional accounts (Ada, Mira) in two
-  desktop app instances with separate data dirs; with Ada's window unfocused, Mira sends "Raid at nine?" in a channel
-  Ada is in. Capture with `spectacle -b -n -f -o <scratchpad>/full.png`, crop to the notification popup alone with
+- [ ] **Step 2: The shot** (Jonas 2026-11-28: "Automation trigger"). An automation-only command `notify-demo`
+  (`#[cfg(feature = "automation")]` in `src/automation.rs`) hands a fictional message notification — Mira in
+  #general, "Raid at nine?" — to `native::notifier::show`, the same `post` → XDG path a real message takes; a unit
+  test that the command builds that `Notification` and that it does not exist without the feature. Launch the
+  automation build, send `notify-demo`. Capture with `spectacle -b -n -f -o <scratchpad>/full.png`, crop to the notification popup alone with
   `magick`, delete `full.png` at once. Show the crop to Jonas before committing it.
 - [ ] **Step 3:** `npm run check:docs-shots` → OK. Commit `docs(desktop): notifications, with a Linux notification shot`.
 
