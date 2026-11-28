@@ -11,8 +11,8 @@ screen share and bots, with end-to-end encryption as the silent default. An inst
 server, the TURN relay and the download page for the desktop app, on SQLite or Postgres. Anyone who can run one process on a
 machine their group can reach can host it.
 
-![The desktop app: the server Midgard Crew, its channels general and loot, and a conversation in
-#general](docs/user/screenshots/shell-conversation.png)
+![The desktop app: Mira's view of Midgard Crew, with the channels random and general, a conversation in #general
+and the members](docs/user/screenshots/gpui-shell-conversation.png)
 
 ## What works today
 
@@ -29,22 +29,23 @@ As of the Signal redesign, wave B (unreleased, 2026-10-31), on top of the web3.1
 | Client changes (v0.1.0-bot2.4, desktop 0.1.0-beta.5) | The call card and Now playing stay visible inside a voice channel, and the animated signal bars are gone. A private Bot reply goes away a minute after it finishes (not while working or offering Retry; hovering or focusing it pauses the countdown). The Bot card has a ⋯ button with Rename, Refresh status and Disable. Message times are always 24-hour (20:27); dates and other times follow the system region. The desktop app shares a screen or window through a thumbnail picker on macOS, Windows and Linux X11 (Wayland keeps the system picker). A device that loses voice to another of your devices says "Voice moved to your other device." and does not rejoin. The poll form stays open when the Bot's command list refreshes. On the server, `bot music playback ended` carries `detail=` and a track that ends normally is not counted as failed, and repeated failed checks for new messages mark the Bot degraded in `dillad doctor`. No schema or wire change. See the [server notes](docs/deploy/releases/v0.1.0-bot2.4.md) and [desktop notes](docs/deploy/releases/desktop-v0.1.0-beta.5.md). |
 | Accounts, servers and calls (web3.12, 2026-10-22) | A new instance starts with the bootstrap invite: the first person signs up and starts a server ("new server"), which comes with a text and a voice channel called general. Whoever manages channels adds more, and every member who may invite makes invite links with an expiry and a number of uses (server settings → invites), so a group gets from an empty instance to talking without the HTTP API. Sign-up is six steps with a required second factor (an authenticator app or a passkey, plus backup codes); another device signs in with the password, the second factor and the recovery key, and Settings → Devices lists, renames and removes devices. Roles and private channels, slow mode, announcement channels, threads, the member list with profiles, the AFK channel, polls and a call code are all there. The details are in [Getting started](docs/user/getting-started.md) and [Voice, calls and media files](docs/user/voice.md). |
 
-![Inviting people to Midgard Crew: the invite link, copy link, "It can be used 10 times and expires in 7 days." and
-"Invite link copied."](docs/user/screenshots/create-invite-desktop.png)
+![Server settings → Invites for Midgard Crew: Expires after and Uses, Make invite link, and one active link with
+Revoke](docs/user/screenshots/server-settings-invites.png)
 
-![Step 3 of the sign-up: the recovery key, shown once](docs/user/screenshots/onboarding-3-recovery-key.png)
+![Step 3 of 6 of the sign-up: the recovery key, shown once, with Print and Save as file](docs/user/screenshots/gpui-onboarding-recovery-key.png)
 
-![Settings → Devices with two devices of one account](docs/user/screenshots/settings-devices.png)
+![Settings → Devices with two devices of one account: this device with Sign out, another with Remove](docs/user/screenshots/user-settings-devices.png)
 
-![Settings → Sign-in: the authenticator app, passkeys and backup codes of an account](docs/user/screenshots/settings-signin.png)
+![Settings → Sign-in: the password, an authenticator app, a passkey and backup codes (8 of 10 left)](docs/user/screenshots/user-settings-sign-in.png)
 
-![A conversation with a reply, reactions and the message toolbar](docs/user/screenshots/conversation-actions.png)
+![A conversation in #general with the message toolbar on Mira's message](docs/user/screenshots/messages-conversation-actions.png)
 
-![The voice channel harbour with Ada, Björn and Mira, and the call controls](docs/user/screenshots/voice-stage-desktop.png)
+![The voice channel Lounge with five people listed under it, Ada's tile on the stage, and the call controls](docs/user/screenshots/voice-stage-group.png)
 
-![The member list with a profile card open](docs/user/screenshots/members-desktop.png)
+![The member list with Björn's profile card open](docs/user/screenshots/members-profile-card.png)
 
-![The call dock and the user panel up close](docs/user/screenshots/dock-desktop.png)
+![The bottom row in a call: Ada's user panel, the channel and its ping, and Mute, Deafen, Camera, Share and
+Leave](docs/user/screenshots/voice-dock.png)
 
 ### The native desktop client (GPUI)
 
@@ -70,9 +71,9 @@ measured). What works today, screen by screen:
 | Members, roles and moderation | The members aside, the profile card and the person menu (message, mention, profile, edit roles, copy username, compare safety numbers, kick, ban) as your permissions allow, the moderation dialogs, and the Roles, Self roles, Members, Bans and Moderation log sections of the server settings. |
 | Server settings | Overview (name and AFK timeout, saved together; a dirty-draft guard on leaving; a section whose permission you lose falls back to one you still have), Channels, GIFs, Invites, Welcome, Join roles and Danger zone, only the sections your permissions allow. Welcome messages (channel and text, with Reload), ban details, and check boxes the size of the Electron app's. |
 | User settings | Profile, Devices (rename, remove a device with the recovery key, sign out), Appearance, Keyboard (the shortcut table), Privacy, Sign-in (password, authenticator app, passkeys, backup codes, each behind "Confirm it is you"), Notifications, Voice and Diagnostics. The bio field resizes. |
-| Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one; a focused tile has Grid and full screen), the person menu on a tile (right-click or Shift+F10: a person's or a stream's volume, applied to what you hear, Mute for me, profile, message, copy username; your own: mute, deafen, Move to another voice channel, leave), your own camera (Linux, Windows, macOS) and screen or window share from a picker with thumbnails (the system's dialog on Wayland and macOS), the stream quality applied live, and one application's sound with the share (Linux, Windows 10 2004 or newer, macOS 14.2 or newer), the call controls with the ping and ↑ ↓ kb/s, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus (with the PTT tag on the mute button; AltGr with the key is refused on Linux too), Return to call in Settings, joining with no speaker or microphone (listening, as the Electron app did), DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's page and move notice. Calls are end-to-end encrypted. The dock shows the link quality, and a shared window brings its application's sound. |
+| Voice, rings and AFK | Join and leave voice channels, the people under a channel, the dock, the stage with a tile per person (a person's camera or screen share is drawn when they send one; a focused tile has Grid and full screen), the person menu on a tile (right-click or Shift+F10: a person's or a stream's volume, applied to what you hear, Mute for me, profile, message, copy username; your own: mute, deafen, Move to another voice channel, leave), your own camera (Linux, Windows, macOS) and screen or window share from a picker with thumbnails (the system's dialog on Wayland and macOS), the stream quality applied live, and one application's sound with the share (Linux, Windows 10 2004 or newer, macOS 14.2 or newer), the call controls with the ping and ↑ ↓ kb/s, mute and deafen (Ctrl+Shift+M, Ctrl+Shift+D), push to talk while the window has focus (with the PTT tag on the mute button; AltGr with the key is refused on Linux too), Return to call in Settings, joining with no speaker or microphone (listening, as the Electron app did), DM calls with the incoming-ring banner (Enter answers, Escape declines), blocked calls and the comparison they offer, and the AFK channel's view and move notice. Calls are end-to-end encrypted. The dock shows the link quality, and a shared window brings its application's sound. |
 | Voice settings | Input and output devices and volumes, the microphone test with its sensitivity meter, the input mode and the push-to-talk key (F13 to F24, Pause, Scroll Lock, Insert), noise suppression, echo cancellation, automatic gain, and the join, leave and ring sounds. |
-| Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot page (its card with Restart and a menu to rename, refresh or disable the Bot, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music page (which roles may DJ), with the Now playing row in the dock. Every built-in command runs, in channels and threads (an uncertain one reopens its draft); the poll form, scheduled announcements and role panels (`/rolepanel create`) open from the message box; the Bot's "started music" message has a now-playing card and the voice stage a now-playing bar. A channel row's menu sets its notify mode and has Edit channel. |
+| Bot | The `/` command picker with named fields and greyed commands, private results, poll cards, reminders; in the server settings, the Bot section (its card with Restart and a menu to rename, refresh or disable the Bot, capabilities, health, Bot channels, webhooks, each change behind "Confirm it is you") and the Music section (which roles may DJ), with the Now playing row in the dock. Every built-in command runs, in channels and threads (an uncertain one reopens its draft); the poll form, scheduled announcements and role panels (`/rolepanel create`) open from the message box; the Bot's "started music" message has a now-playing card and the voice stage a now-playing bar. A channel row's menu sets its notify mode and has Edit channel. |
 | Notifications | The settings rows: the mode for the selected server and its @everyone switch, desktop notifications on this device, and one switch for the join, leave and ring sounds. Messages, mentions and rings raise operating-system notifications (a ring with Answer and Decline); a click opens the conversation. Rings and messages notify from the tray with every window closed, and after a start at login. On Linux an ended ring's notification is withdrawn and a newer message in a conversation replaces the earlier one. |
 | Search | The palette (Control/⌘+K or Ctrl+/) with Channels, People, Settings, Messages and Actions. Messages are found in this device's own decrypted history; the query never leaves the device. A result older than what is shown jumps to it. |
 | Diagnostics | Settings → Diagnostics: the connection, the slowest requests and the last 20 error codes, with Copy codes (codes only, nothing of your content). A log file for bug reports ([where it is](docs/user/desktop.md#logs); no content, keys or tokens). |
@@ -81,7 +82,7 @@ measured). What works today, screen by screen:
 | Several instances | One window and one client per instance, and the "Dilla - your instances" window to connect by address, join by invite, open or remove an instance (up to 32). |
 | Tray and background | The tray icon with your open instances, "Start Dilla at login" and "Quit Dilla"; closing the last window keeps Dilla running in the tray; the unread count in the tray's tooltip, the macOS dock and the Linux launcher; start at login opens no window. On macOS, the Dilla, Edit, View and Window menus. |
 
-![The native preview: Midgard Crew, #general](docs/user/screenshots/gpui-shell-conversation.png)
+![The desktop app: Midgard Crew, #general](docs/user/screenshots/gpui-shell-conversation.png)
 
 ## What is not there yet
 
@@ -120,8 +121,7 @@ As of 2026-10-22, in the client:
 - Comparing safety numbers with someone you share no conversation with ("Open a conversation with
   this person to compare numbers."), and scanning the QR code (it is shown for reading only). Privacy shows no date for a verification, and a verification made on one device
   does not carry over to your other devices. Privacy's note that a changed
-  contact left a conversation is lost after a reload (the contact still shows as changed), and the changed-identity
-  alert in a conversation opens Privacy, where you pick **Compare with …**, rather than the comparison itself.
+  contact left a conversation is lost after a restart (the contact still shows as changed).
 - Settings that follow you to your other devices (each device keeps its own), and server-readable channels.
 - Changing your own identity key keeps the other devices working only if they sign in again: a device left on the
   old key shows the "different identity" warning and must be enrolled again.

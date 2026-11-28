@@ -26,7 +26,7 @@ These are frames of the client itself (Linux, 1280 by 800 at twice the scale), s
 
 ![A thread open beside #general: the root message, two replies and the reply composer](screenshots/gpui-thread-open.png)
 
-![The voice channel harbour with Mira, Björn (muted) and Ada on the stage, the dock and the call controls](screenshots/gpui-voice-stage.png)
+![The voice channel Lounge with Ada on the stage, the call panel above her user panel, and the call controls](screenshots/gpui-voice-stage.png)
 
 ![Server settings, Overview: the server's name and AFK timeout](screenshots/gpui-server-settings.png)
 

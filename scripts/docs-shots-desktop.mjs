@@ -54,7 +54,7 @@ function main() {
   try {
     for (const [file, entries] of byFile) {
       const fns = [...new Set(entries.map((e) => e.fn))];
-      const cargoArgs = ['test', '-p', 'dilla-desktop', '--features', 'automation', '--test', file, '--', ...fns.flatMap((f) => ['--exact', f]), '--include-ignored'];
+      const cargoArgs = ['test', '-p', 'dilla-desktop', '--features', 'automation', '--test', file, '--', '--exact', ...fns, '--include-ignored'];
       const r = spawnSync('cargo', cargoArgs, { cwd: root, env, stdio: 'inherit' });
       if (r.status !== 0) fail(`${entries.map((e) => e.name).join(', ')}: cargo test --test ${file} failed`);
     }

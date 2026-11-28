@@ -49,28 +49,32 @@ channel. Turning the switch off removes the Bot from that channel.
 Commands work in any channel or direct message. What needs a Bot channel is anything the Bot posts: welcome
 messages, scheduled announcements, role panels, polls, the "Music started" card and webhook posts. Pick the Bot
 channel for each of these in its settings. Nothing is marked for you, so after the update those features keep their
-settings and post nothing until you pick one. The Bot page marks them "Needs a Bot channel". Posts the Bot made
+settings and post nothing until you pick one. The Bot section marks them "Needs a Bot channel". Posts the Bot made
 earlier stay where they are. A poll in a channel that is not a Bot channel stays readable but takes no more votes.
 
-![A text channel's settings with the Bot channel switch on](screenshots/bot-channel-toggle-desktop.png)
+![Server settings → Channels, the dialog "Edit #dev": Channel name, Topic, Category, Slow mode and the Bot channel
+switch on, "The Bot joins this channel and can post here."](screenshots/server-settings-bot-channel.png)
 
-![Server settings → Bot: health, Bot channels and webhooks](screenshots/bot-page-health-channels-desktop.png)
+![Server settings → Bot: Glenn's card ("No bot is installed for this server.") with Enable, and a switch for each
+part of the Bot](screenshots/bot-admin-health-channels.png)
 
-If the Bot page says **The Bot needs adding to this channel again**, press **Add the Bot again**. This can happen when
+If the Bot section says **The Bot needs adding to this channel again**, press **Add the Bot again**. This can happen when
 marking a channel and a Bot restart land at the same moment. It takes a minute at most.
 
 ## Greyed commands
 
-A command that cannot run now stays in the picker, greyed, with the reason under it. It does not disappear.
+A command that cannot run now stays in the picker, greyed, with the reason under it. It does not disappear. The
+reason is about the Bot or its channels, never about your own permissions.
 
-- **Mark a channel as a Bot channel first.** The command posts into a Bot channel and the server has none you
-  can see. Ask an admin to mark one.
+- **Mark a channel as a Bot channel first.** The command posts into a Bot channel and the server has none yet. Ask an
+  admin to mark one.
 - **The Bot is offline since 06:24.** The Bot is not running. The time is when it was last seen.
 - **The Bot is having trouble since 06:24.** The Bot is running but not answering in time. **Server settings →
   Bot** says "Commands failing since" with the same time.
 - **The Bot is turned off in this server**, or **This server has no Bot.**
 
-![The picker with a greyed command and its reason](screenshots/bot-picker-greyed-desktop.png)
+![The command picker for /announcement in #general: /announcement create greyed, with "Mark a channel as a Bot
+channel first" under it](screenshots/commands-picker-unavailable.png)
 
 If you send a command and nothing comes back within 5 seconds, the card says "The Bot didn't answer" and offers
 **Retry**. Retry sends the same command again and never runs it twice.
@@ -91,11 +95,14 @@ the active chip. Escape leaves command mode and keeps your text.
 | Announcements | `announcement list`, `announcement create [text]`, `announcement edit <announcement> [text]`, `announcement delete <announcement>` (need the Announcements feature on and Manage Community) |
 | Polls and reminders | `poll create`, `poll vote`, `poll results`, `poll close`, `remind <when> <text>`, `reminders list`, `reminders cancel`, `reminders dismiss` |
 
-![The command list](screenshots/signal-command-list.png)
+![The command list in a thread's message box: /help, /me, /shrug, /tableflip, /unflip and /code, each marked
+built-in](screenshots/threads-command-list.png)
 
-![A reminder’s inline chips](screenshots/signal-command-chips.png)
+![The reminders panel from the bell in the top bar: Due 0, Upcoming 0 and "No upcoming reminders. Try
+/remind."](screenshots/commands-reminders.png)
 
-![A private command result](screenshots/signal-private-result.png)
+![A private result in #general: "No self-assignable roles are available." with Done, "Only you can see this" and
+Dismiss](screenshots/commands-private-result.png)
 
 **/kick** and **/ban** ask you to confirm, with the person’s avatar and a Logged row.
 Ban also shows Duration and Reason; Kick has neither. **Cancel** adds a private
@@ -133,9 +140,9 @@ voted on and closed, and reminders already set are still delivered and can be
 listed, cancelled and dismissed. Saving a change asks for your password or second
 factor.
 
-The same page shows the bot's card ("Managed bot · online · v0.4.2"; the version
+The same section shows the bot's card ("Managed bot · online · v0.4.2"; the version
 shows once the bot reports it). **Restart** asks the bot to restart; it does so the
-next time it checks in with the server, and the page says "Restarting…" until it
+next time it checks in with the server, and the section says "Restarting…" until it
 has. Pending results recover on their own. The card's menu (right-click, a long
 press or Shift+F10) has **Rename**, **Refresh status** and **Disable**. The **⋯** button at the end of the card opens
 the same menu, so it is reachable without a right-click. Someone who may not manage the Bot sees only **Refresh status**.
@@ -159,14 +166,15 @@ curl -X POST 'https://dilla.example.org/hooks/<id>/<secret>' \
 ```
 
 `text` is up to 4000 bytes. `username` (up to 80 bytes) replaces the webhook's name on that post. `avatar_url` (an
-`https` address) shows a picture beside it. The server fetches that picture itself, so no member's device ever
-loads it. Discord's `content` field is read when `text` is missing, so many existing integrations work unchanged.
+`https` address) is accepted; the server fetches that picture itself, so no member's device ever loads it. The
+desktop app shows the Bot's placeholder avatar beside a webhook post. Discord's `content` field is read when `text` is missing, so many existing integrations work unchanged.
 Other fields are ignored.
 
 A post is plain text with links. It cannot run a command, and it does not ping anyone: mentions of people and roles
 are made harmless. `@everyone` and `@here` work only if you turned on **Allow @everyone** for that webhook.
 
-![A webhook post in a Bot channel, labelled "via webhook CI"](screenshots/bot-webhook-post-desktop.png)
+![A webhook post in #general, a Bot channel: Dilla Bot with its placeholder avatar, "via webhook CI" and "Deploy
+finished: staging runs 0.2.0-alpha.4"](screenshots/messages-webhook-post.png)
 
 A successful post answers `204` with no body. The other answers:
 
@@ -201,14 +209,16 @@ remove it.
 The form stays open when the Bot's command list refreshes in the background. If the Bot really stops offering polls
 while the form is open, the form closes and a private reply says "The Bot stopped offering polls. Try again."
 
-![Create a poll](screenshots/signal-poll-dialog.png)
+![The poll form "New poll in #general": the question, two answers, Add answer, Open for 24h, Allow several answers,
+Cancel and Post poll](screenshots/gpui-poll-form.png)
 
-The desktop app draws the same form, and polls in threads work there too (see [Dilla desktop](desktop.md#polls-and-commands)).
+Polls work in threads too (see [Dilla desktop](desktop.md#polls-and-commands)).
 
 Voting is single-choice by default; the creator can enable multiple
 choices. The poll shows named voters. Members can replace or withdraw their vote.
 
-![A poll card](screenshots/signal-poll-card.png)
+![A poll card from Dilla Bot: "Mira asked:", "What should we raid on Friday?" with the bridge and the harbour,
+"Open for 24 hours · pick one · 0 voters" and Close poll](screenshots/polls-card.png)
 
 The poll message names its author. The card shows time left, answer bars, your choices and a voter count.
 For multiple choices it counts distinct people across answers. A bounded read

@@ -101,6 +101,6 @@ test('the shooter removes target/debug/incremental when it fails', () => {
   assert.equal(existsSync(path.join(root, 'target/debug/incremental')), false);
 });
 
-test('the repository passes', { todo: 'Task 3' }, () => {
+test('the repository passes', () => {
   assert.deepEqual(checkDocsShots(repoRoot), []);
 });
