@@ -345,9 +345,19 @@ pub fn build_state(
     attachments::apply(world, viewer, &mut state);
     devices::apply(world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
+    diagnostics::apply_removed(fixture, ids, &mut state);
     dms::apply(world, viewer, shift, ids, &mut state);
+    dms::apply_trust(
+        &fixture.name,
+        world,
+        viewer,
+        ids,
+        fixture.clock + shift,
+        &mut state,
+    );
     // After the DMs: a DM's call is placed in the DM the dms facet made.
     calls::apply(world, viewer, ids, &mut state);
+    calls::apply_block(fixture, ids, &mut state);
     members::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     messages::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     music::apply(world, ids, &mut state);
