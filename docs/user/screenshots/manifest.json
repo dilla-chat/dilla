@@ -1,0 +1,16 @@
+{
+  "shots": {
+    "gpui-music-card.png": { "test": "bot_admin::parity_music_card_live", "frame": "native-music-card-live-gpui-2x.png" },
+    "gpui-music-stage.png": { "test": "voice::parity_music_stage_bar", "frame": "native-music-stage-bar-gpui-2x.png" },
+    "gpui-onboarding-recovery-key.png": { "test": "sign_in::parity_onboarding_keys", "frame": "onboarding-keys-gpui-2x.png" },
+    "gpui-poll-form.png": { "test": "bot::parity_polls_dialog", "frame": "polls-dialog-gpui-2x.png" },
+    "gpui-search.png": { "test": "search::parity_search_results", "frame": "search-results-gpui-2x.png" },
+    "gpui-server-settings.png": { "test": "server_settings::parity_server_settings_overview", "frame": "server-settings-overview-gpui-2x.png" },
+    "gpui-shell-conversation.png": { "test": "shell::parity_shell_conversation", "frame": "shell-conversation-gpui-2x.png" },
+    "gpui-thread-open.png": { "test": "threads::parity_threads_pane_open", "frame": "threads-pane-open-gpui-2x.png" },
+    "gpui-user-settings.png": { "test": "user_settings::parity_user_settings_profile", "frame": "user-settings-profile-gpui-2x.png" },
+    "gpui-voice-stage.png": { "test": "voice::parity_voice_stage", "frame": "voice-stage-gpui-2x.png" },
+    "gpui-welcome-settings.png": { "test": "server_settings::parity_server_settings_welcome_loaded", "frame": "native-server-settings-welcome-loaded-gpui-2x.png" }
+  },
+  "manual": {}
+}
