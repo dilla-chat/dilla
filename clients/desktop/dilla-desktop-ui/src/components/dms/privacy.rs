@@ -5,7 +5,7 @@
 //! Every text here goes through the text layer ([`line`], [`flow_paragraph`]), never a bare text child: a bare child
 //! names no family, so GPUI drew it in the host's `.SystemUIFont` (its width moved every column; tests/dms.rs
 //! `native_trust_screens_do_not_depend_on_system_fonts`), and it reports no line box, so the parity text mask left its
-//! glyphs in the chrome gate, where macOS's rasteriser failed the Linux goldens (`text_is_masked` in tests/dms.rs).
+//! glyphs in the chrome gate, where macOS's rasteriser failed the Linux goldens (`privacy_text_is_masked` in tests/dms.rs).
 
 use gpui::{InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
 
