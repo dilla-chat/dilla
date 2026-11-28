@@ -272,3 +272,54 @@ fn native_sign_in_key() {
         });
     assert!(report.text_lines > 0);
 }
+
+/// A GPUI-only reference of a pre-account screen that only a live instance reaches (plan "Desktop docs screenshots"
+/// Task 2d): the fixture starts there (`fixture::pre_account`, `fixture::factors`), and `probe` must be on it.
+fn native_pre_account(name: &str, golden: &str, probe: &'static str) {
+    let report = dilla_parity::screen::assert_native_screen(&fixture(name), golden, |app| {
+        app.wait_for(probe, WAIT);
+    })
+    .unwrap_or_else(|e| panic!("{name} differs from its golden shot native/{golden}: {e}"));
+    assert!(report.text_lines > 0);
+}
+
+/// The sign-in's last step, "Step 4 of 4": the recovery key added this device (`sign-in/done`).
+#[test]
+fn native_sign_in_done() {
+    native_pre_account("sign-in/done", "sign-in-done", "signin-open");
+}
+
+/// The sign-up's step 4, the second-factor choice of a new account (`onboarding/factor-choose`): the authenticator app
+/// or a passkey, no skip, and Forget this device under it.
+#[test]
+fn native_factor_choose() {
+    native_pre_account("onboarding/factor-choose", "factor-choose", "factor-kind");
+}
+
+/// The same step on the authenticator app: the QR code and the fixture's fictional setup key, and the six code boxes
+/// (`onboarding/factor-app`).
+#[test]
+fn native_factor_app() {
+    native_pre_account("onboarding/factor-app", "factor-app", "factor-totp-code");
+}
+
+/// The three fixtures start where their screens are: the sign-in's done step, the sign-up's factor step (the choice and
+/// the app), each with no account.
+#[test]
+fn the_client_only_fixtures_start_on_their_screens() {
+    for (name, start) in [
+        ("sign-in/done", PreAccount::SignInDone),
+        (
+            "onboarding/factor-choose",
+            PreAccount::SignUpFactor { app: false },
+        ),
+        (
+            "onboarding/factor-app",
+            PreAccount::SignUpFactor { app: true },
+        ),
+    ] {
+        let f = Fixture::load(&fixture(name), None).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(f.screen, FixtureScreen::Welcome(start), "{name}");
+        assert!(f.state.communities.is_empty(), "{name}: no account");
+    }
+}

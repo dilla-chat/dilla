@@ -563,6 +563,47 @@ impl AppView {
                     v.fixture_answer(pin, doc(), typed, answer, window, cx)
                 });
             }
+            PreAccount::SignInDone => {
+                self.show_sign_in(None, window, cx);
+                let Screen::SignIn(view) = &self.screen else {
+                    return;
+                };
+                let username = pa::username(&fixture.spec);
+                view.update(cx, |v, cx| {
+                    v.fixture_done(pin, doc(), &username, window, cx)
+                });
+            }
+            PreAccount::SignUpFactor { app } => {
+                // As `show_factor` draws a new account's factor: the sign-up's step 4 in the forced screen, here with
+                // no client (`fixture::factors`: the owed slice, and the app step's fictional setup key).
+                use crate::fixture::factors;
+                use crate::screens::factor::forced::ForcedFactorView;
+                use crate::screens::factor::setup::{FactorSetupView, Origin};
+                use crate::screens::onboarding::signup::TOTAL;
+                let name = fixture.spec.name.clone();
+                let username = pa::username(&fixture.spec);
+                let origin = Origin::Signup {
+                    step: crate::strings::tf(
+                        "onboarding.step",
+                        &[("n", "4"), ("total", &TOTAL.to_string())],
+                    ),
+                    progress: (4, TOTAL),
+                };
+                let setup = cx.new(|cx| {
+                    FactorSetupView::fixture(
+                        factors::server(),
+                        origin,
+                        factors::instance_doc(),
+                        factors::factors_of(&name, fixture.now),
+                        app.then(|| factors::totp_key(&name, &username)).flatten(),
+                        window,
+                        cx,
+                    )
+                });
+                let view = cx.new(|cx| ForcedFactorView::fixture(setup, window, cx));
+                self.screen = Screen::Factor(view);
+                cx.notify();
+            }
         }
     }
 

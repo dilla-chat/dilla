@@ -114,6 +114,32 @@ parity! {
     parity_user_settings_appearance_compact => "appearance-compact";
 }
 
+/// Settings → Sign-in (a GPUI-only reference, plan "Desktop docs screenshots" Task 2d): the password, the authenticator
+/// app, one passkey and eight backup codes left, from the factors slice the fixture fills (`fixture::factors`); the
+/// web's world has no reference of it.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_user_settings_sign_in() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/user-settings/sign-in.json");
+    let report = dilla_parity::screen::assert_native_screen(
+        &fixture,
+        "user-settings-sign-in",
+        |app| {
+            app.wait_for("signin-codes-make", Duration::from_secs(60));
+        },
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "user-settings/sign-in differs from its golden shot native/user-settings-sign-in: {e}"
+        )
+    });
+    assert!(report.text_lines > 0);
+}
+
 /// A window with the Profile section in it and Tab bound to the next focus, as the app's root does.
 struct Host {
     view: gpui::Entity<UserSettings>,

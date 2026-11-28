@@ -33,7 +33,8 @@ pub enum ForcedEvent {
 }
 
 pub struct ForcedFactorView {
-    client: Rc<Client>,
+    /// `None` only for a screen fixture (automation).
+    client: Option<Rc<Client>>,
     setup: Entity<FactorSetupView>,
     confirm: bool,
     /// Forgetting is under way (the sign-out and the wipe).
@@ -64,6 +65,27 @@ impl ForcedFactorView {
         let username = client.state().borrow().account.username.clone();
         let setup =
             cx.new(|cx| FactorSetupView::new(client.clone(), server, origin, username, window, cx));
+        Self::around(Some(client), setup, window, cx)
+    }
+
+    /// Automation (screen fixtures): the screen around a fixture's set-up ([`FactorSetupView::fixture`]), with no client:
+    /// its finish asks the instance nothing.
+    #[cfg(feature = "automation")]
+    pub fn fixture(
+        setup: Entity<FactorSetupView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::around(None, setup, window, cx)
+    }
+
+    /// The screen around `setup`: [`Self::new`] and [`Self::fixture`] differ only in `client`.
+    fn around(
+        client: Option<Rc<Client>>,
+        setup: Entity<FactorSetupView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subscription =
             cx.subscribe_in(&setup, window, |this, setup, e: &SetupEvent, window, cx| {
                 if let SetupEvent::Done { codes, .. } = e {
@@ -106,12 +128,15 @@ impl ForcedFactorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let reply = self.client.factors().setup_done();
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let reply = client.factors().setup_done();
         cx.spawn_in(window, async move |this, cx| {
             let answer = reply.await;
-            let _ = this.update_in(cx, |this, window, cx| match answer {
+            let _ = this.update_in(cx, |_, window, cx| match answer {
                 Ok(()) => {
-                    this.client.factor_completed();
+                    client.factor_completed();
                     cx.emit(ForcedEvent::Completed);
                 }
                 Err(e) => setup.update(cx, |s, cx| s.finish_refused(&e, window, cx)),
