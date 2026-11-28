@@ -309,10 +309,16 @@ func TestErrorEndRemovesItemButUserPauseKeeps(t *testing.T) {
 	if state := r.stored(t); state.Current == nil || state.Current.ID != b.ID || strings.Join(queueIDs(state), ",") != c.ID {
 		t.Fatalf("stored after A's error = %+v", state)
 	}
+	// The supervisor reports skips after it releases its lock, so after the successor's start: wait for the report.
+	waitFor(t, "A's skip report", func() bool { return len(r.skippedItems()) >= 1 })
+	if got := r.skippedItems(); strings.Join(got, ",") != a.ID {
+		t.Fatalf("skipped = %v, want A reported", got)
+	}
 
 	// B ends because its call group could not be caught up: removed, C starts.
 	r.starter.end(t, b.ID, fmt.Errorf("%w: %w", livekit.ErrCallBehind, errors.New("catch-up failed")))
 	waitFor(t, "C to start", func() bool { return r.starter.startCount(c.ID) == 1 })
+	waitFor(t, "B's skip report", func() bool { return len(r.skippedItems()) >= 2 })
 	if got := r.skippedItems(); strings.Join(got, ",") != a.ID+","+b.ID {
 		t.Fatalf("skipped = %v, want A and B reported", got)
 	}
