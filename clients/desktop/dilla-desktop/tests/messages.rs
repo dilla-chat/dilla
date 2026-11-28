@@ -57,6 +57,40 @@ fn post(own: bool, state: TimelineItemState, ts: u64) -> TimelineItem {
     }
 }
 
+/// Task 2 fix round 1: the pins dialog draws a pin's time in the zone the log draws its message in, the clock's. Under a
+/// fixture's frozen clock that is UTC whatever the OS zone, so the dialog and the log both say 11:08 for the same message
+/// (the dialog read the OS zone before, and said 12:08 on a UTC+1 host). Run under `TZ=Asia/Tokyo` it fails without the
+/// fix.
+#[test]
+fn a_pins_time_is_the_logs_time_under_a_fixture_clock() {
+    use dilla_desktop::screens::shell::Clock;
+    // 2026-11-12 11:08:50 UTC, the messages/pins fixture's message, read at its clock.
+    let ts = 1_794_481_730;
+    let clock = Clock::Fixed {
+        now: 1_794_481_738,
+        utc: true,
+    };
+    let pin = dilla_desktop::screens::messages::dialogs::pin_time(ts, clock);
+    assert_eq!(
+        pin, "11:08",
+        "the fixture clock's zone (UTC), not the OS zone"
+    );
+    let mut item = post(false, TimelineItemState::Ok, ts);
+    item.body = "rope".into();
+    let row = dilla_desktop::screens::timeline::spoken_item(
+        &AppState::default(),
+        &[],
+        CommunityId([2; 16]),
+        &item,
+        clock,
+        false,
+    );
+    assert!(
+        row.contains(&format!(", {pin}: ")),
+        "the log reads the same time: {row}"
+    );
+}
+
 /// e2e/web/slowmode-announce.spec.ts: the composer waits out the channel's slow mode after the own post, a post made
 /// meanwhile is queued, the countdown reads as the web reads it, and an announcement channel is read-only for a person
 /// who may not post there.

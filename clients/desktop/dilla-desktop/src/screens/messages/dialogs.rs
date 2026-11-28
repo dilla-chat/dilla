@@ -106,7 +106,6 @@ fn pins_dialog(
         .get(&channel)
         .cloned()
         .unwrap_or_default();
-    let now = ctx.clock.now();
     let (can_unpin, note) = pins_gate_of(state, channel);
     let mut list = div().flex().flex_col().w_full();
     // PinsDialog.css `__note`: the meta size in --fg-3, 12px over the list.
@@ -140,7 +139,7 @@ fn pins_dialog(
             "shell.pins.by",
             &[("name", &name_of(state, channel, Some(pin.pinned_by)))],
         );
-        let when = format::relative(pin.ts, now);
+        let when = pin_time(pin.ts, ctx.clock);
         let text_lines = paragraph(
             &excerpt(&pin.excerpt, 120),
             text::SM,
@@ -298,6 +297,13 @@ pub fn jump_from_pins(channel: ChannelId, msg: MessageId, window: &mut Window, c
             None => ui.not_loaded(channel, cx),
         }
     });
+}
+
+/// A pin's time in the dialog (Pins.tsx `formatRelative`), in the zone the log draws its rows in (the clock's: a fixture's
+/// frozen clock is UTC whatever the OS zone), so a pin reads the same time as its message in the log.
+pub fn pin_time(ts: u64, clock: crate::screens::shell::Clock) -> String {
+    let zone = |secs: i64| clock.offset(secs.max(0));
+    format::relative_in(ts, clock.now(), &zone, &format::date_locale())
 }
 
 /// The pins dialog's gate for a reader with the channel's permission `bits` (`None`: unknown, or a DM): whether Unpin is
