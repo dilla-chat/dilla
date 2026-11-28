@@ -201,6 +201,50 @@ by 2a for its rows and 2b for its rows, committed with `git commit --only`.
 - [ ] **Step 5:** Report both plain and `--include-ignored` runs of every touched test binary. Commit per builder:
   `test(desktop): fixtures and native goldens for the docs' <group> screens`.
 
+### Task 2c: The trust send pause and Compare from Settings → Privacy (amendment, Jonas 2026-11-28 "Into this docs PR")
+
+E2EE/trust boundary: opus implementer and opus review.
+
+**Files:**
+- Modify: `clients/desktop/dilla-desktop/src/screens/composer.rs` (`Composer::blocked`),
+  `src/screens/messages/composing.rs` (`Blocked`, `blocked_at`), `src/screens/dms/conversation.rs` (`composer_block`),
+  the settings host's overlay drawing so `src/screens/dms/compare.rs` opens from `src/screens/dms/privacy.rs`
+- Modify: `clients/desktop/dilla-desktop/tests/dms.rs` (`dms-identity-changed` re-blessed with the paused composer; the
+  comment at :479 made true), the README row
+- Create: fixture + native golden `privacy-compare` (`dms::native_privacy_compare`, the Compare dialog opened from
+  Settings → Privacy for a changed contact, with fixture keys)
+
+- [ ] **Step 1: Prove the send path first.** A `dilla-client` test with a channel whose `trust.send_blocks` holds an
+  `UmkChanged` block: does `messages` send (or `sync` post) refuse before any network call? Write the result in the
+  report. If a send can leave, that is the primary fix: refuse in the client before encrypting, error
+  `privacy.changed`; test `a_send_to_a_changed_member_is_refused_before_it_leaves`.
+- [ ] **Step 2:** Failing unit test `a_changed_member_pauses_the_composer` (composing or composer tests): with the
+  trust gate set for the channel, `blocked_at` returns a `Blocked::Trust(&'static str)` carrying
+  `composer_block`'s key; the composer draws the paused line with that text and Send/Enter do nothing.
+- [ ] **Step 3:** Wire `composer_block` into `blocked_at` (after the timeout and read-only checks, as Shell.tsx orders
+  `blockReason`). Pass.
+- [ ] **Step 4:** Failing test `compare_opens_from_settings_privacy` (automation: click `privacy-compare-0` in the
+  settings screen, the compare dialog's id is probed); make the settings host draw the compare overlay. Pass.
+- [ ] **Step 5:** Re-bless `dms-identity-changed`; add `privacy-compare`; README rows. Plain and `--include-ignored`
+  runs of every touched test binary, `cargo test -p dilla-client` for touched modules. Commit
+  `desktop: a changed member pauses the composer, and Compare opens from Settings → Privacy`.
+
+### Task 2d: Fixture facets for the client-only screens (amendment, Jonas 2026-11-28 "Make them fixture-able")
+
+**Files:** `clients/desktop/dilla-desktop/src/fixture*` (automation-gated, keyed by fixture name, as `apply_trust`),
+the screens' read paths only where they hard-require a `Client` for drawing (read state through the same seam the
+fixture fills; no behaviour change with a real client), tests in `sign_in.rs` / `user_settings.rs`, fixtures, goldens,
+README rows.
+
+Rows: `sign-in-done` (sign_in::native_sign_in_done), `user-settings-sign-in`
+(user_settings::native_user_settings_sign_in), `factor-choose`, `factor-app` (sign_in::native_factor_choose,
+native_factor_app; fixture TOTP secret `JBSWY3DPEHPK3PXP`-style fictional base32 only).
+
+- [ ] For each: failing test (no golden) → facet + fixture → bless → look → pass without bless. A screen change is
+  only allowed where drawing needs a `Client` for state a fixture can supply; any such change gets a unit test that
+  the real-client path is unchanged. Plain and `--include-ignored` runs reported. Commit
+  `test(desktop): fixture facets and goldens for sign-in done, Sign-in settings and second-factor setup`.
+
 ### Task 3: Swap the docs to the desktop shots and rewrite the browser text
 
 **Files:**
