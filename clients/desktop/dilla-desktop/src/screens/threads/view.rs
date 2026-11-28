@@ -878,7 +878,7 @@ impl Render for PaneView {
             .children(paused.map(|reason| {
                 div()
                     .debug_selector(|| "thread-composer-paused".to_owned())
-                    .mt(px(4.0))
+                    .mt(crate::screens::messages::css::len(4.))
                     .children(dilla_desktop_ui::text::paragraph(
                         reason,
                         text::SM,
