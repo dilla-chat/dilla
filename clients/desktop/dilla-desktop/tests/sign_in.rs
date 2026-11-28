@@ -247,3 +247,28 @@ fn parity_create_join() {
 fn parity_create_channel_private() {
     parity("create/channel-private");
 }
+
+/// The sign-in's recovery-key step on a new device, "Step 3 of 4" (a GPUI-only reference, plan "Desktop docs
+/// screenshots" Task 2: no web frame of it). The automation build has no network, so the fixture starts on the factor
+/// step and the test takes the one way on that needs none: a backup code (fictional) is given, which the screen holds
+/// until the key goes with it (R6), and the key step opens; the fixtures' fictional recovery key is typed into it.
+#[test]
+fn native_sign_in_key() {
+    let report =
+        dilla_parity::screen::assert_native_screen(&fixture("sign-in/key"), "sign-in-key", |app| {
+            app.wait_for("signin-use-backup", WAIT);
+            app.click("signin-use-backup");
+            app.wait_for("signin-backup", WAIT);
+            app.type_text("signin-backup", "FIXTUREBACKUPCODEABCDEFGHJ");
+            app.click("signin-backup-submit");
+            app.wait_for("signin-key", WAIT);
+            app.type_text(
+                "signin-key",
+                &"0123456789ABCDEFGHJKMNPQRSTVWXYZ".repeat(2)[..52],
+            );
+        })
+        .unwrap_or_else(|e| {
+            panic!("sign-in/key differs from its golden shot native/sign-in-key: {e}")
+        });
+    assert!(report.text_lines > 0);
+}

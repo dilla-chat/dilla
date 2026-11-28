@@ -437,3 +437,52 @@ fn parity_dms_picker() {
 fn parity_dms_picker_b() {
     parity("picker-b");
 }
+
+/// A GPUI-only reference of a trust screen (the docs' shots, plan "Desktop docs screenshots" Task 2): fixture `fixture`
+/// (`<area>/<state>`) against `native/<golden>`. The trust verdicts are the fixture's (`fixture/dms.rs` `apply_trust`):
+/// the web's references come from a world with no key rotation, so none shows a changed or verified contact.
+fn native_trust(fixture: &str, golden: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(format!("{fixture}.json"));
+    let report = dilla_parity::screen::assert_native_screen(&path, golden, |_| {})
+        .unwrap_or_else(|e| panic!("{fixture} differs from its golden shot native/{golden}: {e}"));
+    assert!(report.text_lines > 0);
+    println!(
+        "SCREEN native/{golden}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+/// Settings -> Privacy (`trust/privacy`): Björn verified with his compared key, Lin and Mira first seen here, each with
+/// Compare.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_privacy_section() {
+    native_trust("trust/privacy", "privacy-section");
+}
+
+/// Settings -> Privacy with Mira's identity changed (`trust/privacy-changed`): her row is the alert that cannot be
+/// dismissed, with its Compare; Björn verified, Lin first seen.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_privacy_changed() {
+    native_trust("trust/privacy-changed", "privacy-changed");
+}
+
+/// The DM with Mira after her identity changed (`dms/identity-changed`): the alert over the log and the composer paused
+/// with `privacy.changed`.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_dms_identity_changed() {
+    native_trust("dms/identity-changed", "dms-identity-changed");
+}

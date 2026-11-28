@@ -40,7 +40,9 @@ pub const BACKUP_CODES: usize = 10;
 pub fn start(fixture: &ScreenFixture) -> PreAccount {
     match fixture.name.as_str() {
         "sign-in/form" => PreAccount::SignIn,
-        "sign-in/factor" => PreAccount::SignInFactor,
+        // `sign-in/key` (a GPUI-only reference) starts on the factor step too: its test gives a backup code there, which
+        // the screen holds without the network and moves on to the recovery key.
+        "sign-in/factor" | "sign-in/key" => PreAccount::SignInFactor,
         "sign-in/error" => PreAccount::SignInError,
         "onboarding/identity" => PreAccount::SignUpIdentity,
         "onboarding/keys" => PreAccount::SignUpKeys,
