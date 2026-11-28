@@ -91,8 +91,10 @@ pub fn blocked_in(state: &AppState, channel: ChannelId, now_s: u64) -> Option<Bl
     }
 }
 
-/// The trust gate's pause in `channel` (Shell.tsx `blockReason` of the core's send gate).
-fn trust_block(state: &AppState, channel: ChannelId) -> Option<Blocked> {
+/// The trust gate's pause in `channel` (Shell.tsx `blockReason` of the core's send gate): the part of [`blocked_in`] that
+/// every way of sending into the conversation shares (the thread's reply composer, the inline editor's save), since the
+/// core refuses each of them on the same gate.
+pub fn trust_block(state: &AppState, channel: ChannelId) -> Option<Blocked> {
     crate::screens::dms::conversation::composer_block(state, channel).map(Blocked::Trust)
 }
 

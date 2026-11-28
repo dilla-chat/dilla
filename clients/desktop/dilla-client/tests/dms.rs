@@ -349,7 +349,8 @@ async fn rotation_keeps_visible_text_independent_group_works() {
 /// Task 2c step 1 (desktop docs shots): a send into the group of a member whose identity changed is refused before
 /// anything of it leaves this device. The core's `send_prepare` answers `E_UMK_CHANGED` (the gate `trust.send_blocks`
 /// is read from) and writes nothing: no outbox row, so no pending or failed row in the timeline and nothing for a
-/// drain to post; the peer, which decrypted this device's post before the rotation, never receives the refused one.
+/// drain to post; the peer, which decrypted this device's post before the rotation, never receives the refused one. An
+/// edit of that post (a type-1 fold, the same `send_prepare`) is refused on the same gate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
 async fn a_send_to_a_changed_member_is_refused_before_it_leaves() {
@@ -362,7 +363,7 @@ async fn a_send_to_a_changed_member_is_refused_before_it_leaves() {
     let peer_user = user_of(&setup);
     let channel_hex = setup["channel_id"].as_str().map(str::to_owned);
     // The positive control: before the rotation, a post of this device reaches the peer on this very path.
-    client
+    let posted = client
         .send_text(channel, "before rotation".into())
         .await
         .unwrap()
@@ -389,6 +390,17 @@ async fn a_send_to_a_changed_member_is_refused_before_it_leaves() {
         matches!(&refused, ClientError::Sync(code) if code == "E_UMK_CHANGED"),
         "the refusal is the changed key: {refused:?}"
     );
+    // Fix round 1: an edit is a type-1 fold through the same `send_prepare`, refused on the same gate.
+    let edit = client
+        .messages()
+        .edit(channel, posted, "edited after rotation".into())
+        .await
+        .unwrap()
+        .expect_err("the core refuses the edit");
+    assert!(
+        matches!(&edit, ClientError::Sync(code) if code == "E_UMK_CHANGED"),
+        "the edit's refusal is the changed key: {edit:?}"
+    );
     // Nothing was queued: the outbox (which the timeline shows as pending or failed rows) holds no row of it.
     tokio::time::sleep(Duration::from_secs(2)).await;
     let s = client.state().borrow().clone();
@@ -409,8 +421,11 @@ async fn a_send_to_a_changed_member_is_refused_before_it_leaves() {
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     assert!(
-        !peer.inbox.iter().any(|m| m["body"] == json!("refused")),
-        "the peer never received the refused post"
+        !peer
+            .inbox
+            .iter()
+            .any(|m| m["body"] == json!("refused") || m["body"] == json!("edited after rotation")),
+        "the peer never received the refused post or edit"
     );
 }
 

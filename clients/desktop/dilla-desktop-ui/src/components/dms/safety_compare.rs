@@ -147,7 +147,11 @@ impl RenderOnce for SafetyCompareBody {
             .flex_col()
             .gap(px(GAP))
             .min_w_0()
-            .child(line(self.identity, text::SM, lh, color::FG).weight(font::WEIGHT_LABEL));
+            // The state line wraps in the body's width (a long state, `privacy.changed`, never runs out of the dialog).
+            .child(
+                crate::text::flow_paragraph(self.identity, text::SM, lh, color::FG)
+                    .weight(font::WEIGHT_LABEL),
+            );
         if let Some(first) = self.first_seen {
             body = body.child(para(first, color::FG));
         }
