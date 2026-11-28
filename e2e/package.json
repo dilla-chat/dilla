@@ -12,11 +12,6 @@
     "test:e2e:core": "playwright test --config playwright.core.config.ts --project=chromium-core",
     "test:e2e:core:chromium": "playwright test --config playwright.core.config.ts --project=chromium-core",
     "test:e2e:core:firefox": "playwright test --config playwright.core.config.ts --project=firefox-core",
-    "docs:shots": "node scripts/shoot-docs.mjs",
-    "ux:world": "node ux/world.mjs",
-    "ux:shots": "node ux/shots.mjs",
-    "ux:sheets": "node ux/sheets.mjs",
-    "test:voice-fixture": "node --test unit/voice-join-fixture.test.mjs",
     "test:layout-source": "node --test unit/conversation-layout.test.mjs"
   },
   "devDependencies": {

@@ -17,7 +17,7 @@ export async function readFakeClock(clockURL: string, stage: string): Promise<nu
 }
 
 async function advance(clockURL: string, seconds: number, stage: string, sweep = true): Promise<void> {
-  // sweep: false defers the forced test-clock retention sweep (the UX world, e2e/ux/README.md); hooks still run.
+  // sweep: false defers the forced test-clock retention sweep (the removed UX world); hooks still run.
   const response = await fetch(clockURL, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ seconds, ...(sweep ? {} : { sweep: false }) }),
   });

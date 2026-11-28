@@ -229,8 +229,7 @@ test("a docs-only PR runs every workflow's changes job and reports its ok job", 
 
 // The guard for the whole table: every file that a test or a build reads from another place must trigger the
 // reader's jobs when it changes. It scans the sources for relative paths in reads and resolves them.
-// Readers that no CI job runs (pre-existing): e2e/scripts/shoot-docs.test.mjs reads docs/user/*.md, and nothing runs it.
-const UNRUN_READERS = ['e2e/scripts/shoot-docs.test.mjs'];
+const UNRUN_READERS = [];
 const READER_AREA = { internal: 'go', cmd: 'go', packages: 'web', core: 'core', testkit: 'core', e2e: 'e2e' };
 const READER_PATH_AREA = {};
 

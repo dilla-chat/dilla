@@ -88,6 +88,10 @@ A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix bo
 - Selectors on the app side can use Playwright roles: `role=button[name="Reminders"s]` (`s` = exact, `i` = case-insensitive).
 - Output: `<name>.prototype.png`, `<name>.app.png`, `<name>.pair.png` (app on the right).
 
+> The browser world (`e2e/ux/`, `ux:world`, `ux:shots`, `docs:shots`) was removed when the docs screenshots moved to the
+> desktop app (`npm run docs:shots:desktop`). The `--app` mode below is kept as a historical record and needs a
+> checkout from before that removal.
+
 ```
 npm run ux:world -w @dilla/e2e -- --base 8611 --out target/ui-screens/signal-b   # waits for READY, keeps running
 node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json <outDir> --app [target/ui-screens/signal-b/state.json]
