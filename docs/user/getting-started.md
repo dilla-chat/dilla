@@ -1052,6 +1052,8 @@ notifications** on this device, which says "Blocked by the system. Allow notific
 settings." while the operating system blocks them; and **Join, leave and ring sounds**. A channel's own notify mode is
 in its row menu in the channel list. A muted channel still shows its mention badge ([Notifications for a
 server](#notifications-for-a-server)).
+What raises a notification, what it says and what a click does are in
+[Notifications](desktop.md#notifications) in the desktop guide.
 
 ![Settings → Notifications: Midgard Crew set to Mentions, @everyone and @here on, Desktop notifications blocked by the
 system, and the join, leave and ring sounds on](screenshots/notify-settings.png)

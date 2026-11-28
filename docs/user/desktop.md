@@ -308,11 +308,6 @@ what the client still does not do.
   permission to record system audio the first time. The camera works on Linux, Windows and macOS (the built-in camera,
   an external one, and Continuity Camera on macOS 14 or newer). Your own tiles show what you send: your share, and your
   camera mirrored as a mirror shows you (the others see it the right way round).
-- **Operating-system notifications:** messages, mentions and rings raise notifications (a ring has Answer and
-  Decline), and a click opens the conversation. A ring raises its notification and sound with every window closed to
-  the tray; Answer opens the window. On Linux an ended ring's notification is withdrawn, and a newer message in the
-  same conversation replaces the earlier notification instead of stacking. On Windows the notifications need the
-  installer's Start-menu entry, and on macOS the app bundle, so a build run from source shows them on Linux only.
 - **Screen readers:** the app exposes itself to Orca, VoiceOver and NVDA through AccessKit: every control is named, the shell has
   its landmarks (servers, channels, the message log, the call controls), messages are read with their author and time,
   and new messages, rings, joining or leaving a call and the microphone and sound switches are announced. Tab reaches
@@ -324,6 +319,59 @@ what the client still does not do.
 - **Video playback speed:** a speed other than Normal changes the pitch of the sound.
 - **Picture in picture on Wayland:** the window opens, but the compositor decides whether it stays above the others
   (as for any window); on X11 it stays on top but cannot be dragged.
+
+## Notifications
+
+Dilla raises an operating-system notification for a new message, a mention or a ring while you are not looking at it.
+
+<!-- notification-linux.png: added after the shot -->
+
+**What raises one**
+
+- **Messages and mentions.** A message in a channel or a direct message notifies you as your settings say: the
+  **Desktop notifications** switch on this device, the system's permission, your do not disturb status, a muted server
+  or channel, and the notify mode that applies (**All**, **Mentions** or **Nothing**). Nothing pops up for the channel
+  you are looking at in a focused window. Your server, channel and mention settings are in
+  [Notifications for a server](getting-started.md#notifications-for-a-server) and
+  [Badges, direct messages and notifications](getting-started.md#8-badges-direct-messages-and-notifications).
+- **Rings.** A call that rings you raises a notification with **Answer** and **Decline**, silent because Dilla plays
+  the ring itself, while no window of that instance is focused. It works with every window closed to the tray too:
+  Answer opens the window, which answers. The tray lists each live ring with the same two rows. When the ring ends,
+  or you focus that instance's window again, the notification is withdrawn (closing the window does not withdraw it
+  while it rings).
+
+**What it says**
+
+- A channel message: the title is "#channel · Server" and the body is the message text, cut at 200 characters.
+- A direct message: the title is the sender's name and the body is the text.
+- A mention reads like a message in the channel where it was made; `<@...>` mentions in the text show as the names
+  the timeline shows.
+
+**What a click does.** Clicking the notification brings the instance's window forward and opens that conversation.
+With every window closed to the tray, it opens the instance's window.
+
+**Replacing.** Notifications are kept per conversation: a newer message in the same conversation replaces the
+earlier notification instead of stacking. The most that stay up at once is 64; after that the oldest is withdrawn
+to make room. Closing a window withdraws its instance's message notifications.
+
+**Turning them off.** In Settings → **Notifications**, switch **Desktop notifications** off on this device, or mute
+or set a server or channel to **Nothing** (a channel's row menu in the channel list). Setting your status to do not
+disturb silences them on every device. If the system blocks them, the setting says so and you allow Dilla in the
+system's notification settings.
+
+**On your system**
+
+- **Linux** shows them through the desktop's notification service, and a newer message in a conversation replaces
+  the earlier one there.
+- **Windows** needs the installer's Start-menu entry; a build run from source does not show them.
+- **macOS** shows them only from the app bundle; a build run from source does not.
+
+A build run from source therefore shows notifications on Linux only.
+
+**Privacy.** The notification carries the sender, the channel and up to 200 characters of a message the app has
+already decrypted, and your operating system displays it, so on a shared or recorded screen the popup shows message
+text. The app has no setting to hide the text in a notification: switch **Desktop notifications** off, or set the
+conversation to **Nothing**, if that matters. Nothing else leaves the app.
 
 ## Enrolling the desktop app on an existing account
 
