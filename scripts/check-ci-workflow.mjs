@@ -191,7 +191,7 @@ const REQUIRED_STEPS = {
   ],
   // The cheap docs gates, for every change.
   // Their unit tests and the real checks against the real files; check:ci reads the Go tree for the race and Postgres rules.
-  docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:ci'],
+  docs: ['npm run test:docs-check', 'npm run test:brief-check', 'npm run test:copy-check', 'npm run check:docs', 'npm run check:brief', 'npm run check:copy', 'npm run check:docs-shots', 'npm run check:ci'],
   // release.yml publishes deploy/install.sh and deploy/install-bot.sh, so the server workflow runs their tests (and
   // shellcheck, which the runner image carries) and the Bot operation drift guard.
   'server-scripts': ['npm run test:bot-ops-check', 'npm run check:bot-ops', 'npm run test:install', 'bash deploy/install_bot_test.sh'],
@@ -903,7 +903,9 @@ function checkCiWorkflow(root, workflow) {
       continue;
     }
     for (const step of REQUIRED_STEPS[name] ?? []) {
-      if (!jobs[name].includes(step)) problems.push(`${file}: job "${name}" is missing: ${step}`);
+      // Whole command: `npm run check:docs` is not met by `npm run check:docs-shots`.
+      const found = [...jobs[name].matchAll(new RegExp(step.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + (step.startsWith('npm run ') ? '(?![\\w:-])' : ''), 'g'))].length > 0;
+      if (!found) problems.push(`${file}: job "${name}" is missing: ${step}`);
     }
   }
   // Each workflow holds its own jobs only: a job of the other one here would run twice, or gate the wrong release.

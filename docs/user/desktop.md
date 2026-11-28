@@ -336,7 +336,7 @@ Dilla raises an operating-system notification for a new message, a mention or a 
   [Badges, direct messages and notifications](getting-started.md#8-badges-direct-messages-and-notifications).
 - **Rings.** A call that rings you raises a notification with **Answer** and **Decline**, silent because Dilla plays
   the ring itself, while no window of that instance is focused. It works with every window closed to the tray too:
-  Answer opens the window, which answers. The tray lists each live ring with the same two rows. When the ring ends,
+  Answer opens the window, which answers. The tray lists each live ring with the same two rows. On Linux, when the ring ends,
   or you focus that instance's window again, the notification is withdrawn (closing the window does not withdraw it
   while it rings).
 
@@ -350,7 +350,7 @@ Dilla raises an operating-system notification for a new message, a mention or a 
 **What a click does.** Clicking the notification brings the instance's window forward and opens that conversation.
 With every window closed to the tray, it opens the instance's window.
 
-**Replacing.** Notifications are kept per conversation: a newer message in the same conversation replaces the
+**Replacing.** On Linux, notifications are kept per conversation: a newer message in the same conversation replaces the
 earlier notification instead of stacking. The most that stay up at once is 64; after that the oldest is withdrawn
 to make room. Closing a window withdraws its instance's message notifications.
 
@@ -361,8 +361,7 @@ system's notification settings.
 
 **On your system**
 
-- **Linux** shows them through the desktop's notification service, and a newer message in a conversation replaces
-  the earlier one there.
+- **Linux** shows them through the desktop's notification service.
 - **Windows** needs the installer's Start-menu entry; a build run from source does not show them.
 - **macOS** shows them only from the app bundle; a build run from source does not.
 

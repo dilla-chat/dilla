@@ -1052,6 +1052,7 @@ notifications** on this device, which says "Blocked by the system. Allow notific
 settings." while the operating system blocks them; and **Join, leave and ring sounds**. A channel's own notify mode is
 in its row menu in the channel list. A muted channel still shows its mention badge ([Notifications for a
 server](#notifications-for-a-server)).
+
 What raises a notification, what it says and what a click does are in
 [Notifications](desktop.md#notifications) in the desktop guide.
 
@@ -1320,7 +1321,8 @@ field](screenshots/dms-identity-changed.png)
 
 When a contact's identity key changes, the app shows the alert "This contact’s identity changed. Compare the number
 before sending." with **Compare with {name}**, and sending pauses in every conversation you share with that person:
-the message field, a reply in a thread and an edit of your own message all show the same line instead of sending. A
+the message field and a reply in a thread show the same line instead of sending, and an edit of your own message
+does not open while the conversation is paused. A
 send is refused before it leaves this device, so nothing reaches the conversation. Nothing you received before is
 removed. What they send under the new key waits, and shows once you compare the new number and approve it. Sending in
 a conversation starts again when you compare the new number (the steps above), or, in that one conversation only,

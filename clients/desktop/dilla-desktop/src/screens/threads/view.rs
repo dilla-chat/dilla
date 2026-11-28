@@ -28,7 +28,6 @@ use crate::screens::messages::composing::{self, Blocked};
 use crate::strings::{t, tf};
 use crate::{tracked_box, tracked_focus};
 
-/// The thread composer's field: the CSS's `.d-composer__input` lines (20px) in a 30px minimum, at most 13.75rem.
 /// Why the thread's reply composer cannot send (ThreadView `blocked`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ThreadBlock {
@@ -57,6 +56,7 @@ pub(super) fn thread_block(
     composing::trust_block(state, channel).map(ThreadBlock::Composer)
 }
 
+/// The thread composer's field: the CSS's `.d-composer__input` lines (20px) in a 30px minimum, at most 13.75rem.
 const FIELD_LINE: f32 = 20.0;
 const FIELD_PAD: f32 = 5.0;
 const FIELD_MAX: f32 = 220.0;

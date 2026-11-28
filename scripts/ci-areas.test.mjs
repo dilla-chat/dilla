@@ -22,6 +22,17 @@ const WFS = Object.keys(WORKFLOWS);
 const ranJobs = (workflow, outputs) => Object.keys(JOB_GATES[workflow]).filter((job) => jobRuns(workflow, job, outputs));
 const readWorkflow = (workflow) => parseYaml(readFileSync(join(REPO_ROOT, '.github', 'workflows', WORKFLOWS[workflow].file), 'utf8'));
 
+test('a user-docs change runs check:docs-shots through the always-on docs job, not through an area', () => {
+  // docs/user/** and README.md set no area, so `npm test` (web-gated) never sees them; the server workflow's `docs` job
+  // is in WORKFLOWS.server.always and carries the step.
+  for (const files of [['docs/user/desktop.md'], ['docs/user/screenshots/voice-dock.png'], ['README.md']]) {
+    assert.deepEqual(areasFor(files), NONE, files.join(' '));
+  }
+  assert.ok(WORKFLOWS.server.always.includes('docs'));
+  const steps = readWorkflow('server').jobs.docs.steps.map((step) => step.run);
+  assert.ok(steps.includes('npm run check:docs-shots'), steps.join('\n'));
+});
+
 test('docs-only changes set no area', () => {
   for (const files of [
     ['README.md'],

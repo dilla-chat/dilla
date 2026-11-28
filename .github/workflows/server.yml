@@ -73,6 +73,8 @@ jobs:
       - run: npm run check:docs
       - run: npm run check:brief
       - run: npm run check:copy
+      # The user docs' screenshots against the pages that show them: a docs-only change sets no area, so npm test never runs it.
+      - run: npm run check:docs-shots
       # The workflow checker against the real tree; it reads the Go tests for the race and Postgres rules, so it
       # must run whatever the change was.
       - run: npm run check:ci

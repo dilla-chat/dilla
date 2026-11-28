@@ -74,7 +74,7 @@ function main() {
       if (![x, y, w, h].every(Number.isInteger) || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > size[0] || y + h > size[1]) {
         fail(`${name}: crop [${crop}] is outside the ${size[0]}x${size[1]} frame ${frame}`);
       }
-      execFileSync('magick', [src, '-crop', `${w}x${h}+${x}+${y}`, '+repage', dest]);
+      execFileSync('magick', [src, '-crop', `${w}x${h}+${x}+${y}`, '+repage', '-define', 'png:exclude-chunks=date,time', dest]);
     }
   } finally {
     rmSync(path.join(root, 'target/debug/incremental'), { recursive: true, force: true });

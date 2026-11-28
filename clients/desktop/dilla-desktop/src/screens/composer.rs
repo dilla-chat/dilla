@@ -872,10 +872,6 @@ fn mention_list(options: &[MentionOption], active: usize, cx: &gpui::App) -> gpu
 /// Composer.css `.d-composer__box:focus-within`: `box-shadow: 0 0 0 3px var(--accent-soft)`.
 const FOCUS_RING_SPREAD: f32 = 3.0;
 
-/// Whether "send ↵" is the lit one (Composer.tsx `empty`: `value.trim() === ''` dims it). The picked command's chips hand the
-/// composer an empty draft (CommandPicker.tsx `PickerFrame.draft`: `'' with chips: send dims as in the prototype`), so with
-/// chips the button is dim whatever the fields hold; Enter runs the command. A tray with a card lets a blank draft send
-/// (ComposerArea.tsx `canSendEmpty={tray.length > 0}`).
 /// The paused line under the box: why nothing can be sent (`name` is the channel's, for the read-only line).
 fn paused_line(blocked: Blocked, name: &str, clock: crate::screens::shell::Clock) -> String {
     match blocked {
@@ -888,6 +884,10 @@ fn paused_line(blocked: Blocked, name: &str, clock: crate::screens::shell::Clock
     }
 }
 
+/// Whether "send ↵" is the lit one (Composer.tsx `empty`: `value.trim() === ''` dims it). The picked command's chips hand the
+/// composer an empty draft (CommandPicker.tsx `PickerFrame.draft`: `'' with chips: send dims as in the prototype`), so with
+/// chips the button is dim whatever the fields hold; Enter runs the command. A tray with a card lets a blank draft send
+/// (ComposerArea.tsx `canSendEmpty={tray.length > 0}`).
 fn send_is_lit(draft: &str, chips: bool, tray: bool, blocked: bool) -> bool {
     !chips && (tray || !draft.trim().is_empty()) && !blocked
 }

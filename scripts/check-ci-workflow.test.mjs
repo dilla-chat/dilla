@@ -590,6 +590,7 @@ const DOCS_JOB = `  docs:
       - run: npm run check:docs
       - run: npm run check:brief
       - run: npm run check:copy
+      - run: npm run check:docs-shots
       - run: npm run check:ci
 `;
 
@@ -2127,7 +2128,7 @@ test('a gate that tests == true instead of != false is reported', () => {
 });
 
 test('the docs job must run the real checks, not only their unit tests', () => {
-  for (const step of ['check:brief', 'check:copy', 'check:docs', 'check:ci']) {
+  for (const step of ['check:brief', 'check:copy', 'check:docs', 'check:docs-shots', 'check:ci']) {
     const problems = checkWorkflow(fixture(GOOD.replace(`      - run: npm run ${step}\n`, '')));
     assert.ok(problems.some((p) => p.includes('"docs"') && p.includes(step)), `${step}: ${problems.join('\n')}`);
   }
