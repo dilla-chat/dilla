@@ -37,6 +37,8 @@ pub struct Editing {
     pub input: Entity<TextareaState>,
     /// `None` while a fixture is drawn: saving then only closes the editor.
     client: Option<Rc<Client>>,
+    /// The window the editor opened in: a refused save is said there.
+    window: gpui::WindowId,
     members: Vec<MentionMember>,
     /// The members' usernames, which a role's name may not shadow (`mention_roles`).
     usernames: Vec<String>,
@@ -45,6 +47,24 @@ pub struct Editing {
     roles: Vec<MentionRole>,
     broadcast: bool,
     _subscription: Subscription,
+}
+
+/// What a refused edit says (`None` when it was queued): the changed-key copy for the trust gate's refusal, else
+/// `shell.banner.commandError` with the refusal's code.
+pub(crate) fn edit_refusal<E>(
+    answer: Result<Result<(), dilla_client::ClientError>, E>,
+) -> Option<String> {
+    let code = match answer {
+        Ok(Ok(())) => return None,
+        Ok(Err(dilla_client::ClientError::Sync(code))) => code,
+        Ok(Err(dilla_client::ClientError::Stopped)) | Err(_) => "E_STOPPED".to_owned(),
+        Ok(Err(_)) => "E_NETWORK".to_owned(),
+    };
+    Some(if code == "E_UMK_CHANGED" {
+        crate::strings::t("privacy.changed").to_owned()
+    } else {
+        crate::strings::tf("shell.banner.commandError", &[("code", &code)])
+    })
 }
 
 /// Conversation.tsx's edit rule, from `state` now: the composer's broadcast right in `channel` and the roles offered plus
@@ -443,6 +463,11 @@ impl MessageUi {
         let (Some(channel), Some(msg)) = (ctx.channel, item.msg_id) else {
             return;
         };
+        // An edit is a send into the conversation (a type-1 fold through the core's `send_prepare`): while the trust gate
+        // holds it, as it pauses the composer, no editor opens.
+        if super::composing::trust_block(&ctx.state, channel).is_some() {
+            return;
+        }
         let client = ctx.client.clone();
         let state = &ctx.state;
         let community = state.channel(channel).map(|c| c.community_id);
@@ -477,6 +502,7 @@ impl MessageUi {
             own: item.own,
             input,
             client,
+            window: window.window_handle().window_id(),
             members: members
                 .iter()
                 .filter(|m| !m.username.is_empty())
@@ -516,11 +542,17 @@ impl MessageUi {
         }
     }
 
-    /// Whether the edit may be saved: not blank, not over the budget.
+    /// Whether the edit may be saved: not blank, not over the budget, and not into a conversation the trust gate holds (the
+    /// state the log was last drawn with: the gate may have closed since the editor opened).
     pub fn can_save(&self, cx: &App) -> bool {
-        self.editing
-            .as_ref()
-            .is_some_and(|e| !e.input.read(cx).value().trim().is_empty() && e.used(cx) <= EDIT_MAX)
+        self.editing.as_ref().is_some_and(|e| {
+            !e.input.read(cx).value().trim().is_empty()
+                && e.used(cx) <= EDIT_MAX
+                && !self
+                    .ctx
+                    .as_ref()
+                    .is_some_and(|c| super::composing::trust_block(&c.state, e.channel).is_some())
+        })
     }
 
     /// Saves the edit: the fold is queued and the editor closes (the row changes when the core folds it).
@@ -533,8 +565,15 @@ impl MessageUi {
         let text = e.encoded(cx);
         if let Some(client) = &e.client {
             let done = client.messages().edit(e.channel, e.msg, text);
-            cx.background_spawn(async move {
-                let _ = done.await;
+            let shown_in = Some(e.window);
+            // A refused save is said, never dropped: the changed-key copy for the trust gate, else the code.
+            cx.spawn(async move |_, cx| {
+                let Some(text) = edit_refusal(done.await) else {
+                    return;
+                };
+                cx.update(|cx| {
+                    dilla_desktop_ui::components::toast::show_toast_in(shown_in, text, cx);
+                });
             })
             .detach();
         }
@@ -887,5 +926,132 @@ mod entrance_tests {
         let again = log.enter(a, &rows, later, false);
         assert!(again.remounted && again.running);
         assert_eq!(log.of("k1", later).unwrap().1, token::STAGGER);
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+    use dilla_client::state::dms::{DM_KIND_PAIR, DmSummary};
+    use dilla_client::state::trust::{SendBlock, TrustBlock, TrustSummary};
+    use dilla_client::state::{AppState, ChannelGroupState, TimelineItemState, UserId};
+    use std::sync::Arc;
+
+    /// A DM with Mira; `held`: her identity changed and the core's gate holds the DM.
+    fn dm(held: bool) -> (SlotCx, TimelineItem) {
+        let (me, mira, channel) = (UserId([8; 16]), UserId([3; 16]), ChannelId([5; 16]));
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.dms.list = Some(vec![DmSummary {
+            id: channel,
+            kind: DM_KIND_PAIR,
+            members: vec![me, mira],
+            name: "Mira".into(),
+            group: ChannelGroupState::Active,
+        }]);
+        s.trust.loaded = true;
+        if held {
+            s.trust.contacts.push(TrustSummary {
+                user_id: mira,
+                name: "Mira".into(),
+                shared: true,
+                umk: "aa".repeat(32),
+                first_seen: 1,
+                verified: false,
+                changed_umk: Some("bb".repeat(32)),
+                unlisted: false,
+                removed_in: Vec::new(),
+                blocked: None,
+            });
+            s.trust.send_blocks.insert(
+                channel,
+                SendBlock {
+                    code: TrustBlock::UmkChanged,
+                    own: false,
+                },
+            );
+        }
+        let item = TimelineItem {
+            key: "s1".into(),
+            state: TimelineItemState::Ok,
+            reason: String::new(),
+            sender_user: Some(me),
+            sender_device: None,
+            own: true,
+            bot: false,
+            ts: 1,
+            body: "on it after standup".into(),
+            msg_id: Some(MessageId([1; 16])),
+            seq: Some(1),
+            edited: false,
+            reply: None,
+            reactions: Vec::new(),
+            pinned: false,
+            attachments: Vec::new(),
+            mention: false,
+            actions: Vec::new(),
+        };
+        let ctx = SlotCx {
+            channel: Some(channel),
+            state: Arc::new(s),
+            ..SlotCx::default()
+        };
+        (ctx, item)
+    }
+
+    /// Task 2c fix round 1: an edit is a send into the conversation, so the trust gate that pauses the composer keeps the
+    /// editor shut, and an editor opened before the gate closed cannot save (Save and Enter both run `save_edit`). The
+    /// control: the open DM edits and saves.
+    #[gpui::test]
+    fn a_changed_member_keeps_the_editor_from_opening_and_saving(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::install);
+        let window = cx.add_empty_window();
+        let (held, item) = dm(true);
+        let (open, _) = dm(false);
+        window.update(|window, cx| {
+            let ui = ui_for_test(window.window_handle().window_id(), cx);
+            ui.update(cx, |ui, cx| {
+                ui.ctx = Some(held.clone());
+                ui.begin_edit(&held, &item, window, cx);
+                assert!(ui.editing.is_none(), "no editor while the gate holds");
+                ui.ctx = Some(open.clone());
+                ui.begin_edit(&open, &item, window, cx);
+                assert!(ui.editing.is_some(), "the open DM edits");
+                assert!(ui.can_save(cx));
+                // The gate closes while the editor is open.
+                ui.ctx = Some(held.clone());
+                assert!(!ui.can_save(cx), "no save while the gate holds");
+                ui.save_edit(cx);
+                assert!(ui.editing.is_some(), "the edit was not taken");
+                ui.ctx = Some(open.clone());
+                ui.save_edit(cx);
+                assert!(ui.editing.is_none(), "the open DM saves");
+            });
+        });
+    }
+
+    /// A refused save is said, never dropped: the changed-key copy for the trust gate, the code otherwise.
+    #[test]
+    fn a_refused_edit_says_why() {
+        use dilla_client::ClientError;
+        assert_eq!(edit_refusal::<()>(Ok(Ok(()))), None);
+        assert_eq!(
+            edit_refusal::<()>(Ok(Err(ClientError::Sync("E_UMK_CHANGED".into())))).as_deref(),
+            Some(crate::strings::t("privacy.changed"))
+        );
+        assert_eq!(
+            edit_refusal::<()>(Ok(Err(ClientError::Sync("E_CREDENTIAL".into())))),
+            Some(crate::strings::tf(
+                "shell.banner.commandError",
+                &[("code", "E_CREDENTIAL")]
+            ))
+        );
+        assert_eq!(
+            edit_refusal(Err(())),
+            Some(crate::strings::tf(
+                "shell.banner.commandError",
+                &[("code", "E_STOPPED")]
+            ))
+        );
     }
 }

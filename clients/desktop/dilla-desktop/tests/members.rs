@@ -1372,3 +1372,19 @@ mod card {
         );
     }
 }
+
+/// A GPUI-only reference (`native/members-profile-card-native`, the docs' profile card): Björn's card as the native app
+/// draws it, with no `WEB` client tag (the web reference's world names the shooter's browser; `fixture::devices`).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_members_profile_card() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture_path("members/profile-card-native"),
+        "members-profile-card-native",
+        |app| app.click("member-Björn"),
+    )
+    .unwrap_or_else(|e| panic!("members/profile-card-native differs from its golden shot: {e}"));
+}

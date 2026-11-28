@@ -88,12 +88,15 @@ A pair has `prototype` plus **either** `story` **or** `app`; one spec may mix bo
 - Selectors on the app side can use Playwright roles: `role=button[name="Reminders"s]` (`s` = exact, `i` = case-insensitive).
 - Output: `<name>.prototype.png`, `<name>.app.png`, `<name>.pair.png` (app on the right).
 
+> The removed browser world that this mode attached to went away when the docs screenshots moved to the desktop app
+> (`npm run docs:shots:desktop`). The `--app` mode below is kept as a historical record and needs a checkout from before
+> that removal.
+
 ```
-npm run ux:world -w @dilla/e2e -- --base 8611 --out target/ui-screens/signal-b   # waits for READY, keeps running
-node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json <outDir> --app [target/ui-screens/signal-b/state.json]
+node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json <outDir> --app <state.json of a running world>
 ```
 
-The world, its builds and ports are in `e2e/ux/README.md`. Its wall clock opts out of forced per-second test-clock retention (`wallClockSweep: false`), and the shooter waits for natural TOTP counters instead of advancing that clock. This fixture adaptation avoids triggering the known Bot `E_PRUNED` scan failure on every tick; production retention and the underlying Bot bug are unchanged. `app/standing.json` is the five standing whole screens (desktop
+The world's builds and ports were described by its own README, now removed. Its wall clock opts out of forced per-second test-clock retention (`wallClockSweep: false`), and the shooter waits for natural TOTP counters instead of advancing that clock. This fixture adaptation avoids triggering the known Bot `E_PRUNED` scan failure on every tick; production retention and the underlying Bot bug are unchanged. `app/standing.json` is the five standing whole screens (desktop
 chat, members open, voice focus, phone list, phone conversation); `app/wave-a-gaps.json` is the wave A states that were
 never compared with the shipped client.
 
@@ -106,7 +109,7 @@ world cannot be rewound under live browsers (restoring the server would leave th
 Never point `--out` (the world's or the shooter's) into a tracked path: `state.json` and some PNGs hold throwaway passwords and
 recovery keys.
 
-The GIF pairs depend on the world's dummy Giphy key (set by `ux:world` through Server settings -> GIFs; without a key the GIF
+The GIF pairs depend on the world's dummy Giphy key (set by the world through Server settings -> GIFs; without a key the GIF
 button does not show). Giphy is unreachable, so only the picker frame is comparable. The standing voice-focus pair needs the
 world's screen share (Mira shares in `harbour`, `state.miraShares`); the world and shooter fail explicitly if that fixture is missing. The phone is enrolled into #general before seeded messages, and the world seeds its topic, a hoisted Raid leaders role with the prototype’s Pin messages permission (and real DJ playback permission), and a thread with a reply. Poll-card steps wait up to 120 seconds for the actual Bot card. A bounded optional Music seed uses real provider tools and playback; `state.botPlays` and `state.botPlayError` record whether the voice Bot fixture is available. The Bot menu pair targets its voice tile, so a provider failure remains a reported capture failure.
 
@@ -118,13 +121,12 @@ picker shows its error state), and reduced motion (both sides) replaces animatio
 
 ### Closing a wave with app captures
 
-Build the prerequisites in `e2e/ux/README.md`, then start one world on a private
+Build the world's prerequisites (from a checkout that still has it), then start one world on a private
 base port block. Pass an **absolute** `--out` path: npm workspace scripts run
 from `e2e/`, while a shooter started at the repository root resolves relative
 paths from that root. Wait for `READY` before driving any world browser.
 
 ```
-npm run ux:world -w @dilla/e2e -- --base 9311 --out "$PWD/target/ui-screens/task-9-world"
 node docs/design/signal/parity/shoot.mjs docs/design/signal/parity/app/standing.json .superpowers/sdd/2026-10-30-signal-wave-b/parity/task-9/standing --app target/ui-screens/task-9-world/state.json
 ```
 
@@ -140,16 +142,8 @@ Do not pass `--judge` for the closeout. Read each pair and record **match**,
 path; it is not evidence of a visual match. Targets explicitly removed by a decision are absent from the manifest: the phone Status pair was dropped (accepted absence, Jonas 2026-10-30). Route differences to the controller.
 Keep world state and screenshots containing throwaway secrets in ignored paths.
 
-The user-doc shooter can reuse a READY world with the managed Bot:
-
-```
-npm run docs:shots -w @dilla/e2e -- --wave-b-state "$PWD/target/ui-screens/task-9-world/state.json"
-```
-
-This adds the command list, chips, private result, poll dialog/card and sign-in
-code step to `docs/user/screenshots`. It posts a reminder and a poll, so restart
-the world before further parity captures. The ordinary `docs:shots` command
-refreshes the rest of the guide's screenshots using its own host.
+The former browser user-doc shooter could reuse a READY world with the managed Bot; it was removed with the world, and the
+user docs' screenshots now come from the desktop app.
 
 ### Other accepted deviations recorded by Jonas
 

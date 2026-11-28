@@ -19,6 +19,9 @@ pub enum PreAccount {
     SignUpIdentity,
     /// The sign-up's step 3, the recovery key (the account's keys made, not yet sent).
     SignUpKeys,
+    /// The sign-up's step 4, the second factor (the account made, its factor owed): the choice, or with `app` the
+    /// authenticator app's step with the fixture's fictional setup key (`fixture::factors`).
+    SignUpFactor { app: bool },
     /// The sign-up's step 6, "You're in", the backup codes collapsed.
     SignUpDone,
     /// The sign-in's login form.
@@ -27,6 +30,8 @@ pub enum PreAccount {
     SignInFactor,
     /// The login refused: the instance answered the password with a refusal.
     SignInError,
+    /// The sign-in's last step, "You're signed in": the recovery key added this device.
+    SignInDone,
 }
 
 /// The instance the web shooter's browser is served by: dilla-testhost's name (`dilla.test`), which the web's pre-account
@@ -40,10 +45,15 @@ pub const BACKUP_CODES: usize = 10;
 pub fn start(fixture: &ScreenFixture) -> PreAccount {
     match fixture.name.as_str() {
         "sign-in/form" => PreAccount::SignIn,
-        "sign-in/factor" => PreAccount::SignInFactor,
+        // `sign-in/key` (a GPUI-only reference) starts on the factor step too: its test gives a backup code there, which
+        // the screen holds without the network and moves on to the recovery key.
+        "sign-in/factor" | "sign-in/key" => PreAccount::SignInFactor,
         "sign-in/error" => PreAccount::SignInError,
+        "sign-in/done" => PreAccount::SignInDone,
         "onboarding/identity" => PreAccount::SignUpIdentity,
         "onboarding/keys" => PreAccount::SignUpKeys,
+        "onboarding/factor-choose" => PreAccount::SignUpFactor { app: false },
+        "onboarding/factor-app" => PreAccount::SignUpFactor { app: true },
         "onboarding/done" => PreAccount::SignUpDone,
         _ => PreAccount::SignUp,
     }

@@ -247,3 +247,79 @@ fn parity_create_join() {
 fn parity_create_channel_private() {
     parity("create/channel-private");
 }
+
+/// The sign-in's recovery-key step on a new device, "Step 3 of 4" (a GPUI-only reference, plan "Desktop docs
+/// screenshots" Task 2: no web frame of it). The automation build has no network, so the fixture starts on the factor
+/// step and the test takes the one way on that needs none: a backup code (fictional) is given, which the screen holds
+/// until the key goes with it (R6), and the key step opens; the fixtures' fictional recovery key is typed into it.
+#[test]
+fn native_sign_in_key() {
+    let report =
+        dilla_parity::screen::assert_native_screen(&fixture("sign-in/key"), "sign-in-key", |app| {
+            app.wait_for("signin-use-backup", WAIT);
+            app.click("signin-use-backup");
+            app.wait_for("signin-backup", WAIT);
+            app.type_text("signin-backup", "FIXTUREBACKUPCODEABCDEFGHJ");
+            app.click("signin-backup-submit");
+            app.wait_for("signin-key", WAIT);
+            app.type_text(
+                "signin-key",
+                &"0123456789ABCDEFGHJKMNPQRSTVWXYZ".repeat(2)[..52],
+            );
+        })
+        .unwrap_or_else(|e| {
+            panic!("sign-in/key differs from its golden shot native/sign-in-key: {e}")
+        });
+    assert!(report.text_lines > 0);
+}
+
+/// A GPUI-only reference of a pre-account screen that only a live instance reaches (plan "Desktop docs screenshots"
+/// Task 2d): the fixture starts there (`fixture::pre_account`, `fixture::factors`), and `probe` must be on it.
+fn native_pre_account(name: &str, golden: &str, probe: &'static str) {
+    let report = dilla_parity::screen::assert_native_screen(&fixture(name), golden, |app| {
+        app.wait_for(probe, WAIT);
+    })
+    .unwrap_or_else(|e| panic!("{name} differs from its golden shot native/{golden}: {e}"));
+    assert!(report.text_lines > 0);
+}
+
+/// The sign-in's last step, "Step 4 of 4": the recovery key added this device (`sign-in/done`).
+#[test]
+fn native_sign_in_done() {
+    native_pre_account("sign-in/done", "sign-in-done", "signin-open");
+}
+
+/// The sign-up's step 4, the second-factor choice of a new account (`onboarding/factor-choose`): the authenticator app
+/// or a passkey, no skip, and Forget this device under it.
+#[test]
+fn native_factor_choose() {
+    native_pre_account("onboarding/factor-choose", "factor-choose", "factor-kind");
+}
+
+/// The same step on the authenticator app: the QR code and the fixture's fictional setup key, and the six code boxes
+/// (`onboarding/factor-app`).
+#[test]
+fn native_factor_app() {
+    native_pre_account("onboarding/factor-app", "factor-app", "factor-totp-code");
+}
+
+/// The three fixtures start where their screens are: the sign-in's done step, the sign-up's factor step (the choice and
+/// the app), each with no account.
+#[test]
+fn the_client_only_fixtures_start_on_their_screens() {
+    for (name, start) in [
+        ("sign-in/done", PreAccount::SignInDone),
+        (
+            "onboarding/factor-choose",
+            PreAccount::SignUpFactor { app: false },
+        ),
+        (
+            "onboarding/factor-app",
+            PreAccount::SignUpFactor { app: true },
+        ),
+    ] {
+        let f = Fixture::load(&fixture(name), None).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(f.screen, FixtureScreen::Welcome(start), "{name}");
+        assert!(f.state.communities.is_empty(), "{name}: no account");
+    }
+}

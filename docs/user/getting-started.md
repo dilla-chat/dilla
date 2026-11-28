@@ -21,11 +21,13 @@ This section is for the first person on a new instance. Whoever installed it got
 `dillad init` (or from the install script), shown once. It looks like `https://chat.example.org/i/<code>`, is valid
 for 24 hours and can be used once. It is an invite to the instance, not to a server.
 
-1. Open the bootstrap link and sign up: the same six steps as [an invited person](#2-sign-up-six-steps).
+1. Open Dilla, connect to the instance and paste the bootstrap link into the first step of the sign-up: the same six
+   steps as [an invited person](#2-sign-up-six-steps).
 2. **Open dilla** opens the app, which has no server in it yet:
 
    ![The app on a new instance: the main pane says "You are not in a server yet" with the buttons Start a server
-   and Join a server, and the rail on the left has the @ tile and the + tile](screenshots/create-empty-desktop.png)
+   and Join a server, the sidebar is Direct messages with "no direct messages yet", and the rail has the @ tile and
+   the + tile](screenshots/create-empty.png)
 
    "You are not in a server yet" "Start a server and invite your friends, or join one with an invite someone sent
    you." The sidebar stands on **direct messages**: it says "no direct messages yet" and offers **message someone**.
@@ -37,8 +39,9 @@ for 24 hours and can be used once. It is an invite to the instance, not to a ser
    "Start a server" says "You own it: you add its channels and invite people. It starts with a text channel and a
    voice channel, both called general."
 
-   ![The dialog "Start a server" with the name Midgard Crew typed into Server name, "Up to 255 characters (fewer for some letters)." and the
-   buttons Close and Create](screenshots/create-server-desktop.png)
+   ![The dialog "Start a server": "You own it: you add its channels and invite people. It starts with a text channel
+   and a voice channel, both called general.", the Server name field, "Up to 255 characters (fewer for some
+   letters)." and the buttons Close and Create](screenshots/create-server.png)
 
 4. Type a name under "Server name" ("Up to 255 characters (fewer for some letters).") and press **Create** or Enter. While it works the button
    says "Creating…"; a second press sends nothing more.
@@ -51,8 +54,8 @@ invite someone sent you, and **new server**. Beside the server's name sits the *
 **+** ("new channel") at the top of the channel list. Invite links are made in server settings, under **invites**
 ([Invite people](#invite-people)).
 
-![The rail and the top of the sidebar: the @ tile, the tile MC for Midgard Crew and the dashed + tile, and beside them
-Midgard Crew with the + for a new channel and the ⌄ server menu](screenshots/create-rail.png)
+![The dialog "add a server", opened from the dashed + tile in the rail, with join a server, new server and Close, over
+Midgard Crew's #general](screenshots/create-rail-menu.png)
 
 If the server is not created, the name field says why:
 
@@ -75,10 +78,11 @@ to people who may manage the server: a link that never runs out is a standing wa
 **Copy** and "It can be used 10 times and expires in 7 days. The link is shown only once."; **Copy** puts it on your
 clipboard and files it under "Active links", where each link shows its uses and expiry and has **Revoke**.
 
-The **/invite** command, typed in the message field, makes a quick link (7 days, 10 uses) in a dialog:
+![Server settings → Invites: "Anyone with a link can join Midgard Crew.", Expires after (7 days) and Uses (10), Make
+invite link, and under "Active links" one link with "2 / 64 uses", "expires in 1 hour" and
+Revoke](screenshots/server-settings-invites.png)
 
-![The dialog "Invite people to Midgard Crew" over server settings, under invites: the invite link in a field, the
-button copy link, "Expires after: 7 days. Max uses: 10 uses." and "Invite link copied."](screenshots/create-invite-desktop.png)
+The **/invite** command, typed in the message field, makes a quick link (7 days, 10 uses) in a dialog:
 
 - The dialog repeats what you chose ("Expires after: 7 days. Max uses: 10 uses.") and that "The server keeps only a
   fingerprint of each link, so a link cannot be shown again. Make a new one to share." Send the link only to the
@@ -106,9 +110,9 @@ list while the server has no categories. Once it has categories, each category h
 {name}"), which shows when you point at the category or tab to it, and the new channel starts in that category. The
 **+** is never on the direct messages list, and a person who may not manage channels has none. Press it.
 
-![The dialog "New channel in Midgard Crew", opened from the + in the channel list: Kind with text selected, then voice
-and announcement, Channel name loot, "Shown as #loot. Up to 100 characters (fewer for some letters)." and the buttons
-Close and Create](screenshots/create-channel-desktop.png)
+![The dialog "New channel in Midgard Crew": text selected beside voice and announcement, the Channel name field,
+the private channel switch on, and under "Roles that can see it" night watch ticked and crew not; Close and
+Create](screenshots/create-channel-private.png)
 
 1. Under "Kind", choose **text**, **voice** or **announcement** ([Announcement channels](#announcement-channels)). The
    arrow keys move between them. **private channel** keeps the channel to the owner, administrators and the roles you
@@ -157,7 +161,8 @@ delete it instead.
 There is no AFK channel to pick: every server has one called "AFK" ([Voice, calls and media
 files](voice.md#afk-channels)).
 
-![Server settings → Overview with server name and inactive timeout](screenshots/fullscreen-settings-overview-desktop.png)
+![Server settings → Overview: the server name Midgard Crew, the Inactive timeout at 5m, and Leave server with
+Leave](screenshots/gpui-server-settings.png)
 
 The field says why when saving did not work: "Someone else changed the server at the same time. Check the name and save
 again." means you should look at the name that is there now and save again.
@@ -196,7 +201,7 @@ moderator who has since left the server shows as "a former member", and an accou
 back." An empty list says "Nobody is banned from {server}." If the list does not load, **Try again** loads it
 again.
 
-### Bot channels, webhooks and the Bot page
+### Bot channels, webhooks and the Bot section
 
 The server's Bot answers commands and posts for features such as music, polls, reminders and welcome messages. It
 joins only the text channels you mark as **Bot channels**, and it posts only there. In **Server settings → Channels**,
@@ -204,7 +209,7 @@ joins only the text channels you mark as **Bot channels**, and it posts only the
 the features that post (welcome messages, announcements, role panels, polls, the music card) wait until you pick a
 Bot channel for them.
 
-**Server settings → Bot** is the Bot's page. It has a switch for each part of the Bot, a health line ("Commands
+**Server settings → Bot** is the Bot's section. It has a switch for each part of the Bot, a health line ("Commands
 are working", "Commands failing since 06:24" or "The Bot is offline since 06:24") with the Bot's command key, the list
 of Bot channels, and **Webhooks**. A webhook lets a script or a game server post into one Bot channel with a
 `curl` command. Its address is shown once when you create it. How to create one, what to send and what the answers
@@ -213,7 +218,9 @@ mean are in [Bot commands](bot-commands.md#webhooks).
 A command you cannot run yet stays in the picker, greyed, with the reason. See [Greyed
 commands](bot-commands.md#greyed-commands).
 
-![The Bot page: health, Bot channels and webhooks](screenshots/bot-page-health-channels-desktop.png)
+![Server settings → Bot: Glenn, "Managed bot · online", with Restart and ⋯, a switch for each part of the Bot (Polls,
+Reminders and Welcome messages on), Voice access, "Commands are working", the Bot channel #bot-log, and Webhooks with
+Create webhook](screenshots/bot-admin-installed.png)
 
 ### Members
 
@@ -226,8 +233,8 @@ wide window the list is a column beside the conversation. In a window narrower t
 over the screen: focus moves into it, and **close members**, Escape or a click outside it closes it. Focus goes back to
 **members**.
 
-![The member list beside #general with a profile card open: Ada with a crown, Björn and Mira, each with a status dot, and
-Björn's card with his roles and actions](screenshots/members-desktop.png)
+![The member list beside #general with Björn's profile card open: his name, "@bjorn · offline", Message and the
+buttons beside it](screenshots/members-profile-card-native.png)
 
 A whole row is one button. Click it, press Enter on it, right-click it, or press Shift+F10 or the ContextMenu key with the
 row focused, and it opens that person's **profile card**. The card is a popover beside the row; it closes on a click outside it or on Escape, and its banner follows the round corners. A long name wraps and a long bio scrolls. **Message** opens the direct message and the shield button opens the safety-number comparison. The card shows a large avatar, the name, the @username, the status ("online", "idle", "do not
@@ -262,7 +269,7 @@ cannot leave it. Hand it to another member or delete it."
 **hand over server** ("Hand {server} to another member") makes someone else the owner. Choose the "New owner", type
 the server name under "Type the server name to confirm" and press **Hand over**. The new owner gets every permission
 and you stay as a member who can no longer delete the server. You cannot undo it yourself. With nobody else in the
-server it says "There is no other member to hand the server to yet." The page says "{name} now owns {server}."
+server it says "There is no other member to hand the server to yet." The app says "{name} now owns {server}."
 
 **delete server** ("Delete {server}?") removes every channel, message and file for everyone and ends every call in
 it. **Delete server** stays off until you type the server name under "Type the server name to confirm"; "That is not
@@ -276,7 +283,7 @@ A person who is kicked, banned, or whose server is deleted sees a banner, "You a
 
 ![Mira after the owner removed her from Midgard Crew: the banner "You are no longer in Midgard Crew." with the button dismiss at the top, and her other server, Bridge Watch, open](screenshots/shell-removed.png)
 
-The server leaves their rail, the page moves to their first other server (or to the start page), and any
+The server leaves their rail, the app moves to their first other server (or to "You are not in a server yet"), and any
 dialog open for that server closes. A banned person who tries an invite link again sees "This server does not let your account join."
 until the ban ends or is lifted. See also
 [You are no longer a member](#you-are-no-longer-a-member).
@@ -503,29 +510,27 @@ You choose one of two kinds, and can have both:
 - **An authenticator app** on your phone, which shows a new six-digit code every 30 seconds. Signing in on a new
   app then takes your password and a code from the app.
 - **A passkey**: your phone, a security key or the computer confirms it is you with a fingerprint, your face or a
-  PIN. A passkey signs you in on its own. Keep a passkey on a computer only if no one else uses it.
+  PIN. A passkey signs you in on its own. Keep a passkey on a computer only if no one else uses it. The desktop app
+  makes and uses a passkey through your system's browser, which opens for it.
   A passkey works only at the address the instance is set up for; if it is not, the screen says "Passkeys do not
   work at this address of {instance}. Use an authenticator app, and tell the operator." An account that has no
   password can only use a passkey.
 
 ### Setting it up
 
-At sign-up it is [step 4 of 6](#step-4-of-6-add-a-second-factor), then step 5. The same screens appear when an account has none
-(for example after an operator reset it) and in Settings → Sign-in.
-
-![Step 5, authenticator app: the QR code, the setup key with Copy, and the field "Code from the app"](screenshots/onboarding-5-factor-app.png)
+At sign-up the choice is [step 4 of 6](#step-4-of-6-add-a-second-factor) and the set-up step 5. The same screens
+appear when an account has none (for example after an operator reset it) and in Settings → Sign-in.
 
 For an app: "In the app, add an account and scan this code. If you cannot scan it, type the setup key instead." The
-**setup key** is the same secret as text, with a **Copy** button. Type the code the app shows now. A wrong one says
+**setup key** is the same secret as text, with a **Copy** button. Type the code the app shows now into the six boxes. A wrong one says
 "That code did not match. Type the code the app shows now, and check that your phone sets its clock automatically."
-(a phone whose clock is off by a minute or more makes every code wrong). For a passkey the button is **Add passkey**,
-and a cancelled prompt says "No passkey was added. Try again, or use an authenticator app."
+(a phone whose clock is off by a minute or more makes every code wrong). For a passkey the button is **Add passkey**, which
+opens your system's browser, and a cancelled prompt says "No passkey was added. Try again, or use an authenticator app."
 
 ### Backup codes are not the recovery key
 
-![Step 6, backup codes: the list of codes, Print, Copy, and the box to tick](screenshots/onboarding-5-done.png)
-
-After the factor you get your backup codes, a list with **Print** and **Copy** (at sign-up they are on the last step, "You’re in"). Each code signs you in once in
+After the factor you get your backup codes, with **Copy** and **Print** (at sign-up they are on the last step,
+["You’re in"](#step-6-of-6-youre-in), folded until **Show**). Each code signs you in once in
 place of your second factor, which is what you reach for when you lose your phone or your passkey. "Backup codes are
 not your recovery key. You still need the recovery key to add a device." The recovery key (step 3 of the sign-up)
 is what adds a device to your account; a backup code never does. Keep both away from this computer. The codes are shown once. A code is 26 letters and digits; hyphens and spaces do not matter when you type one. The number of
@@ -533,11 +538,11 @@ codes is the instance's setting (10 unless the operator changed it).
 
 ### Signing in on a new device
 
-[Section 6](#6-use-your-account-in-a-second-app) is the whole sign-in. In short, after your username and password,
+[Section 6](#6-use-your-account-in-a-second-device) is the whole sign-in. In short, after your username and password,
 step 2 asks for the factor you set up, and the recovery key comes last, as step 3:
 
 - an authenticator app: the six-digit code;
-- a passkey: the app asks for it on **Use passkey**. Under the password field of step 1 there is also
+- a passkey: **Use passkey** opens your system's browser for it. Under the password field of step 1 there is also
   **Sign in with a passkey**, which takes a passkey instead of the password. If the passkey did not check that it is
   you, the instance also asks for your code;
 - a backup code: **Use a backup code**, instead of the code or the passkey. It works once, and the last
@@ -549,12 +554,13 @@ The factor guards signing in on a **new** app, not message content.
 
 ### Settings → Sign-in
 
-![Settings → Sign-in: Password, Authenticator app, Passkeys, Backup codes, with add and remove buttons](screenshots/fullscreen-settings-signin-desktop-signal.png)
+![Settings → Sign-in: Password with Change, Authenticator app with Remove, the passkey Work laptop with Remove, Add
+passkey, and Backup codes "8 of 10 left" with New codes](screenshots/user-settings-sign-in.png)
 
 Open **Settings** (the settings button in the top bar), then **Sign-in**: "Password and second
 factors for new devices." The rows are:
 
-- **Password**: "Changed 3 weeks ago" (from the first change after this release; a password set earlier shows no date),
+- **Password**: "Changed" and the date (from the first change after this release; a password set earlier shows no date),
   with **Change** (or **Set password** when it has none). "Password changed." or "Password set." confirms it.
 - **Authenticator app**: "Added {date}" with **Remove**, or **Add authenticator app** when it is not set up.
 - **Passkey**: one row per passkey, its name under it, each with its own **Remove**; then **Passkeys** with **Add passkey**.
@@ -588,49 +594,56 @@ invite expires and how many more times it can be used ("Expires on {date} (UTC) 
 form and no script; it never asks for a password ("This page never asks for a password."). Opening the page does not
 use the invite. The page is for Dilla desktop only: **Open Dilla desktop** opens the app on the invite, a "Download
 Dilla desktop" link goes to the download page, and "Connect to {instance} and paste this invite code." covers the
-rest. There is no browser button: an instance serves no browser client. You can also open the app and paste the code or
-the whole link in the first step.
+rest. The desktop app is the only way in. You can also open the app and paste the code or the whole link in the first
+step.
 
 ## 2. Sign up: six steps
 
-All six steps happen in the same window. The button under each step (or Enter in a field) moves forward.
+All six steps happen in the instance's window. The button under each step (or Enter in a field) moves forward.
 **Back** returns to the preceding step before account creation. After creation you cannot return to the key or
-Sign in; the authenticator code step has Back to change your factor choice. Nothing is created on the instance until you press **I saved it** on step
-3, after you saved your recovery key.
+Sign in; the authenticator code screen has **Back** to change your factor choice. Nothing is created on the instance
+until you press **I saved it** on step 3, after you saved your recovery key.
+
+You reach step 1 from "Dilla - your instances", the first window of the desktop app: type the instance's address to
+connect, or paste the invite there ([Dilla desktop](desktop.md)). Clicking a `dilla://invite` link opens the app on
+the invite.
 
 ### Step 1 of 6: Join with an invite
 
-![Step 1: "Join with an invite" with the invite link filled in](screenshots/onboarding-1-invite.png)
+![Step 1 of 6: "Join with an invite", the Invite link field, Continue, and "Already have an account? Sign in" under
+it](screenshots/sign-in-welcome.png)
 
 "Paste the link someone sent you." The field ("Invite link") takes the link or just its code. If the invite is refused
 when the account is created, you are brought back here with "This invite is expired, used up or unknown. Ask for a
 new one." An instance that takes no new accounts shows "{instance} is not taking new accounts" instead of this step.
-Where the instance takes passwords, "Already have an account? Sign in" under the button starts the sign-in instead.
+"Already have an account? Sign in" under the button starts the sign-in instead
+([section 6](#6-use-your-account-in-a-second-device)).
 
 ### Step 2 of 6: Create your account
 
-![Step 2: "Create your account" with the username mira and a password](screenshots/onboarding-2-name.png)
+![Step 2 of 6: "Create your account" with the fields Username and Password ("at least 12 characters"), Create
+account, Back and "Already have an account? Sign in"](screenshots/onboarding-identity.png)
 
 "Pick a username and a password. Your username is how people mention you."
 
 - **Username**: 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen. Capital letters are turned into lower case.
   Anything else says "Use 3 to 32 characters: a–z, 0–9, dot, underscore or hyphen, with no dot at the start or end."
-- **Password**: only when the instance offers passwords, "at least 12 characters". Keep it: a second device asks
-  for this password, the code of your second factor and, last, your recovery key.
+- **Password**: "at least 12 characters". Keep it: a second device asks for this password, the code of your second
+  factor and, last, your recovery key.
 
 There is no display name here. Until you set one in Settings → Profile, people see your username.
 
-**Create account** makes your keys in this device ("Making your keys"). The account itself is created on step 3.
+**Create account** makes your keys on this device ("Making your keys"). The account itself is created on step 3.
 
 ### Step 3 of 6: Save your recovery key
 
-![Step 3: "Save your recovery key", thirteen groups of four characters, the box to tick, Print and Save as file](screenshots/onboarding-3-recovery-key.png)
+![Step 3 of 6: "Save your recovery key", the key in thirteen groups of four characters, Print, Save as file, the box
+to tick and I saved it](screenshots/gpui-onboarding-recovery-key.png)
 
-"Shown once. You need it to add another device." The key is 13 groups of 4 characters. **Print** opens the
-app's print dialog; the printed page holds the key, not the rest of the screen. **Save as file** downloads a small
-text file with the key, usually into your Downloads folder, and dilla keeps no copy. Move it somewhere safe off this
-computer and delete it here. There is no copy button, on purpose: the clipboard is readable by other programs. You can still
-select the text yourself.
+"Shown once. You need it to add another device." The key is 13 groups of 4 characters. **Save as file** asks where to
+save a small text file with the key (it starts in your Downloads folder), and dilla keeps no copy. Move it somewhere
+safe off this computer and delete it here. **Print** does nothing yet in the desktop app: write the key down or save
+it as a file. There is no copy button, on purpose: the clipboard is readable by other programs.
 
 The key is the only way to get your account back or to add another device. If every device you use loses its data
 and you do not have the key, the account and its history are gone, and the host cannot bring them back.
@@ -644,39 +657,42 @@ Tick "I saved my recovery key somewhere safe", then press **I saved it**. That c
 - **Back** also throws the key away, and so does closing the app before **I saved it**: nothing was created, and the
   next visit starts at step 1.
 - If the connection drops while the account is created, the screen says "The connection dropped while creating your
-  account. Restart the app to finish." Restart: the account may already exist, and the restart finishes it.
+  account. Try again to finish." Try again: the account may already exist, and trying again finishes it.
 
 ### Step 4 of 6: Add a second factor
 
-![Step 4: "Add a second factor" with the choices Authenticator app and Passkey and the button Continue](screenshots/onboarding-5-factor-choose.png)
+![Step 4 of 6: "Add a second factor" with the choices Authenticator app and Passkey, the button Continue, and "Forget
+this device" at the foot of the window](screenshots/factor-choose.png)
 
 "Required for signing in on a new device." Choose **Authenticator app** ("A six-digit code that changes every 30 s")
 or **Passkey** ("Touch ID, Windows Hello or a security key"), then **Continue**. The step is described in full under
 [Second factor](#second-factor).
 
 There is no way to skip this step and no way back to the key: the account exists now. If you close the app here, the
-next time you open dilla in this device it asks for the second factor before anything else.
+next time you open this instance it asks for the second factor before anything else.
 
 ### Step 5 of 6: Enter your code
 
-![Step 5: "Enter your code" with the QR code, the setup key and the six code boxes](screenshots/onboarding-5-factor-app.png)
+![Step 5 of 6, "Enter your code": the QR code, the setup key with Copy, "Six digits. The app shows a new one
+every 30 seconds.", the six code boxes, Verify and Back](screenshots/factor-app.png)
 
-For an authenticator app: scan the QR code with the app, or type the setup key, then type the six digits the app
-shows. The sixth digit sends the code; **Verify** does the same. Pasting the code works, and so does a code your
-app or phone fills in. For a passkey, your device asks where to keep it, and you can name it ("Passkey name").
+For an authenticator app: scan the QR code with the app on your phone, or type the setup key, then type the six digits
+the app shows. The sixth digit sends the code; **Verify** does the same. Pasting the code works too. For a passkey,
+your system's browser opens to make it and asks where to keep it, and you can name it ("Passkey name").
 **Back** returns to the second-factor choice; it does not return to the recovery key.
 
 ### Step 6 of 6: You’re in
 
-![Step 6: "You’re in", "Your account is ready.", the backup codes and the Open dilla button](screenshots/onboarding-5-done.png)
+![Step 6 of 6: "You’re in", "Your account is ready.", "10 backup codes" with Copy, Print and Show, the box to tick and
+Open dilla](screenshots/onboarding-done.png)
 
 "Your account is ready." If the invite was for a server, a green panel says "{server} is waiting in #{channel}." Under it:
 "Messages sent before another device joins are not shown there."
 
-Under it are your backup codes, with **Copy** and **Print**: "Each backup code signs you in once if you lose your
-second factor. Keep them with your recovery key." Tick "I saved my backup codes somewhere safe"; **Open dilla** opens
-the app once the box is ticked. The codes are shown once; if you close the app before you saved them, make new ones
-in Settings → Sign-in.
+Under it are your backup codes: "Each backup code signs you in once if you lose your second factor. Keep them with
+your recovery key." The list stays folded until **Show**; **Copy** and **Print** work either way. Tick "I saved my
+backup codes somewhere safe"; **Open dilla** opens the app once the box is ticked. The codes are shown once; if you
+close the app before you saved them, make new ones in Settings → Sign-in.
 
 If the invite was for a server, you land in that server. The invite counts once: creating the account records the
 use, and joining its server takes that recorded use, so an invite with one use left both creates the account and
@@ -710,8 +726,8 @@ What follows from that:
 
 ## 4. The app
 
-![The app at 1280 by 800: the server rail with Midgard Crew, the channels general and loot, a conversation
-in #general and the message field](screenshots/shell-conversation.png)
+![The app: the server rail with Midgard Crew, the channels random and general and AFK, a conversation in #general,
+the message field and the members](screenshots/gpui-shell-conversation.png)
 
 From left to right:
 
@@ -719,8 +735,8 @@ From left to right:
   messages](#home-and-direct-messages)); under a line come your servers, one tile each with its initials, and under
   them one dashed **+** tile, "add a server". The **+** opens "add a server" with two choices: **join a server**, where
   you paste a server invite ("A server invite, as a code or a link.") and press **Join**, and **new server**
-  ([Start a server](#start-a-server)). A number on a server tile counts its unread channels, and on the **@** tile your
-  unread direct messages. The rail has no settings button: settings are the button in the top bar.
+  ([Start a server](#start-a-server)). A number on a server tile counts your mentions there; the **@** tile has no count
+  yet. The rail has no settings button: settings are the button in the top bar.
 - **The channel list.** The server's name with the **⌄** server menu beside it (**Server settings**, **Mute server** and the notification choices; leave server is in Settings → Overview; see [Run your server](#run-your-server) and [Invite people](#invite-people)), and under it the channels, in
   [categories](#servers-and-categories), with a **+** at the top for people who may manage channels ([Add a
   channel](#add-a-channel)). Text channels open here. Voice channels sit in the same list ([One channel
@@ -737,16 +753,16 @@ From left to right:
   Diagnostics](#diagnostics). When the connection drops, a line at the top of the app says "Offline. Reconnecting…",
   or "Connecting to {node}…" while it comes back, and goes away when the link is back.
 
-![The app while the connection is down: a line at the top says "Offline. Reconnecting…" above the whole
-app](screenshots/link-offline-desktop.png)
+![The app while the connection is down: a line under the top bar says "Offline. Reconnecting…" above the whole
+app](screenshots/shell-reconnecting.png)
 
 ### Home and direct messages
 
 The **@** tile at the top of the rail opens your direct messages, The sidebar then lists
-your direct messages instead of a server's channels, and the **@** tile stays selected until you pick a server. A badge
-on the **@** tile counts your unread direct messages. A link to a direct message opens it with **@** selected too.
+your direct messages instead of a server's channels, and the **@** tile stays selected until you pick a server. A direct
+message with unread messages has a dot in that list. A link to a direct message opens it with **@** selected too.
 
-![Home: the @ tile selected, the list of direct messages with Ada's unread reply, and the conversation](screenshots/home-dms-desktop.png)
+![Home: the @ tile selected and the list of direct messages, Mira with an unread dot and Björn](screenshots/dms-home.png)
 
 ### Servers and categories
 
@@ -756,7 +772,8 @@ Which categories are collapsed is remembered in this device only, not in your ac
 channel to a category with the **+** at its right ("new channel in {name}"); make categories in server settings → channels
 ([Run your server](#run-your-server)).
 
-![The channel list with the category Raids open and the category Boats collapsed](screenshots/categories-desktop.png)
+![The channel list of Midgard Crew: lounge and general, then the category Boats with harbour and the category Raids
+with loot, and AFK last](screenshots/shell-categories.png)
 
 ### The header
 
@@ -764,7 +781,7 @@ The top of a conversation has two buttons: **Threads** and **Members** with the 
 Point at one, or Tab to it, to see its name and its shortcut. There is no row of icons and no **more** menu: pins and
 **edit channel** are in the channel's row menu in the channel list, and search is the field in the top bar (Control+K).
 
-![The members icon in the channel header with its name shown below it](screenshots/header-tooltip-desktop.png)
+![The Members button in the channel header with its name, Members, shown in a tooltip](screenshots/shell-header-tooltip.png)
 
 A long conversation groups messages from one person within a few minutes under one name and time, and puts a divider at
 each new day ("today", "yesterday", then the date). When you have scrolled up, "viewing older messages" shows with **jump
@@ -772,8 +789,7 @@ to present**; Control+End does the same.
 
 ### Desktop layout
 
-![The app with the channel list dragged wider: the border between the channel list and the conversation, and the
-conversation narrower](screenshots/panes-resized-desktop.png)
+![The app with the channel list dragged wider and the conversation narrower](screenshots/shell-panes-resized.png)
 
 Drag the borders between the channel list, the conversation and the side panel to give a pane more room. The same
 works with the keyboard: Tab to a border (it is named "resize the channel list" or "resize the side panel"), then
@@ -785,8 +801,8 @@ that it opens over the conversation. The widths are kept in this device only, no
 
 ### One channel list
 
-![The channel list with a live voice channel: harbour with three people nested under it, and the call panel and the
-user panel at the bottom left](screenshots/voice-dock-desktop.png)
+![The channel list with a live voice channel: Lounge with five people nested under it, Sam LIVE, Björn muted, and
+the call panel above the user panel at the bottom left](screenshots/voice-stage-group.png)
 
 Text and voice channels are in one list, in the order the server gives them (and its categories). A voice channel has
 a speaker icon. While people are in it, it shows how many, and the people in the call are listed under it, each with
@@ -811,7 +827,11 @@ The bottom left of the app is yours, across the rail and the channel list:
   or in a call. The member list groups people by role and shows who is online; offline and invisible people sit
   together at the bottom, and the headings of roles shown apart carry the role's colour.
 
-While you are in a call, [the call panel](voice.md#the-call-panel) sits above the user panel.
+While you are in a call, [the call panel](voice.md#the-call-panel) sits above the user panel, and the call's own
+controls run along the bottom beside it.
+
+![The bottom row in a call: Ada's user panel ("in Lounge") with mute and deafen, the channel Lounge with "— ms", and
+Mute, Deafen, Camera, Share and Leave](screenshots/voice-dock.png)
 
 ### Keyboard
 
@@ -872,76 +892,66 @@ a short code (for example `E_CORE_MLS`) instead of its text. Nothing in this ver
 
 ## 6. Use your account in a second device
 
-When your device supports passkey autofill, focus the username field and choose your passkey from its suggestions.
-Otherwise use **Sign in with a passkey**. A passkey on the code step must belong to the account whose password you
-just entered. Another account’s passkey is refused; choose the right passkey or use your code.
+Dilla on another computer is a new device of your account. You need your password, your second factor (a code, a
+passkey or a backup code) and the recovery key you saved at sign-up. Sign-in has four steps, in this order: your
+username and password, then your second factor, then your recovery key, then done. The recovery key comes last on
+purpose: the password and the code say who you are, and the key is what adds this device to your account, so nothing
+is added until you give it. The key is never written to the app's storage.
 
-Type or paste the six-digit authenticator code into the code boxes. The sixth digit submits it; an incomplete code stays in the boxes so you can finish it. A refused code asks you to sign in again. Backup codes use their own field. New or changed passwords need at least
-12 characters; an existing shorter password still signs in.
-
-![The six-digit sign-in code step](screenshots/signal-code-step.png)
-
-
-You need the recovery key you saved at sign-up in either case. With a password, sign-in has four steps, in this order: your username and password, then your second factor (a code, a passkey or a
-backup code), then your recovery key, then done. The recovery key comes last on purpose: the password and the code say
-who you are, and the key is what adds this device to your account, so nothing is added until you give it. The key is
-never written to the app's storage.
-
-![Onboarding step 1 on a new device, with the link "Already have an account? Sign in" under the Continue
-button](screenshots/signin-0-entry.png)
-
-On the new device, open the instance's address and choose **Already have an account? Sign in** under the Continue
-button. The instance offers it only when it takes password logins. An instance that takes no new accounts
-still shows the link.
+On the new computer, open the instance from "Dilla - your instances" and choose **Already have an account? Sign in**
+under the Continue button of [step 1 of the sign-up](#step-1-of-6-join-with-an-invite).
 
 ### Step 1 of 4: Sign in to {instance}
 
-![Step 1: "Sign in to dilla.test" with the username mira and a password](screenshots/signin-1-login.png)
+![Sign-in step 1 of 4: "Sign in to dilla.test" with the fields Username and Password, Continue, and "Have an invite?
+Create an account"](screenshots/sign-in-form.png)
 
-"Use your dilla username and password." **Continue** checks them ("Checking…"). A
-wrong pair says "That username and password did not work." and empties the password field. **Have an invite? Create an account** goes back to the sign-up.
+"Use your dilla username and password." **Continue** checks them ("Checking…"). A wrong pair says "That username and
+password did not work." **Have an invite? Create an account** goes back to the sign-up. A window that is not yet tied
+to one instance asks for the instance's address above the username.
 
-Under the password, **Sign in with a passkey** (shown when passkeys work here and autofill is unavailable) signs in
-with a passkey instead of the password; it goes to step 3, the recovery key, or to step 2 when the passkey did not
-check that it is you.
+When the instance offers them, links under the password take another way in, each through your system's browser:
+**Sign in with a passkey** signs in with a passkey instead of the password (it goes on to the recovery key, or to the
+code when the passkey did not check that it is you), and **Sign in with your identity provider** ("Finish signing in
+in your browser…") uses the instance's identity provider.
 
-An account that has no second factor (one reset by the operator, or an older one) goes from step 1 to
-the recovery key, as step 2, and then to "Add a second factor" as step 3; see [Second factor](#second-factor). There is
-no skip.
+An account that has no second factor (one reset by the operator, or an older one) goes from step 1 to the recovery
+key, as step 2 of 3, and is then asked to add a second factor; see [Second factor](#second-factor). There is no skip.
 
 ### Step 2 of 4: Enter your code
 
-![Step 2: "Enter your code" with six code boxes](screenshots/signin-2-code.png)
+![Sign-in step 2 of 4: "Enter your code", "Six digits from your authenticator app.", six code boxes, "Use a backup
+code", Verify and Back](screenshots/sign-in-factor.png)
 
-For an authenticator app: "Six digits from your authenticator app." Type or paste the code; the sixth digit submits it, and **Verify** does the same. A wrong code sends you back to
-step 1 with "That code did not work. Sign in again with a fresh code.", because the instance has used up that login;
-type the password again and then a new code. A right code goes on to the recovery key.
+For an authenticator app: "Six digits from your authenticator app." Type or paste the code; the sixth digit submits
+it, and **Verify** does the same. A wrong code sends you back to step 1 with "That code did not work. Sign in again
+with a fresh code.", because the instance has used up that login; type the password again and then a new code. A right
+code goes on to the recovery key. If the account also has a passkey, **Use a passkey** is offered beside **Use a
+backup code**.
 
 For an account whose factor is a passkey, step 2 is "Use your passkey": "This account signs in with a passkey. Your
-app asks for it when you continue." The button is **Use passkey**. A passkey from another account says “That passkey belongs to another account.” Choose the right key, your app code or a backup code.
-If the passkey did not check that it is you,
-the screen asks for your code as well: "This passkey did not check that it is you, so {instance} also asks for your
-code." A passkey the instance does not know says "{instance} does not know this passkey. It may belong to another
-account or another server."
+browser asks for it when you continue." The button is **Use passkey**, and your system's browser opens for it. A
+passkey from another account says "That passkey belongs to another account." Choose the right key, your app code or
+a backup code. If the passkey did not check that it is you, the screen asks for your code as well: "This passkey did
+not check that it is you, so {instance} also asks for your code." A passkey the instance does not know says
+"{instance} does not know this passkey. It may belong to another account or another server."
 
-**Use a backup code** replaces either with one of your backup codes: "Type one of the backup codes you saved
-when you added your second factor. Each code works once." The page keeps the code until the last step and does not
-use it up before: it is checked, and spent, when you give the recovery key. A backup code does not replace the
-recovery key. A code that did not work says "That backup code did not work. Sign in again and try another one." and
-takes you back to step 1. Under the code form: "Lost your phone? Use a backup code, or ask the operator of {instance}
-to reset your second factor." After a backup code, step 4 says "You have {count} backup codes left. Make new ones in
-Settings, under sign-in."
+**Use a backup code** replaces either with one of your backup codes: "Type one of the backup codes you saved when you
+added your second factor. Each code works once." The app keeps the code until the key step and does not use it up
+before: it is checked, and spent, when you give the recovery key. A backup code does not replace the recovery key. A
+code that did not work says "That backup code did not work. Sign in again and try another one." and takes you back to
+step 1. **Back** returns to the code or the passkey.
 
 ### Step 3 of 4: Add this device
 
-![Step 3: "Add this device", the key typed in groups and "52 of 52 characters"](screenshots/signin-3-recovery-key.png)
+![Sign-in step 3 of 4: "Add this device", a recovery key typed into the Recovery key field, "52 of 52 characters"
+and Add device](screenshots/sign-in-key.png)
 
-"This device is new. Paste your recovery key to read your conversations here." Spaces and hyphens do not matter. The line under the field counts
-what you typed ("{n} of 52 characters"); **Add device** works once it reads 52 ("A recovery key has 52
-characters."). A key that cannot be a recovery key is refused before anything is added to your account, and a key of
-another account once the instance has answered; either way this step shows again with what you typed and "This is
-not the recovery key of this account. Check every character." Adding the app says "Adding this device to your
-account…". **Cancel** goes back to the sign-up.
+"This device is new. Paste your recovery key to read your conversations here." Spaces and hyphens do not matter. The
+line under the field counts what you typed ("{n} of 52 characters"); **Add device** works once it reads 52 ("A
+recovery key has 52 characters."). A key of another account is refused once the instance has answered, and this step
+shows again with what you typed and "This is not the recovery key of this account. Check every character." Adding
+the device says "Adding this device to your account…".
 
 If you type a backup code here, the step recognises it: "That looks like a backup code, not the recovery key. This
 step needs the 52-character recovery key you saved when you created the account." A backup code is not the recovery
@@ -953,24 +963,23 @@ nothing was used up, not even a backup code.
 
 ### Step 4 of 4: You’re in
 
-![Step 4: "You’re in" and the Open dilla button](screenshots/signin-4-done.png)
+![Sign-in step 4 of 4: "You’re in", "This device is now one of your devices." and Open dilla](screenshots/sign-in-done.png)
 
-"This device is now one of your devices." If you joined a server, the panel says "{server} is waiting in #{channel}."
-The small print says "Messages sent before another device joins are not shown there."
-**Open dilla** opens the app. The new device sees new messages, not what was said before it joined.
+"This device is now one of your devices." **Open dilla** opens the app. The new device sees new messages, not what
+was said before it joined.
 
 ### If the sign-in stops
 
-| The page shows | What it means and what to do |
+| The app shows | What it means and what to do |
 |---|---|
 | "This is not the recovery key of this account. Check every character." | The key is wrong (a typo, or another account's key). Correct it and continue |
 | "Adding this device took longer than 5 minutes, so the sign-in ran out. Sign in again." | The five minutes after the second factor ran out while you read the key. Sign in again from step 1; nothing was used up |
-| "Someone else is signing in to this account. Change your password from a device you still have, or ask the operator." | Another sign-in with your password took this device's place before it was added. If that was not you, someone else has your password. The desktop app cannot change a password yet, so tell whoever runs the instance; meanwhile your other devices keep working, and a device that signed in with the password alone cannot read anything. You land on step 1 or on the first page; sign in again once it is sorted out |
-| "The account’s devices changed while you were signing in. Sign in again." | Another of your devices changed the account's devices meanwhile. This device's data was cleared; start again from **Already have an account? Sign in** |
+| "Someone else is signing in to this account. Change your password from a device you still have, or ask the operator." | Another sign-in with your password took this device's place before it was added. If that was not you, someone else has your password: change it in Settings → Sign-in on a device you still have, or tell whoever runs the instance. Meanwhile your other devices keep working, and a device that signed in with the password alone cannot read anything |
+| "The account’s devices changed while you were signing in. Sign in again." | Another of your devices changed the account's devices meanwhile. Start again from **Already have an account? Sign in** |
 | "This account already has as many devices as {instance} allows. Remove one in Settings on another device first." | Remove a device in Settings → Devices on a device you still have, then continue |
 | "Too many sign-in attempts. Try again in {seconds} s." | Wait that long, then continue |
-| "This device cannot use passkeys here. Use a backup code instead, or sign in from a device that can." | The account's factor is a passkey and this device cannot run one at this address. Type a backup code, or use another device |
-| "This account has no backup to recover from on {instance}. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again." | Open dilla in a device that already holds the account and let it connect; then sign in here again |
+| "This device cannot use passkeys here. Use a backup code instead, or sign in from a device that can." | The account's factor is a passkey and this device cannot use one at this address. Type a backup code, or use another device |
+| "This account has no backup to recover from on {instance}. Sign in on a device that still holds this account and open dilla there; it repairs the backup. Then try again." | Open dilla on a device that already holds the account and let it connect; then sign in here again |
 | "The connection dropped. Check it and try again." | Check the network and continue |
 
 ## 7. Devices
@@ -982,8 +991,8 @@ for example "active 2 days ago · 8b20ce". The id stays on every row, because a 
 changed there. "not yet in the device list" marks a device that signed in with your password but was never added;
 "removed" marks one that was removed. **Rename** is in each row's menu (right-click, a long press, or Shift+F10).
 
-![Settings → Devices: this device with "this device · active now" and Sign out, and a second device with when it was
-last active and Remove](screenshots/fullscreen-settings-devices-desktop-signal.png)
+![Settings → Devices: this device, "Dilla on Linux" with the tags DESKTOP · LINUX and THIS DEVICE, "this device ·
+active now" and Sign out, and a second device, "Ada's laptop", with its id and Remove](screenshots/user-settings-devices-named.png)
 
 - **remove** on another device: "Remove this device?" "The device is signed out everywhere and leaves every
   conversation. Enter your recovery key to confirm." **Remove** does it. A wrong key says "This is not the
@@ -1000,7 +1009,8 @@ last active and Remove](screenshots/fullscreen-settings-devices-desktop-signal.p
   and its data here is cleared. You can sign in again later with your password and recovery key. Enter the key to
   confirm." **Sign out** removes it and returns to the first screen.
 
-![The dialog "Sign out and remove this device?" with the recovery key field](screenshots/settings-devices-signout.png)
+![The dialog "Sign out and remove this device?" with the Recovery key field, "0 of 52 characters", Close and Sign
+out](screenshots/user-settings-devices-sign-out-named.png)
 
 **If the recovery data is not yours.** If the instance holds recovery data that this account did not make,
 a red warning stays at the top of the app and of Settings → Devices: "The recovery data stored for this
@@ -1018,19 +1028,14 @@ goes to this list. There is nothing to compare for your own account: the warning
 If you changed your account's identity key from another device, a device still on the old key must sign in again
 (section 6).
 
-Settings uses a grouped index at narrow layouts. Selecting a section opens its page, with **Back to settings** above it. On desktop, the sidebar and content scroll independently.
-
 ## 8. Badges, direct messages and notifications
 
-![Mira in #general: the server tile in the rail shows 1, #loot shows 1, and the @ tile shows 1
-for a reply from Ada](screenshots/shell-dm-badge.png)
+![Mira in #general: the channel loot under Raids shows "1 new"](screenshots/notify-unread-badge.png)
 
-A channel with unread messages shows a count, and mentions have their own count. The server's tile in the
-rail counts its unread channels, and the **@** tile counts your unread direct messages: here #loot is unread and Ada has
-answered a direct message. Opening a channel or a direct message marks it read. Your own messages, from any
-of your devices, never count as unread.
-
-![A channel and server rail with unread badges](screenshots/shell-unread-badge.png)
+A channel with unread messages shows how many are new ("1 new"), and mentions have their own count. A server's tile in
+the rail shows a count only for mentions. A direct message with unread messages has a dot in the direct-message list
+([Home and direct messages](#home-and-direct-messages)); the **@** tile carries no count yet. Opening a channel or a
+direct message marks it read. Your own messages, from any of your devices, never count as unread.
 
 Under the **@** tile, choose **message someone** ("Pick a member of this server."), choose **message** next
 to a person and write. A direct message someone else starts appears at once. Direct messages stay
@@ -1038,14 +1043,21 @@ reachable when you are in no server, or when a server did not load: the **@** ti
 there, and the channel list says what is wrong. Starting a new one needs a server, because the list of
 people comes from it.
 
-![A direct message with Ada](screenshots/dm-conversation.png)
+![A direct message with Mira: her name, @mira and her status in the header, the conversation, and the message field
+with GIF](screenshots/dms-conversation.png)
 
-Under **notifications**, "Desktop notifications show while dilla is running. Nothing is shown when it is closed." Choose **turn on** to ask the app for permission. The default "notify me about" choices
-are "direct messages and mentions", "every message" and "nothing". "Per channel" lets you choose "default",
-"all", "mentions" or "nothing", and "mute" a channel. A muted channel still shows its mention badge. "Servers" sets
-the same for a whole server ([Notifications for a server](#notifications-for-a-server)).
+Settings → **Notifications** ("What reaches you, and how.") has a row for the server you are in, "Notify me for" with
+**All**, **Mentions** or **Nothing**; **@everyone and @here** ("Notify when someone allowed to use them"); **Desktop
+notifications** on this device, which says "Blocked by the system. Allow notifications for dilla in the system
+settings." while the operating system blocks them; and **Join, leave and ring sounds**. A channel's own notify mode is
+in its row menu in the channel list. A muted channel still shows its mention badge ([Notifications for a
+server](#notifications-for-a-server)).
 
-![Notification permission before opt-in](screenshots/fullscreen-settings-notifications-desktop-signal.png)
+What raises a notification, what it says and what a click does are in
+[Notifications](desktop.md#notifications) in the desktop guide.
+
+![Settings → Notifications: Midgard Crew set to Mentions, @everyone and @here on, Desktop notifications blocked by the
+system, and the join, leave and ring sounds on](screenshots/notify-settings.png)
 
 ## 9. Saying more
 
@@ -1060,17 +1072,18 @@ and those times are 24-hour too. The desktop app reads the system region from th
 
 ### The message toolbar
 
-![Mira's view of #general: Björn's reply to Ada with its reply line and its toolbar react, reply and pin,
-and, further up, Mira's packing list with the reactions thumbs up 2 and fire 1](screenshots/conversation-actions.png)
+![Mira's view of #general with the toolbar on her own message: react, reply, reply in thread and more
+actions](screenshots/messages-conversation-actions.png)
 
 Point at a message, or move to it with the keyboard, and its toolbar appears ("actions for this message"):
-**react**, **reply** and **pin** (**unpin** on a pinned message), and on your own messages also **edit** and
-**delete**. A change shows once it has gone through; until then the message says "saving…", and a change that
+**react**, **reply**, **reply in thread** and **more actions** (⋯), which holds **pin** (**unpin** on a pinned
+message) and, on your own messages, **edit** and **delete**. A change shows once it has gone through; until then the message says "saving…", and a change that
 could not be made says "not saved" with **retry** and **discard**.
 
 ### Edit
 
-![Mira's packing list open for editing, with "escape to cancel · enter to save" under it](screenshots/conversation-edit.png)
+![Mira's last message open for editing, with "escape to cancel · enter to save", cancel and save under
+it](screenshots/messages-edit.png)
 
 **edit** opens the message in place ("edit your message"); Arrow Up in an empty message field does the same for
 your last message. Enter saves, Shift+Enter starts a new line, Escape cancels ("escape to cancel · enter to save").
@@ -1126,8 +1139,8 @@ their devices they use.
 
 ### Pins
 
-![The dialog "Pinned in #general" with Mira's packing list, "pinned by Ada", and the buttons go to message and
-unpin](screenshots/conversation-pins.png)
+![The dialog "Pinned in #general": "A pin shows while the person who pinned it may pin in this channel.", Mira's
+packing list, "pinned by Mira", go to message and unpin, and Close](screenshots/messages-pins.png)
 
 **pin** pins a message for everyone in the conversation, and it shows "pinned". **pinned** in the channel's row menu in the channel list
 opens "Pinned in #{channel}" ("Pinned with {name}" in a direct message): each pinned message with its author, its
@@ -1137,9 +1150,11 @@ list says who pinned each one.
 
 ### Mentions
 
-![The message field with "@ad" typed and the list "people to mention" offering Ada](screenshots/conversation-mention.png)
+![The message field with "see you @b" typed and the list headed Members offering Björn
+(@bjorn)](screenshots/messages-mention.png)
 
-Type `@` and the first letters of someone's username or display name: the list ("people to mention") offers up to
+Type `@` and the first letters of someone's username or display name: the list ("people to mention", headed
+Members) offers up to
 eight members who match and, in a channel, "everyone in this channel". Arrow Up and Arrow Down move, Enter or Tab
 picks, Escape closes the list. Typing a member's whole `@username` works too. The message carries the person, not
 the text you typed, so it always shows their current name. A message that mentions you is marked, counts in the
@@ -1151,8 +1166,8 @@ their profile card ([Members](#members)); role mentions and @everyone are not.
 
 ### Images and files
 
-![Björn's message with the image card of saturday-map.png and the file card of loot-list.txt, and under it the
-list "files to send" with packing-list.txt and bridge-sketch.png, both ready](screenshots/conversation-attachments.png)
+![Björn's message "the map from saturday, coffee stain included" with an image and the file card of loot-list.txt
+(39 B · TXT) with its save button](screenshots/attachments-cards.png)
 
 **attach files** next to the message field, dropping files on the conversation ("Drop to attach", "Up to 10 files,
 25 MB each.") or pasting them into the message field adds them to "files to send". Each file goes through
@@ -1175,7 +1190,7 @@ files](voice.md#audio-and-video-files)). Every other file, SVG included, shows a
 A GIF plays in the conversation; with reduced motion it stays still until you open it, and a GIF that is standing still
 carries a small "GIF" mark.
 
-![saturday-map.png open full size, with Save and Close](screenshots/conversation-lightbox.png)
+![map.png open full size, with its name and size, Save and Close](screenshots/attachments-lightbox.png)
 
 Opening an image shows it full size: **previous image** and **next image** (Arrow Left and Arrow Right) move
 between the images of the same message, **Save** saves it, **Close**, Escape or a click outside the picture closes it. A received file over
@@ -1259,7 +1274,8 @@ Other people's changes show in your member list the next time it is read, which 
 
 ### Contacts and safety numbers
 
-![Settings → Privacy with three contacts, each "First seen here — not verified"](screenshots/fullscreen-settings-privacy-desktop-signal.png)
+![Settings → Privacy with three contacts: Björn "verified" with his key, and Lin and Mira "First seen here — not
+verified", each with Compare with and the name](screenshots/privacy-section.png)
 
 Before this device shows a message, it checks that the device which sent it is on its owner's signed device list.
 The first key it sees for a person is kept as that person's key. **Settings → privacy** lists the people you share
@@ -1287,7 +1303,9 @@ To verify someone:
 4. Only when all 12 blocks match, tick "Yes, all 12 blocks match" and press **All 12 blocks match**. The dialog
    closes and the person shows as "verified" with the key you compared. **Close** leaves without approving.
 
-![Compare safety numbers: the key and the 12 blocks of five digits](screenshots/trust-compare-desktop.png)
+![The dialog "Compare safety numbers" for Mira: "This contact’s identity changed. Compare the number before
+sending.", public key (closed), the 12 blocks of five digits, Copy number, show qr, the box "Yes, all 12 blocks match",
+Close and All 12 blocks match](screenshots/privacy-compare.png)
 
 If the key changes while the dialog is open, it says "The key changed while you compared. Close this and compare
 the new number." and approves nothing.
@@ -1297,17 +1315,23 @@ this person to compare numbers." and shows no number.
 
 ### When a contact's identity changes
 
-![A conversation with a contact whose identity changed: the alert, and the message field blocked](screenshots/trust-conversation-desktop.png)
+![A direct message with Mira after her identity changed: the alert "This contact’s identity changed. Compare the
+number before sending." with Compare with Mira at the top, and the same line under the message
+field](screenshots/dms-identity-changed.png)
 
-When a contact's identity key changes, the conversation shows the alert "This contact’s identity changed. Compare
-the number before sending." and the message field (and attaching files) is blocked with the same words in every
-conversation you share with that person. Nothing you received before is removed. What they send under the new key
-waits, and shows once you compare the new number and approve it. Sending in a conversation starts again when you
-compare the new number (the steps above), or, in that one conversation only, when that person's changed device is
-removed from it ("You can send in this conversation after this member leaves. Their changed identity is still
-unverified elsewhere."). The alert's button opens Settings → privacy; pick **Compare with {name}** there.
+When a contact's identity key changes, the app shows the alert "This contact’s identity changed. Compare the number
+before sending." with **Compare with {name}**, and sending pauses in every conversation you share with that person:
+the message field and a reply in a thread show the same line instead of sending, and an edit of your own message
+does not open while the conversation is paused. A
+send is refused before it leaves this device, so nothing reaches the conversation. Nothing you received before is
+removed. What they send under the new key waits, and shows once you compare the new number and approve it. Sending in
+a conversation starts again when you compare the new number (the steps above), or, in that one conversation only,
+when that person's changed device is removed from it ("You can send in this conversation after this member leaves.
+Their changed identity is still unverified elsewhere."). **Compare with {name}** on the alert opens the comparison;
+so does **Compare with {name}** in Settings → Privacy.
 
-![Privacy with a contact whose identity changed: the alert and Compare with](screenshots/trust-changed-desktop.png)
+![Settings → Privacy with Mira's identity changed: the alert "This contact’s identity changed. Compare the number
+before sending." and Compare with Mira](screenshots/privacy-changed.png)
 
 If no device list shows the new key, there is nothing to compare yet: the alert says "This contact’s identity
 changed, but no device list shows the new key, so there is nothing to compare yet. Sending is paused where their
@@ -1318,7 +1342,8 @@ this conversation failed the identity check. Sending is paused here until it’s
 
 ### Search
 
-![Search results for "bridge" across everything](screenshots/search-results-desktop.png)
+![The search window with "bridge" typed: three messages from #general, each with its author and time, and
+"Searches messages held on this device"](screenshots/gpui-search.png)
 
 Search opens as a window over the app. It finds channels, people (your direct messages), settings, a few actions, and
 messages. Messages are looked up only in what this device holds and has decrypted; nothing is sent to the instance. Each
@@ -1327,7 +1352,7 @@ message result shows the #channel (or the person, in a direct message), the auth
 1. Press **Control+K** (⌘+K on a Mac) or **Control+/**; both open the same search.
 2. Type into "Search channels, people and messages". With nothing typed it lists your channels, people and actions; from
    two characters it also searches messages, those of the open conversation first. Matching settings appear under
-   "Settings" and open their page.
+   "Settings" and open their section.
 3. Arrow Down and Arrow Up move through the results while the cursor stays in the field; Enter or a click opens the
    result (a message gets the focus). The window's footer reminds you: arrows to move, Enter to open. Escape
    closes search from anywhere in it, and gives the focus back to where it was. While search is open, the rest of the app cannot be reached with Tab.
@@ -1349,10 +1374,11 @@ There are no single-key shortcuts.
 
 ### Diagnostics
 
-![Settings → Diagnostics](screenshots/fullscreen-settings-diagnostics-desktop-signal.png)
+![Settings → Diagnostics: Connection online, Generation 1, Instance dilla.test, Devices 2, Key packages, "No errors
+recorded" and Copy codes](screenshots/diagnostics-section.png)
 
 **Settings → diagnostics** shows the connection (online, connecting or offline), the instance's generation, the
-instance's name and the number of your devices. A wide screen has no status bar, so these facts live here, and the line
+instance's name and the number of your devices. The app has no status bar, so these facts live here, and the line
 at the top of the app tells you when the link drops. Under them come the codes of the last 20 errors with the time each happened ("No errors recorded" when there are
 none). **Copy codes** copies those codes, one per line, and nothing else: no message, key or name, so you can paste
 them into a report.
@@ -1407,7 +1433,7 @@ second copy, so two copies never fight over one conversation.
 - If your account's identity key changes on another device, a device still on the old key shows the "different
   identity" warning in your conversations and must sign in again (section 6); it cannot be compared.
 - After a restart, Privacy forgets that a changed contact left a conversation (the contact still shows as changed
-  until you compare), and the changed-identity alert opens Privacy rather than the comparison itself.
+  until you compare).
 - No server-readable channels, and no settings shared between your devices (each keeps its own).
 - If the app is restarted while the account is being created, the account is finished but the server the
   invite named is not joined; paste the invite into **Join a server**.
@@ -1439,4 +1465,5 @@ See [Music](music.md) for setup and the Control music (DJ) permission.
 Participant volume and screen-share volume remain beside the participant/share.
 Channel collapse and conversation-search scope remain in their contextual controls.
 
-![Fullscreen Profile with grouped desktop navigation](screenshots/fullscreen-settings-profile-desktop-signal.png)
+![Settings → Profile: the sections of You and of Midgard Crew on the left, Display name, Status message and Bio, and
+the card others see](screenshots/gpui-user-settings.png)

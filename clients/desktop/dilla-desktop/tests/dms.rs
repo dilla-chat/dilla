@@ -347,7 +347,7 @@ fn conversation_block_and_removed_note(cx: &mut TestAppContext) {
     );
     assert_eq!(
         conversation::composer_block(&state, channel),
-        Some(dilla_desktop::strings::t("privacy.changed"))
+        Some("privacy.changed")
     );
     state.trust.send_blocks.clear();
     state.trust.contacts[0].removed_in.push(channel);
@@ -436,4 +436,199 @@ fn parity_dms_picker() {
 )]
 fn parity_dms_picker_b() {
     parity("picker-b");
+}
+
+/// A GPUI-only reference of a trust screen (the docs' shots, plan "Desktop docs screenshots" Task 2): fixture `fixture`
+/// (`<area>/<state>`) against `native/<golden>`. The trust verdicts are the fixture's (`fixture/dms.rs` `apply_trust`):
+/// the web's references come from a world with no key rotation, so none shows a changed or verified contact.
+fn native_trust(fixture: &str, golden: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(format!("{fixture}.json"));
+    let report = dilla_parity::screen::assert_native_screen(&path, golden, |_| {})
+        .unwrap_or_else(|e| panic!("{fixture} differs from its golden shot native/{golden}: {e}"));
+    assert!(report.text_lines > 0);
+    println!(
+        "SCREEN native/{golden}: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
+}
+
+/// The bright pixels (a channel over 96: glyph ink; the rows' hairlines and fills peak at 35) of the content column of
+/// `fixture`'s frame that no reported line box covers. Text the text mask does not know of is compared as chrome, where
+/// another rasteriser's anti-aliasing (macOS CoreText against the Linux goldens) fails the chrome gate.
+fn unmasked_ink(fixture: &str, prepare: impl FnOnce(&mut dilla_parity::Driver)) -> Vec<(u32, u32)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(format!("{fixture}.json"));
+    let mut app = dilla_parity::Driver::launch_fixture(&path, None, &[]);
+    app.wait_idle();
+    prepare(&mut app);
+    app.rest();
+    app.wait_idle();
+    let shot = app.screenshot();
+    let mask = dilla_parity::screen::text_mask(&mut app, dilla_parity::screen::TEXT_FRINGE_PX);
+    let masked = |x: u32, y: u32| {
+        mask.rects()
+            .iter()
+            .any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+    };
+    // The settings content column at 2x: right of the sidebar (280 px), under the close button (y 75), left of it.
+    let mut ink = Vec::new();
+    for y in 150..shot.height() {
+        for x in 560..2440.min(shot.width()) {
+            let p = shot.get_pixel(x, y).0;
+            if p[..3].iter().any(|&c| c > 96) && !masked(x, y) {
+                ink.push((x, y));
+            }
+        }
+    }
+    ink
+}
+
+/// Every text of Settings -> Privacy is in the text mask: its rows' labels, key, body text and Compare buttons report
+/// their line boxes. The rows' key and body text were bare GPUI text children, which report none, so their glyphs were
+/// compared as chrome and macOS failed the Linux goldens' chrome gate (0.74 %, allowed 0.4 %).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "the headless renderer is Linux and macOS only"
+)]
+fn privacy_text_is_masked() {
+    let ink = unmasked_ink("trust/privacy", |_| {});
+    assert!(
+        ink.is_empty(),
+        "{} bright pixels outside every text line box, first {:?}",
+        ink.len(),
+        &ink[..ink.len().min(5)]
+    );
+}
+/// The trust screens' frames do not depend on the host's fonts: with DejaVu Sans as the only system face
+/// (`one_system_font`, the face the CI runner resolves) each frame still equals its golden. The Privacy rows' body text,
+/// key and toned states, and the comparison's instructions, once named no family, so GPUI drew them in the host's
+/// `.SystemUIFont` fallback (Adwaita Sans on the machine that blessed them, DejaVu Sans on the CI runner): their width
+/// moved every control column and the goldens failed on CI only.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "fontconfig is the Linux font source"
+)]
+fn native_trust_screens_do_not_depend_on_system_fonts() {
+    let conf = dilla_parity::screen::one_system_font();
+    let env = [("FONTCONFIG_FILE", conf.as_str())];
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures");
+    for (fixture, golden) in [
+        ("trust/privacy", "privacy-section"),
+        ("trust/privacy-changed", "privacy-changed"),
+        ("dms/identity-changed", "dms-identity-changed"),
+    ] {
+        dilla_parity::screen::assert_native_screen_with(
+            &fixtures.join(format!("{fixture}.json")),
+            golden,
+            &env,
+            "one-system-font",
+            |_| {},
+        )
+        .unwrap_or_else(|e| panic!("{fixture} with DejaVu Sans the only system font: {e}"));
+    }
+    dilla_parity::screen::assert_native_screen_with(
+        &fixtures.join("trust/privacy-compare.json"),
+        "privacy-compare",
+        &env,
+        "one-system-font",
+        |app| {
+            app.click("privacy-compare-2");
+            app.wait_for("safety-compare-dialog", std::time::Duration::from_secs(10));
+        },
+    )
+    .unwrap_or_else(|e| panic!("trust/privacy-compare with DejaVu Sans the only system font: {e}"));
+}
+
+/// Settings -> Privacy (`trust/privacy`): Björn verified with his compared key, Lin and Mira first seen here, each with
+/// Compare.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_privacy_section() {
+    native_trust("trust/privacy", "privacy-section");
+}
+
+/// Settings -> Privacy with Mira's identity changed (`trust/privacy-changed`): her row is the alert that cannot be
+/// dismissed, with its Compare; Björn verified, Lin first seen.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_privacy_changed() {
+    native_trust("trust/privacy-changed", "privacy-changed");
+}
+
+/// The DM with Mira after her identity changed (`dms/identity-changed`): the alert over the log and the composer paused
+/// with `privacy.changed` (Task 2c: the composer reads the trust gate, `composing::Blocked::Trust`).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_dms_identity_changed() {
+    native_trust("dms/identity-changed", "dms-identity-changed");
+}
+
+/// Task 2c: Settings -> Privacy opens the comparison in the running app. The settings host replaces the shell, so it
+/// draws the compare dialog itself: clicking a row's Compare (`trust/privacy`, Björn's) shows `safety-compare-dialog`.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "the headless renderer is Linux and macOS only"
+)]
+fn compare_opens_from_settings_privacy() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/trust/privacy.json");
+    let mut app = dilla_parity::Driver::launch_fixture(&fixture, None, &[]);
+    app.wait_idle();
+    assert!(
+        app.element("safety-compare-dialog").is_none(),
+        "no comparison before the click"
+    );
+    app.click("privacy-compare-0");
+    app.wait_idle();
+    app.wait_for("safety-compare-dialog", std::time::Duration::from_secs(10));
+    // Escape closes the comparison, not the settings under it.
+    app.press("escape");
+    app.rest();
+    app.wait_idle();
+    assert!(
+        app.element("safety-compare-dialog").is_none(),
+        "Escape closed the comparison"
+    );
+    assert!(
+        app.element("privacy-compare-0").is_some(),
+        "the settings stay open on Privacy"
+    );
+}
+
+/// Settings -> Privacy with Mira's identity changed (`trust/privacy-compare`, the verdicts of `trust/privacy-changed`),
+/// and the comparison her alert's Compare opens over the settings: her changed state and the fixture's fictional keys.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_privacy_compare() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/trust/privacy-compare.json");
+    let report = dilla_parity::screen::assert_native_screen(&path, "privacy-compare", |app| {
+        // Björn, Lin, Mira (by name): Mira's alert holds row 2's Compare.
+        app.click("privacy-compare-2");
+        app.wait_for("safety-compare-dialog", std::time::Duration::from_secs(10));
+    })
+    .unwrap_or_else(|e| panic!("trust/privacy-compare differs from its golden shot: {e}"));
+    assert!(report.text_lines > 0);
+    println!(
+        "SCREEN native/privacy-compare: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
 }

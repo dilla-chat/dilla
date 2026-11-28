@@ -11,15 +11,16 @@ listen.
 
 ## Join and leave a voice channel
 
-![Mira in the voice channel harbour of Midgard Crew: the stage with a tile for each of the three people, the stage's
-own controls at the bottom centre, and at the bottom left the call panel above Mira's user panel](screenshots/voice-stage-desktop.png)
+![Ada alone in the voice channel Lounge of Midgard Crew: her name under Lounge in the channel list, her tile "Ada
+(you)" on the stage, the call panel above her user panel, and Mute, Deafen, Camera, Share and Leave along the
+bottom](screenshots/gpui-voice-stage.png)
 
 A server's voice channels sit in the channel list among its text channels, in the server's order, each with a speaker
 icon ([One channel list](getting-started.md#one-channel-list)). A new server starts with one called general, and its
-owner can add more with the **+** at the top of the list ([Add a channel](getting-started.md#add-a-channel)); here Ada
-added "harbour". While people are in one, it shows how many are in it, and the people are listed under it, one line
+owner can add more with the **+** at the top of the list ([Add a channel](getting-started.md#add-a-channel)); here the
+voice channel is Lounge. While people are in one, it shows how many are in it, and the people are listed under it, one line
 each, with the same small icons the tiles have ([the participant icons](#the-participant-icons)). People who joined
-the server after you opened the page are shown by name too.
+the server after you opened the app are shown by name too.
 
 One click on a voice channel joins it. The row of the channel you are in has no join icon and no coloured speaker: its name turns bold and the screen reader adds "connected". The call panel above your user panel shows the channel name over "connecting", then your ping,
 and the screen announces "You joined {where}." Each person in the call has a tile with their name and
@@ -62,7 +63,7 @@ tile, never over the face. Your own tile has no volume.
 ### The call panel
 
 The call panel, and the compact Now playing card when music plays, stay visible while you are on the voice channel's own
-page, not only in other channels; the stage keeps its own Now playing too. Neither the panel nor the top bar's voice chip
+view, not only in other channels; the stage keeps its own Now playing too. Neither the panel nor the top bar's voice chip
 shows animated signal bars: the ping and rates are the only signal.
 
 At the bottom left, above your user panel, the call panel shows the channel name (hover it for the server) over your ping and data rates, like "24 ms · ↑48 ↓96 kb/s" (or "connecting", "reconnecting" or "paused
@@ -72,11 +73,8 @@ those are in the user panel under it, which is always there ([the user panel](ge
 stays on screen while you read other channels, so you can leave from anywhere. Point at an icon, or reach it with Tab and the arrow keys, and its name shows above it; Escape hides the name
 again.
 
-![The call panel and the user panel up close: the channel, its ping and rates and leave, and under it Mira's
-name with her status ("in harbour") and mute and deafen](screenshots/dock-desktop.png)
-
-![Mira in #general while she stays in harbour: the channel list with the people nested under harbour, and the call
-panel above her user panel](screenshots/voice-dock-desktop.png)
+![The bottom row in a call: Ada's user panel ("in Lounge") with mute and deafen, the channel Lounge with "— ms",
+and Mute, Deafen, Camera, Share and Leave](screenshots/voice-dock.png)
 
 The stage has a toolbar of its own, pinned at the bottom centre of the stage: **mute**, **deafen**, **camera**,
 **share screen** and **leave**, with a thin line before **leave**. Its mute and deafen are the same ones as in the user
@@ -84,7 +82,8 @@ panel, shown again where your hands are, and their tooltips show the shortcut. B
 
 ### The stage
 
-![Mira's stage at 1440 by 900: Ada's shared screen large, with Mira, Ada and Björn in a strip below](screenshots/voice-stage-focused-desktop.png)
+![Ada's own tile focused on the stage in Lounge, with Grid and full screen in its corner and "opus
+48k"](screenshots/voice-stage-focused.png)
 
 The stage has one tile for each camera or screen, filling the stage. A person has one tile for themself (their camera,
 or their initials without one), and, while they share, one more for the screen, named "{name}’s screen". With no one
@@ -104,8 +103,6 @@ sharing it is a grid.
   through the server ("18 ms"; none until it has one, and none while their call is paused or reconnecting), and a
   focused screen its picture as it arrives ("1440p · 30 fps", with "· audio" on your own share when its sound goes too).
   Your ping is visible to the others in the call this way.
-
-![The same stage in the grid: Mira, Ada, Ada's screen and Björn as four tiles](screenshots/voice-stage-grid-desktop.png)
 
 An open voice channel's call setup that nobody has used for 10 minutes is renewed by the instance the next time
 someone joins. You do not have to do anything.
@@ -157,8 +154,8 @@ long after you let go, so word endings are not cut; pressing the key again withi
 and **mute** closes it at once. While push to talk is in force the call panel says "hold {key} to talk" (for example
 "hold Pause to talk"), or "push to talk: no key set" with **set a key**, which opens Settings → Voice.
 
-![Settings → Voice: devices with their volumes, the mic test with its meter and sensitivity line, input mode, noise
-suppression and processing](screenshots/voice-settings-desktop.png)
+![Settings → Voice: the input and output devices with their volumes, the mic test with Let’s check, its meter and
+threshold line, Set sensitivity automatically, Input mode and Noise suppression](screenshots/voice-settings-section.png)
 
 Settings → Voice has four groups:
 
@@ -238,7 +235,7 @@ stage of a voice channel). In a direct
 message's call the call panel and what is said name it
 "the call with {name}": "in the call with {name}", "You joined the call with {name}."
 
-![Ada is calling: the ring banner with answer and decline above Mira's #general](screenshots/call-ring-desktop.png)
+![Mira is calling: the ring banner with answer and decline above Ada's #general](screenshots/ring-banner.png)
 
 A ring shows as a banner at the top of the app, "{name} is calling", with **answer** and **decline**, and the ring
 sound. With the keyboard, Tab from the start of the main area reaches **answer** and **decline** first. A ring:
@@ -280,12 +277,12 @@ channels can rename it and move it into a category (it always stays the very las
 Being in the AFK channel means having no voice connection. Nobody joins a call there: it uses no microphone, no
 camera and no media server, and nobody hears anything. The channel instead lists the people who are **away**.
 
-![Mira's view of Midgard Crew: the AFK row lists the people who are away, with the word "away" after each name](screenshots/afk-call-desktop.png)
+![The AFK channel of Midgard Crew open: "Nobody is away", the idle timeout and Go AFK](screenshots/ring-afk.png)
 
 - **The away list.** Each person who is away is listed under the AFK row with the word "away", with a count beside AFK.
-  Opening the AFK channel shows its page with “Nobody is away”, “{name} is away” or “{names} are away”.
-- **Go AFK.** Click the AFK row to open its page, then press **Go AFK**. You leave your call and are listed as
-  away. The page says “You are away” and explains the server’s idle timeout.
+  Opening the AFK channel shows “Nobody is away”, “{name} is away” or “{names} are away”.
+- **Go AFK.** Click the AFK row to open it, then press **Go AFK**. You leave your call and are listed as
+  away. It then says “You are away” and explains the server’s idle timeout.
 - **After the inactive timeout**, a computer that has sat in a voice channel with no keyboard, pointer, touch or
   speech is disconnected from the call and listed as away, and the screen announces "Moved to AFK for inactivity".
   Quiet listening counts as idle, and activity on another of your devices does not count. The desktop app reports call
@@ -318,8 +315,8 @@ for calls", or both.
 
 ## Audio and video files
 
-![Björn's bridge-shanty.wav in #general, playing in the app's own player with save
-next to it](screenshots/media-player-desktop.png)
+![Björn's bridge-shanty.wav (188 KB) in #general, with play bridge-shanty.wav and
+save](screenshots/attachments-media-player.png)
 
 Audio and video files of these types play in the conversation: audio as MP3, MP4 or M4A, AAC, Ogg, Opus, WebM, WAV
 or FLAC, and video as MP4, WebM or Ogg. Press **play {name}** ("loading" while it downloads): the app's own
@@ -333,8 +330,8 @@ another program.
 
 ### A contact's identity changed
 
-![The voice channel watch-voice: "peer…’s identity changed. Compare safety numbers in Privacy before joining." and
-no join button](screenshots/voice-blocked-desktop.png)
+![The voice channel Lounge with Mira and Björn in it: "Mira’s identity changed. Compare safety numbers in Privacy
+before joining." with compare safety numbers, and no join button](screenshots/voice-join-blocked.png)
 
 If someone in the call has a changed identity that you have not compared yet, the join is refused before anything is
 sent: "{name}’s identity changed. Compare safety numbers in Privacy before joining." **compare safety numbers**,

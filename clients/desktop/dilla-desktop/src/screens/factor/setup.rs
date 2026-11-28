@@ -115,7 +115,8 @@ enum Step {
 
 pub struct FactorSetupView {
     server: url::Url,
-    factors: Factors,
+    /// The client's factors handle; `None` only for a screen fixture (automation), which asks the instance nothing.
+    factors: Option<Factors>,
     browser: BrowserAuth,
     origin: Origin,
     instance: InstanceDoc,
@@ -245,7 +246,58 @@ impl FactorSetupView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let factors = client.factors();
+        let snapshot = client.state().borrow().factors.factors.clone();
+        let start_passkey = matches!(
+            &origin,
+            Origin::Settings {
+                start: Choice::Passkey,
+                ..
+            }
+        );
+        let mut this = Self::build(Some(client.factors()), snapshot, server, origin, window, cx);
+        this.load(window, cx);
+        if this.step == Step::Totp {
+            this.begin_totp(window, cx);
+        }
+        if start_passkey {
+            this.open_passkey(window, cx);
+        }
+        this
+    }
+
+    /// Automation (screen fixtures, `fixture::factors`): the set-up with no client, drawn from what the instance would
+    /// have answered: its document, the account's factors and, for the app step, the setup key (a fixture's fictional
+    /// one). It asks the instance nothing; a press that would leaves the screen as it is.
+    #[cfg(feature = "automation")]
+    pub fn fixture(
+        server: url::Url,
+        origin: Origin,
+        instance: InstanceDoc,
+        snapshot: Option<dilla_client::state::factors::Factors>,
+        key: Option<TotpKey>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::build(None, snapshot, server, origin, window, cx);
+        this.instance = instance;
+        if let Some(key) = key {
+            this.go(Step::Totp, cx);
+            this.secret_text = Some(SharedString::from(key.secret.as_str().to_owned()));
+            this.key = Some(key);
+        }
+        this
+    }
+
+    /// The view at its first step, before anything is asked of the instance: [`Self::new`] and [`Self::fixture`] both
+    /// start here, `factors` the only difference (the factors snapshot is the `AppState::factors` slice either way).
+    fn build(
+        factors: Option<Factors>,
+        snapshot: Option<dilla_client::state::factors::Factors>,
+        server: url::Url,
+        origin: Origin,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let code = cx.new(|cx| CodeField::new("factor-totp-code", cx));
         let name = cx.new(|cx| InputState::new(window, cx));
         let subscriptions = vec![
@@ -284,15 +336,7 @@ impl FactorSetupView {
             ),
             _ => (Step::Choose, Choice::App),
         };
-        let snapshot = client.state().borrow().factors.factors.clone();
-        let start_passkey = matches!(
-            &origin,
-            Origin::Settings {
-                start: Choice::Passkey,
-                ..
-            }
-        );
-        let mut this = Self {
+        Self {
             server,
             factors,
             browser: BrowserAuth::default(),
@@ -319,15 +363,7 @@ impl FactorSetupView {
             secret_text: None,
             ceremony: None,
             _subscriptions: subscriptions,
-        };
-        this.load(window, cx);
-        if this.step == Step::Totp {
-            this.begin_totp(window, cx);
         }
-        if start_passkey {
-            this.open_passkey(window, cx);
-        }
-        this
     }
 
     /// The system browser the passkey ceremonies open (tests give their own).
@@ -343,8 +379,11 @@ impl FactorSetupView {
     /// The instance's name and passkeys, and the factors (a reload after a factor was confirmed: the set-up ends as
     /// already in place).
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let instance = self.factors.instance();
-        let read = self.factors.refresh();
+        let Some(factors) = &self.factors else {
+            return;
+        };
+        let instance = factors.instance();
+        let read = factors.refresh();
         cx.spawn_in(window, async move |this, cx| {
             let instance = instance.await;
             let read = read.await;
@@ -439,9 +478,12 @@ impl FactorSetupView {
 
     fn begin_totp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.go(Step::Totp, cx);
+        let Some(factors) = &self.factors else {
+            return;
+        };
+        let reply = factors.totp_begin(self.stepup());
         self.busy = true;
         let g = self.generation;
-        let reply = self.factors.totp_begin(self.stepup());
         cx.spawn_in(window, async move |this, cx| {
             let answer = reply.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -493,11 +535,14 @@ impl FactorSetupView {
             cx.notify();
             return;
         }
+        let Some(factors) = &self.factors else {
+            return;
+        };
+        let reply = factors.totp_confirm(&code);
         self.code_error = None;
         self.problem = None;
         self.busy = true;
         let g = self.generation;
-        let reply = self.factors.totp_confirm(&code);
         cx.spawn_in(window, async move |this, cx| {
             let answer = reply.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -564,6 +609,9 @@ impl FactorSetupView {
             cx.emit(SetupEvent::StepUpLost(Lost::Again));
             return;
         }
+        let Some(factors) = self.factors.clone() else {
+            return;
+        };
         let name = self.passkey_name(cx).trim().to_owned();
         if name.is_empty() {
             self.name_error = Some("factor.error.required");
@@ -581,7 +629,6 @@ impl FactorSetupView {
         self.added_name = Some(name.clone());
         self.token_spent = self.embedded();
         let g = self.generation;
-        let factors = self.factors.clone();
         let browser = self.browser.clone();
         let server = self.server.clone();
         let cancel = Cancel::new();
@@ -1098,8 +1145,14 @@ impl Render for FactorSetupView {
             return dialog.into_any_element();
         }
         let (step, progress) = match &self.origin {
-            Origin::SignIn { step, progress } | Origin::Signup { step, progress } => {
-                (step.clone(), Some(*progress))
+            Origin::SignIn { step, progress } => (step.clone(), Some(*progress)),
+            Origin::Signup { step, progress } => {
+                let (step, progress) = signup_step(
+                    step,
+                    *progress,
+                    matches!(self.step, Step::Totp | Step::Passkey),
+                );
+                (step, Some(progress))
             }
             _ => (String::new(), None),
         };
@@ -1149,5 +1202,98 @@ impl Drop for FactorSetupView {
     /// A ceremony left waiting on the system browser ends with the view.
     fn drop(&mut self) {
         self.cancel_ceremony();
+    }
+}
+
+/// The sign-up's step line and dots: the choice is the host's step (4 of 6), the app or passkey set-up the next one (5 of
+/// 6), so no two screens of the sign-up share a number.
+fn signup_step(choice: &str, (n, total): (u8, u8), setting_up: bool) -> (String, (u8, u8)) {
+    if !setting_up {
+        return (choice.to_owned(), (n, total));
+    }
+    let next = n + 1;
+    (
+        tf(
+            "onboarding.step",
+            &[("n", &next.to_string()), ("total", &total.to_string())],
+        ),
+        (next, total),
+    )
+}
+
+#[cfg(test)]
+mod step_tests {
+    #[test]
+    fn the_signup_set_up_is_step_5_after_the_choice_at_4() {
+        let choice = crate::strings::tf("onboarding.step", &[("n", "4"), ("total", "6")]);
+        assert_eq!(
+            super::signup_step(&choice, (4, 6), false),
+            (choice.clone(), (4, 6))
+        );
+        let (line, dots) = super::signup_step(&choice, (4, 6), true);
+        assert_eq!(dots, (5, 6));
+        assert_eq!(
+            line,
+            crate::strings::tf("onboarding.step", &[("n", "5"), ("total", "6")])
+        );
+    }
+}
+
+#[cfg(all(test, feature = "automation"))]
+mod tests {
+    use super::*;
+
+    fn fixture_view(
+        key: Option<TotpKey>,
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<FactorSetupView>, &mut gpui::VisualTestContext) {
+        cx.update(crate::install);
+        cx.add_window_view(|window, cx| {
+            FactorSetupView::fixture(
+                url::Url::parse("https://dilla.test").unwrap(),
+                Origin::Required,
+                InstanceDoc::default(),
+                None,
+                key,
+                window,
+                cx,
+            )
+        })
+    }
+
+    /// Task 2d: a fixture's set-up with no client stays on its step and asks nothing: the choice, and Continue on it
+    /// opens the app step with no key (no request out, nothing busy).
+    #[gpui::test]
+    fn a_fixture_setup_starts_on_the_choice_and_asks_nothing(cx: &mut gpui::TestAppContext) {
+        let (view, cx) = fixture_view(None, cx);
+        cx.run_until_parked();
+        view.update_in(cx, |v, window, cx| {
+            assert_eq!(v.step_name(), "Choose");
+            assert!(v.factors.is_none());
+            v.press_primary(window, cx);
+            assert_eq!(v.step_name(), "Totp");
+            assert!(!v.busy && v.shown_secret().is_none());
+        });
+    }
+
+    /// Task 2d: given a key, the fixture's set-up shows the app step with that key, as a live one does once
+    /// `totp_begin` answers.
+    #[gpui::test]
+    fn a_fixture_setup_with_a_key_shows_the_app_step(cx: &mut gpui::TestAppContext) {
+        let key = TotpKey {
+            secret: Zeroizing::new("DILLAFIXTURETOTPKEYFORDOCSHOTSAA".into()),
+            uri: Zeroizing::new(
+                "otpauth://totp/dilla.test:ada?secret=DILLAFIXTURETOTPKEYFORDOCSHOTSAA".into(),
+            ),
+        };
+        let (view, cx) = fixture_view(Some(key), cx);
+        cx.run_until_parked();
+        view.update_in(cx, |v, _, _| {
+            assert_eq!(v.step_name(), "Totp");
+            assert_eq!(
+                v.shown_secret().as_deref(),
+                Some("DILLAFIXTURETOTPKEYFORDOCSHOTSAA")
+            );
+        });
     }
 }

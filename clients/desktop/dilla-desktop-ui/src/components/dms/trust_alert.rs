@@ -6,8 +6,8 @@
 //! the x glyph) with the bold name run in front.
 
 use gpui::{
-    App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    SharedString, Styled, Window, div, px,
+    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement,
+    RenderOnce, SharedString, Styled, Window, div, px,
 };
 
 use crate::components::banner::BannerTone;
@@ -25,6 +25,7 @@ pub struct TrustAlert {
     name: SharedString,
     copy: SharedString,
     action: Option<(SharedString, ClickHandler)>,
+    probe: Option<AnyElement>,
 }
 
 impl TrustAlert {
@@ -39,6 +40,7 @@ impl TrustAlert {
             name: name.into(),
             copy: copy.into(),
             action: None,
+            probe: None,
         }
     }
 
@@ -49,6 +51,12 @@ impl TrustAlert {
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.action = Some((label.into(), Box::new(on_click)));
+        self
+    }
+
+    /// Drawn over the Compare button's box (absolutely placed; the app's automation probe, so a test can press it).
+    pub fn compare_probe(mut self, probe: impl IntoElement) -> Self {
+        self.probe = Some(probe.into_any_element());
         self
     }
 }
@@ -102,7 +110,9 @@ impl RenderOnce for TrustAlert {
             root = root.child(
                 div()
                     .flex_none()
-                    .child(Button::new((id, "compare"), label).on_click(handler)),
+                    .relative()
+                    .child(Button::new((id, "compare"), label).on_click(handler))
+                    .children(self.probe),
             );
         }
         root

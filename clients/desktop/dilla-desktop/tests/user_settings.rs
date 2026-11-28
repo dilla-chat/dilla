@@ -114,6 +114,32 @@ parity! {
     parity_user_settings_appearance_compact => "appearance-compact";
 }
 
+/// Settings → Sign-in (a GPUI-only reference, plan "Desktop docs screenshots" Task 2d): the password, the authenticator
+/// app, one passkey and eight backup codes left, from the factors slice the fixture fills (`fixture::factors`); the
+/// web's world has no reference of it.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_user_settings_sign_in() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/user-settings/sign-in.json");
+    let report = dilla_parity::screen::assert_native_screen(
+        &fixture,
+        "user-settings-sign-in",
+        |app| {
+            app.wait_for("signin-codes-make", Duration::from_secs(60));
+        },
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "user-settings/sign-in differs from its golden shot native/user-settings-sign-in: {e}"
+        )
+    });
+    assert!(report.text_lines > 0);
+}
+
 /// A window with the Profile section in it and Tab bound to the next focus, as the app's root does.
 struct Host {
     view: gpui::Entity<UserSettings>,
@@ -331,4 +357,42 @@ async fn appearance_density_saves_on_a_real_instance() {
         s.profile.density == DensitySetting::Compact
     })
     .await;
+}
+
+/// GPUI-only references (`native/user-settings-devices-named`, `-sign-out-named`, the docs' Devices): this device names
+/// itself as the native app does ("Dilla on <os>") and the sign-up device is "Ada's laptop" (`fixture::devices`); the web
+/// references name the shooter's browser.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_user_settings_devices_named() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture_path("devices-named"),
+        "user-settings-devices-named",
+        |app| {
+            app.wait_for("device-0-action", Duration::from_secs(60));
+        },
+    )
+    .unwrap_or_else(|e| panic!("user-settings/devices-named differs from its golden shot: {e}"));
+}
+
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_user_settings_devices_sign_out_named() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture_path("devices-sign-out-named"),
+        "user-settings-devices-sign-out-named",
+        |app| {
+            app.wait_for("device-0-action", Duration::from_secs(60));
+            app.click("device-0-action");
+        },
+    )
+    .unwrap_or_else(|e| {
+        panic!("user-settings/devices-sign-out-named differs from its golden shot: {e}")
+    });
 }

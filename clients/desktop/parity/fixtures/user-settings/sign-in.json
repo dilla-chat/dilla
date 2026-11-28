@@ -1,0 +1,23 @@
+{
+  "name": "user-settings/sign-in",
+  "window": [1280, 800],
+  "viewer": "ada",
+  "route": "/settings/signin",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      { "id": "ada", "display": "Ada" },
+      { "id": "mira", "display": "Mira" },
+      { "id": "bjorn", "display": "Björn" }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": ["ada", "mira", "bjorn"],
+        "channels": [{ "id": "general", "kind": "text", "name": "general" }]
+      }
+    ]
+  }
+}

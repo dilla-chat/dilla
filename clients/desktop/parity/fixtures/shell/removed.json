@@ -1,0 +1,107 @@
+{
+  "name": "shell/removed",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "mira",
+  "route": "/c/{bridge}/{bridge/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "lin",
+        "display": "Lin"
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      },
+      {
+        "id": "bridge",
+        "name": "Bridge Watch",
+        "owner": "lin",
+        "members": [
+          "lin",
+          "mira",
+          "bjorn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ]
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "bridge/general",
+        "sender": "lin",
+        "ts": 1794481730,
+        "body": "the night shift starts at 22:00, who takes the north tower?"
+      },
+      {
+        "key": "m2",
+        "channel": "bridge/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "I can, if someone brings coffee"
+      },
+      {
+        "key": "m3",
+        "channel": "bridge/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "coffee is on me"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "settle"
+    }
+  ]
+}

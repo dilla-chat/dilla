@@ -505,9 +505,6 @@ jobs:
         with:
           path: ~/.cache/apt-debs
           key: ${{ steps.apt-browser-media.outputs.cache-primary-key }}
-      # The voice join fixture's own unit tests (e2e/ux/voice-fixture.mjs) drive a real page, so they run here,
-      # where Chromium is installed; the node job has no Playwright browsers.
-      - run: npm run test:voice-fixture -w @dilla/e2e
       - run: sh scripts/ci-audio-server.sh
       - run: npm run test:e2e:media -w @dilla/e2e
         env:

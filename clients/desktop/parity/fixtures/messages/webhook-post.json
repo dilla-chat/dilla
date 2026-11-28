@@ -1,0 +1,101 @@
+{
+  "name": "messages/webhook-post",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/{midgard/general}",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "dillabot",
+        "display": "Dilla Bot",
+        "bot": true
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "dillabot"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "polls"
+          ],
+          "botChannels": [
+            "general"
+          ]
+        }
+      }
+    ],
+    "messages": [
+      {
+        "key": "m1",
+        "channel": "midgard/general",
+        "sender": "ada",
+        "ts": 1794481730,
+        "body": "the release branch is green, tagging after lunch"
+      },
+      {
+        "key": "m2",
+        "channel": "midgard/general",
+        "sender": "bjorn",
+        "ts": 1794481730,
+        "body": "I'll watch the deploy"
+      },
+      {
+        "key": "m3",
+        "channel": "midgard/general",
+        "sender": "dillabot",
+        "ts": 1794481730,
+        "body": "Deploy finished: staging runs 0.2.0-alpha.4\n[dilla-webhook:v1:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e:CI]"
+      },
+      {
+        "key": "m4",
+        "channel": "midgard/general",
+        "sender": "mira",
+        "ts": 1794481730,
+        "body": "nice, checking it now"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "settle"
+    }
+  ]
+}

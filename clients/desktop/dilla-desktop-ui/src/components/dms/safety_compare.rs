@@ -130,12 +130,15 @@ impl SafetyCompareBody {
     }
 }
 
+/// A wrapping paragraph in the dialog's family (`.d-dialog__panel`: `--font-mono`), through the text layer: a bare text
+/// child would be the host's `.SystemUIFont` and outside the parity text mask (privacy.rs).
 fn para(text_: SharedString, colour: gpui::Hsla) -> gpui::Div {
-    div()
-        .text_size(text::SM)
-        .line_height(px(crate::text::root_line_height(text::SM)))
-        .text_color(colour)
-        .child(text_)
+    div().child(crate::text::flow_paragraph(
+        text_,
+        text::SM,
+        crate::text::root_line_height(text::SM),
+        colour,
+    ))
 }
 
 impl RenderOnce for SafetyCompareBody {
@@ -147,7 +150,11 @@ impl RenderOnce for SafetyCompareBody {
             .flex_col()
             .gap(px(GAP))
             .min_w_0()
-            .child(line(self.identity, text::SM, lh, color::FG).weight(font::WEIGHT_LABEL));
+            // The state line wraps in the body's width (a long state, `privacy.changed`, never runs out of the dialog).
+            .child(
+                crate::text::flow_paragraph(self.identity, text::SM, lh, color::FG)
+                    .weight(font::WEIGHT_LABEL),
+            );
         if let Some(first) = self.first_seen {
             body = body.child(para(first, color::FG));
         }
@@ -179,10 +186,7 @@ impl RenderOnce for SafetyCompareBody {
                     div()
                         .id("safety-public-umk")
                         .mt(px(6.0))
-                        .text_size(text::SM)
-                        .line_height(px(lh))
-                        .text_color(color::FG)
-                        .child(key),
+                        .child(crate::text::flow_paragraph(key, text::SM, lh, color::FG)),
                 );
             }
             body = body.child(details);

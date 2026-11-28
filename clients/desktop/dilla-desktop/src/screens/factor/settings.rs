@@ -65,8 +65,15 @@ enum Modal {
     Password,
 }
 
+/// What the section first draws, before its own read: the factors slice of `state`, as the client holds it (a live
+/// section) or as a screen fixture filled it. Both constructors read it here.
+fn factors_of(state: &dilla_client::state::AppState) -> Option<FactorsView> {
+    state.factors.factors.clone()
+}
+
 pub struct SignInSection {
-    client: Rc<Client>,
+    /// `None` only for a screen fixture (automation): the section draws the factors slice and asks nothing.
+    client: Option<Rc<Client>>,
     server: url::Url,
     factors: Option<FactorsView>,
     instance: InstanceDoc,
@@ -93,11 +100,39 @@ impl SignInSection {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let factors = factors_of(&client.state().borrow());
+        let mut this = Self::build(Some(client), factors, server, window, cx);
+        this.refresh(window, cx);
+        this
+    }
+
+    /// Automation (screen fixtures, `fixture::factors`): the section with no client, drawn from the factors slice the
+    /// fixture filled and the instance's document; it reads nothing again and a change asks nothing.
+    #[cfg(feature = "automation")]
+    pub fn fixture(
+        state: &dilla_client::state::AppState,
+        instance: InstanceDoc,
+        server: url::Url,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::build(None, factors_of(state), server, window, cx);
+        this.instance = instance;
+        this
+    }
+
+    /// The section before its first read: [`Self::new`] and [`Self::fixture`] differ only in `client`.
+    fn build(
+        client: Option<Rc<Client>>,
+        factors: Option<FactorsView>,
+        server: url::Url,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let masked = |window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| InputState::new(window, cx).masked(true))
         };
-        let factors = client.state().borrow().factors.factors.clone();
-        let mut this = Self {
+        Self {
             old: masked(window, cx),
             new: masked(window, cx),
             again: masked(window, cx),
@@ -115,16 +150,17 @@ impl SignInSection {
             codes: Zeroizing::new(Vec::new()),
             password_error: None,
             modal_sub: None,
-        };
-        this.refresh(window, cx);
-        this
+        }
     }
 
     /// The section reads the factors again each time it opens.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.load_error = None;
-        let read = self.client.factors().refresh();
-        let doc = self.client.factors().instance();
+        let Some(client) = &self.client else {
+            return;
+        };
+        let read = client.factors().refresh();
+        let doc = client.factors().instance();
         cx.spawn_in(window, async move |this, cx| {
             let (read, doc) = (read.await, doc.await);
             let _ = this.update(cx, |this, cx| {
@@ -160,12 +196,15 @@ impl SignInSection {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         self.purpose = Some(purpose);
         self.token = None;
         self.error = None;
         let dialog = cx.new(|cx| {
             StepUpDialog::new(
-                self.client.factors(),
+                client.factors(),
                 self.server.clone(),
                 self.proof(),
                 notice,
@@ -186,7 +225,7 @@ impl SignInSection {
     }
 
     fn got_token(&mut self, token: StepUpToken, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(purpose) = self.purpose.clone() else {
+        let (Some(purpose), Some(client)) = (self.purpose.clone(), self.client.clone()) else {
             return;
         };
         // Only a change this section makes itself keeps the token; an add hands it to its dialog.
@@ -203,8 +242,7 @@ impl SignInSection {
                 } else {
                     Choice::Passkey
                 };
-                let username = self.client.state().borrow().account.username.clone();
-                let client = self.client.clone();
+                let username = client.state().borrow().account.username.clone();
                 let server = self.server.clone();
                 let view = cx.new(|cx| {
                     FactorSetupView::new(
@@ -294,8 +332,11 @@ impl SignInSection {
             self.ask(Purpose::Remove { kind, name }, None, window, cx);
             return;
         };
+        let Some(client) = &self.client else {
+            return;
+        };
+        let reply = client.factors().remove(token, kind.clone());
         self.busy = true;
-        let reply = self.client.factors().remove(token, kind.clone());
         cx.spawn_in(window, async move |this, cx| {
             let answer = reply.await;
             let _ = this.update_in(cx, |this, window, cx| match answer {
@@ -320,9 +361,12 @@ impl SignInSection {
             self.ask(Purpose::Codes, None, window, cx);
             return;
         };
+        let Some(client) = &self.client else {
+            return;
+        };
+        let reply = client.factors().regenerate_backup_codes(token);
         self.busy = true;
         self.modal = Modal::None;
-        let reply = self.client.factors().regenerate_backup_codes(token);
         cx.spawn_in(window, async move |this, cx| {
             let answer: Result<BackupCodes, FactorError> = reply.await;
             let _ = this.update_in(cx, |this, window, cx| match answer {
@@ -378,14 +422,16 @@ impl SignInSection {
             cx.notify();
             return;
         }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         for field in [&self.old, &self.new, &self.again] {
             field.update(cx, |s, cx| s.set_value("", window, cx));
         }
         self.busy = true;
-        let reply =
-            self.client
-                .factors()
-                .change_password(has.then_some(old), new, self.token.take());
+        let reply = client
+            .factors()
+            .change_password(has.then_some(old), new, self.token.take());
         cx.spawn_in(window, async move |this, cx| {
             let answer = reply.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -771,5 +817,25 @@ impl Render for SignInSection {
                 d.child(div().text_size(dilla_desktop_ui::tokens::text::SM).child(s))
             })
             .children(modal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 2d: the live section and a fixture's start from the same read of the factors slice: what the client holds
+    /// is drawn as it is (`None` until read, the instance's answer after), so the client path draws what it drew.
+    #[test]
+    fn the_section_starts_from_the_factors_slice() {
+        let mut state = dilla_client::state::AppState::default();
+        assert_eq!(factors_of(&state), None, "not read yet");
+        state.factors.factors = Some(FactorsView {
+            totp: Some(5),
+            backup_codes_left: 3,
+            has_password: true,
+            ..FactorsView::default()
+        });
+        assert_eq!(factors_of(&state), state.factors.factors);
     }
 }

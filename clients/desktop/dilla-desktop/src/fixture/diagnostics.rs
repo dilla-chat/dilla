@@ -5,9 +5,13 @@
 //! instance's name as `GET /v1/instance` answers it) and a viewer who signed up on one device and signed in on a fresh
 //! one, so two live devices. No error was recorded and no socket request is slow, which is the "No errors recorded" state
 //! of the section.
+//!
+//! `shell/removed` (the docs' removal banner, a state the spec has no word for) holds a removal notice for each server of
+//! the world the viewer is not a member of, as the client publishes one when the community list drops a server.
 
 use dilla_client::state::AppState;
-use dilla_client::testing::spec::WorldSpec;
+use dilla_client::state::removed::RemovalNotice;
+use dilla_client::testing::spec::{ScreenFixture, WorldSpec};
 
 /// The generation a fresh dilla-testhost instance starts at (`internal/dillad/dilladtest/host.go`, `Generation: 1`).
 const GENERATION: u64 = 1;
@@ -25,4 +29,24 @@ pub(super) fn apply(_world: &WorldSpec, _viewer: &str, state: &mut AppState) {
     state.connection.readies = 1;
     state.diagnostics.instance_name = Some(INSTANCE_NAME.to_owned());
     state.diagnostics.devices = Some(DEVICES);
+}
+
+/// The removal notices of `shell/removed`, oldest first; every other fixture has none.
+pub(super) fn apply_removed(fixture: &ScreenFixture, ids: super::Ids<'_>, state: &mut AppState) {
+    if fixture.name != "shell/removed" {
+        return;
+    }
+    for (n, server) in fixture
+        .world
+        .servers
+        .iter()
+        .filter(|s| !s.members.contains(&fixture.viewer))
+        .enumerate()
+    {
+        state.removal_notices.push(RemovalNotice {
+            id: n as u64 + 1,
+            community: ids.community(&server.id),
+            name: server.name.clone(),
+        });
+    }
 }

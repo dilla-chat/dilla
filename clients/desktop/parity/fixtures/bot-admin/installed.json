@@ -1,0 +1,70 @@
+{
+  "name": "bot-admin/installed",
+  "window": [
+    1280,
+    1400
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/bot",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "glenn",
+        "display": "Glenn",
+        "bot": true
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "glenn"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "bot-log",
+            "kind": "text",
+            "name": "bot-log"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "polls",
+            "reminders",
+            "welcome"
+          ],
+          "botChannels": [
+            "bot-log"
+          ]
+        }
+      }
+    ],
+    "messages": []
+  },
+  "steps": []
+}

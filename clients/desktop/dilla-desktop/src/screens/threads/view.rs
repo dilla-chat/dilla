@@ -24,8 +24,37 @@ use gpui::{
 use gpui_component::input::{Enter, InputEvent, Textarea, TextareaState};
 
 use super::{close_thread, current, name_of, open_of, time_of};
+use crate::screens::messages::composing::{self, Blocked};
 use crate::strings::{t, tf};
 use crate::{tracked_box, tracked_focus};
+
+/// Why the thread's reply composer cannot send (ThreadView `blocked`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ThreadBlock {
+    /// The channel composer's reasons that hold here too: the viewer's own timeout, the trust gate.
+    Composer(Blocked),
+    /// The channel's bits deny sending: `chperm.cannotSend`.
+    CannotSend,
+}
+
+/// ThreadView `blocked` at `now_s`: the viewer's own timeout in the community first, then the channel's bits, then the
+/// trust gate the channel's composer pauses on ([`composing::trust_block`]: the core refuses a reply on the same gate).
+pub(super) fn thread_block(
+    state: &dilla_client::state::AppState,
+    channel: dilla_client::state::ChannelId,
+    now_s: u64,
+) -> Option<ThreadBlock> {
+    if let Some(expires) = state
+        .channel(channel)
+        .and_then(|c| composing::timed_out(state, c, now_s))
+    {
+        return Some(ThreadBlock::Composer(Blocked::TimedOut(expires)));
+    }
+    if !state.threads.can_send(channel) {
+        return Some(ThreadBlock::CannotSend);
+    }
+    composing::trust_block(state, channel).map(ThreadBlock::Composer)
+}
 
 /// The thread composer's field: the CSS's `.d-composer__input` lines (20px) in a 30px minimum, at most 13.75rem.
 const FIELD_LINE: f32 = 20.0;
@@ -229,8 +258,11 @@ impl PaneView {
                 }
                 let draft = crate::screens::commands::chips::draft(&ctx, &focus, wid, cx)
                     .unwrap_or_else(|| input.read(cx).value().to_string());
-                // A reader who cannot send has a disabled composer (ThreadView `blocked`).
-                if composing || draft.trim().is_empty() || !ctx.state.threads.can_send(open.channel)
+                // A reader who cannot send has a disabled composer (ThreadView `blocked`), and so does a reply into a
+                // conversation the trust gate holds: the Enter that reaches here sends nothing.
+                if composing
+                    || draft.trim().is_empty()
+                    || thread_block(&ctx.state, open.channel, ctx.clock.now()).is_some()
                 {
                     return;
                 }
@@ -721,21 +753,19 @@ impl Render for PaneView {
         let focus = self.focus_handle(cx);
         let focused = focus.is_focused(window);
         let value_empty = self.input.read(cx).value().is_empty();
-        // ThreadView `blocked`: the viewer's own timeout in the community first (Shell.tsx `timeoutReason`).
-        let timed_out = ctx.state.channel(open.channel).and_then(|c| {
-            crate::screens::messages::composing::timed_out(&ctx.state, c, ctx.clock.now())
-        });
-        let blocked = timed_out.is_some() || !ctx.state.threads.can_send(open.channel);
-        let placeholder = if let Some(expires) = timed_out {
-            tf(
+        // ThreadView `blocked`: the viewer's own timeout in the community first (Shell.tsx `timeoutReason`), the channel's
+        // bits, then the trust gate (the channel composer's pause, `composing::Blocked::Trust`).
+        let block = thread_block(&ctx.state, open.channel, ctx.clock.now());
+        let blocked = block.is_some();
+        let placeholder = match block {
+            Some(ThreadBlock::Composer(Blocked::TimedOut(expires))) => tf(
                 "shell.composer.timedOut",
                 &[(
                     "time",
                     &crate::screens::threads::time_of(expires, ctx.clock),
                 )],
-            )
-        } else if blocked {
-            tf(
+            ),
+            Some(ThreadBlock::CannotSend) => tf(
                 "chperm.cannotSend",
                 &[(
                     "name",
@@ -743,10 +773,16 @@ impl Render for PaneView {
                         .channel(open.channel)
                         .map_or("", |c| c.name.as_str()),
                 )],
-            )
-        } else {
-            t("thread.composer").to_owned()
+            ),
+            _ => t("thread.composer").to_owned(),
         };
+        // The trust gate's paused line under the box, as under the channel's composer.
+        let paused = match block {
+            Some(ThreadBlock::Composer(Blocked::Trust(key))) => Some(t(key)),
+            _ => None,
+        };
+        let paused_width =
+            f32::from(dilla_desktop_ui::tokens::layout::THREAD) - 2.0 * (thread_row::SIDE - 2.0);
         // Task 31: the command list over the composer and a picked command's chips in place of its field, while this
         // composer is the one that reported the draft. Only the command list is drawn here: the emoji grid of
         // `slots::composer_popup` belongs to the channel's composer.
@@ -839,6 +875,18 @@ impl Render for PaneView {
                         None => field.into_any_element(),
                     }),
             )
+            .children(paused.map(|reason| {
+                div()
+                    .debug_selector(|| "thread-composer-paused".to_owned())
+                    .mt(crate::screens::messages::css::len(4.))
+                    .children(dilla_desktop_ui::text::paragraph(
+                        reason,
+                        text::SM,
+                        dilla_desktop_ui::text::root_line_height(text::SM),
+                        color::FG_2,
+                        paused_width.max(1.0),
+                    ))
+            }))
             .children(popup.map(|popup| {
                 div()
                     .absolute()

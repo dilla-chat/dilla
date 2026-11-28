@@ -569,3 +569,15 @@ async fn rename_refresh_disable() {
     );
     a.stop();
 }
+
+/// A GPUI-only reference (`native/bot-admin-installed`, the docs' Bot section): Glenn installed and ready in Midgard Crew,
+/// with Polls, Reminders and Welcome messages on, the health line, #bot-log as the Bot channel and the webhooks group.
+/// The web's `bot-admin/health-channels` world has no Bot (its frame says "No bot is installed"), so this is native.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_bot_admin_installed() {
+    native("bot-admin/installed", "bot-admin-installed");
+}

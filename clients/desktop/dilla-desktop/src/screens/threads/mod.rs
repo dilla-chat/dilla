@@ -843,6 +843,121 @@ mod tests {
         assert_eq!(*log_b.borrow(), 0, "B's read-only view refuses the send");
     }
 
+    /// Draws the thread pane of its window under its view, as the shell's aside does.
+    struct PaneHost(SlotCx);
+    impl gpui::Render for PaneHost {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl IntoElement {
+            sync(&self.0, window, cx);
+            gpui::Styled::size_full(div()).children(pane(&Route::Root, window, cx))
+        }
+    }
+
+    /// Task 2c fix round 1: a thread reply into a conversation the trust gate holds (a member whose identity changed) is
+    /// paused as the channel's composer is: the paused line under the box with the gate's reason, and Enter sends nothing.
+    /// The control: the same pane with the gate lifted sends the reply.
+    #[gpui::test]
+    fn a_changed_member_pauses_the_thread_reply(cx: &mut TestAppContext) {
+        use dilla_client::state::threads::SEND_MESSAGES;
+        use dilla_client::state::trust::{SendBlock, TrustBlock, TrustSummary};
+        use gpui_component::input::InputEvent;
+        cx.update(crate::install);
+        let (open_ctx, channel) = channel_ctx(Some(SEND_MESSAGES | 1));
+        let (me, mira) = (UserId([8; 16]), UserId([9; 16]));
+        let member = |user_id| Member {
+            user_id,
+            username: "m".into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        let mut held = (*open_ctx.state).clone();
+        held.account.user_id = Some(me);
+        held.members
+            .insert(CommunityId([1; 16]), vec![member(me), member(mira)]);
+        held.trust.loaded = true;
+        held.trust.contacts.push(TrustSummary {
+            user_id: mira,
+            name: "Mira".into(),
+            shared: true,
+            umk: "aa".repeat(32),
+            first_seen: 1,
+            verified: false,
+            changed_umk: Some("bb".repeat(32)),
+            unlisted: false,
+            removed_in: Vec::new(),
+            blocked: None,
+        });
+        held.trust.send_blocks.insert(
+            channel,
+            SendBlock {
+                code: TrustBlock::UmkChanged,
+                own: false,
+            },
+        );
+        assert_eq!(
+            view::thread_block(&held, channel, 0),
+            Some(view::ThreadBlock::Composer(
+                crate::screens::messages::composing::Blocked::Trust("privacy.changed")
+            ))
+        );
+        let held_ctx = SlotCx {
+            state: Arc::new(held),
+            ..open_ctx.clone()
+        };
+        let root = MessageId([7; 16]);
+        let host_ctx = held_ctx.clone();
+        let (host, vcx) = cx.add_window_view(move |_, _| PaneHost(host_ctx));
+        let wid = vcx.update(|window, cx| {
+            open_thread(channel, root, &held_ctx, cx);
+            window.refresh();
+            window.window_handle().window_id()
+        });
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        assert!(
+            vcx.debug_bounds("thread-composer-paused").is_some(),
+            "the paused line is drawn"
+        );
+        let pane_view = vcx.update(|_, cx| ui(cx).windows.get(&wid).unwrap().pane.clone().unwrap());
+        let sent = Rc::new(std::cell::Cell::new(0));
+        let count = sent.clone();
+        let _keep = vcx.update(|_, cx| {
+            cx.subscribe(&pane_view, move |_, _: &view::Sent, _| {
+                count.set(count.get() + 1)
+            })
+        });
+        let press = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                let input = pane_view.read(cx).input();
+                input.update(cx, |s, cx| {
+                    s.set_value("hello", window, cx);
+                    cx.emit(InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    });
+                });
+            });
+            vcx.run_until_parked();
+        };
+        press(vcx);
+        assert_eq!(sent.get(), 0, "Enter sends nothing while the gate holds");
+        // The control: the gate lifted, the same Enter sends.
+        host.update(vcx, |h, _| h.0 = open_ctx.clone());
+        draw(vcx);
+        assert!(vcx.debug_bounds("thread-composer-paused").is_none());
+        press(vcx);
+        assert_eq!(sent.get(), 1, "the open pane sends the reply");
+    }
+
     /// Review N4: a thread chip's focus handle is its window's. The same thread drawn in two windows (two accounts on one
     /// server) has a chip in each, and a closing pane in A gives focus back to A's chip, never B's.
     #[gpui::test]

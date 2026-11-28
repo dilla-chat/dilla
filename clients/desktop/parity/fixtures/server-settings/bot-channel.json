@@ -1,0 +1,86 @@
+{
+  "name": "server-settings/bot-channel",
+  "window": [
+    1280,
+    800
+  ],
+  "viewer": "ada",
+  "route": "/c/{midgard}/settings/channels",
+  "clock": 1794481738,
+  "world": {
+    "people": [
+      {
+        "id": "ada",
+        "display": "Ada"
+      },
+      {
+        "id": "mira",
+        "display": "Mira"
+      },
+      {
+        "id": "bjorn",
+        "display": "Björn"
+      },
+      {
+        "id": "dillabot",
+        "display": "Dilla Bot",
+        "bot": true
+      }
+    ],
+    "servers": [
+      {
+        "id": "midgard",
+        "name": "Midgard Crew",
+        "owner": "ada",
+        "members": [
+          "ada",
+          "mira",
+          "bjorn",
+          "dillabot"
+        ],
+        "channels": [
+          {
+            "id": "general",
+            "kind": "text",
+            "name": "general"
+          },
+          {
+            "id": "dev",
+            "kind": "text",
+            "name": "dev"
+          },
+          {
+            "id": "lounge",
+            "kind": "voice",
+            "name": "Lounge"
+          },
+          {
+            "id": "afk",
+            "kind": "voice",
+            "name": "AFK",
+            "system": true,
+            "position": 1073741824
+          }
+        ],
+        "bot": {
+          "capabilities": [
+            "polls"
+          ],
+          "botChannels": [
+            "dev"
+          ]
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "do": "click",
+      "web": "css=[aria-label=\"edit dev\"]",
+      "gpui": "edit-dev"
+    },
+    {
+      "do": "settle"
+    }
+  ]
+}

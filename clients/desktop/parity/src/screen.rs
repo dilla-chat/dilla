@@ -234,10 +234,103 @@ pub fn assert_native_screen_at(
     golden: &str,
     prepare: impl FnOnce(&mut Driver),
 ) -> Result<ScreenReport, ParityFailure> {
+    native_screen(root, bless, fixture, golden, &[], "", prepare)
+}
+
+/// [`assert_native_screen`] with environment variables for the app, against the same golden and never blessing it: the
+/// control that a frame does not depend on the host's fonts ([`one_system_font`]). Its frame is saved as
+/// `native-<golden>-<tag>-gpui-2x.png`, beside the plain run's.
+pub fn assert_native_screen_with(
+    fixture: &Path,
+    golden: &str,
+    env: &[(&str, &str)],
+    tag: &str,
+    prepare: impl FnOnce(&mut Driver),
+) -> Result<ScreenReport, ParityFailure> {
+    let root = std::env::var_os(NATIVE_ROOT_VAR)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("references/linux/native"));
+    native_screen(&root, false, fixture, golden, env, tag, prepare)
+}
+
+/// A fontconfig file (for the app's `FONTCONFIG_FILE`) whose only font directory holds DejaVu Sans and nothing else
+/// (`target/screen-parity/one-system-font/`): besides the faces the app embeds (JetBrains Mono, DM Serif Display), the
+/// app sees one system face. A text run that names no embedded family is GPUI's `.SystemUIFont`, which on Linux resolves
+/// through "IBM Plex Sans" and then a list of system families ("Adwaita Sans", "Cantarell", "Noto Sans", "DejaVu Sans",
+/// ...), so the host's installed fonts decide that text's width and every column laid out around it. Under this file it
+/// is DejaVu Sans, the face the CI runner resolves; a frame blessed on a host that resolves another face then differs.
+/// (No system font at all is not possible: gpui-component resolves `.SystemUIFont` at startup and panics without one.
+/// fontdb ignores a fontconfig file with no `<dir>` and scans the known font directories instead.)
+///
+/// Panics when the host has no DejaVu Sans (`DejaVuSans.ttf` under `/usr/share/fonts` or `/usr/local/share/fonts`;
+/// Debian's fonts-dejavu-core, which fontconfig depends on).
+pub fn one_system_font() -> String {
+    fn find(dir: &Path, name: &str) -> Option<PathBuf> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        entries.sort();
+        entries
+            .iter()
+            .find(|p| p.file_name().is_some_and(|n| n == name))
+            .cloned()
+            .or_else(|| {
+                entries
+                    .iter()
+                    .filter(|p| p.is_dir())
+                    .find_map(|p| find(p, name))
+            })
+    }
+    let source = ["/usr/share/fonts", "/usr/local/share/fonts"]
+        .iter()
+        .find_map(|d| find(Path::new(d), "DejaVuSans.ttf"))
+        .expect("DejaVu Sans (DejaVuSans.ttf) is installed: fonts-dejavu-core");
+    let root = crate::target_dir()
+        .join("screen-parity")
+        .join("one-system-font");
+    let fonts = root.join("fonts");
+    std::fs::create_dir_all(&fonts).expect("the font directory");
+    // Each file is written aside and renamed into place: parallel tests never read a half-written one.
+    let staged = |name: &str| {
+        root.join(format!(
+            "{name}.{}.{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    };
+    let face = staged("DejaVuSans.ttf");
+    std::fs::copy(&source, &face).expect("DejaVu Sans is copied");
+    std::fs::rename(&face, fonts.join("DejaVuSans.ttf")).expect("DejaVu Sans in place");
+    let conf = root.join("fonts.conf");
+    let staged = staged("fonts.conf");
+    std::fs::write(
+        &staged,
+        format!(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n  <dir>{}</dir>\n  <cachedir>{}</cachedir>\n</fontconfig>\n",
+            fonts.display(),
+            root.join("cache").display()
+        ),
+    )
+    .expect("the fontconfig file");
+    std::fs::rename(&staged, &conf).expect("the fontconfig file in place");
+    conf.to_string_lossy().into_owned()
+}
+
+fn native_screen(
+    root: &Path,
+    bless: bool,
+    fixture: &Path,
+    golden: &str,
+    env: &[(&str, &str)],
+    tag: &str,
+    prepare: impl FnOnce(&mut Driver),
+) -> Result<ScreenReport, ParityFailure> {
     let os = Os::current();
     let loaded = fixture::load(fixture, os).map_err(|e| fixture_failure(e.to_string(), fixture))?;
     let tolerance = tolerance_for(os)?;
-    let mut driver = Driver::launch_fixture(fixture, None, &[]);
+    let mut driver = Driver::launch_fixture(fixture, None, env);
     let fixture_line = driver
         .fixture_line()
         .expect("a fixture launch answers `fixture`");
@@ -249,7 +342,15 @@ pub fn assert_native_screen_at(
     let text_lines = driver.text_bounds().len();
     let mask = text_mask(&mut driver, TEXT_FRINGE_PX);
     let out = crate::target_dir().join("screen-parity");
-    let shot_path = out.join(format!("native-{}-gpui-2x.png", golden.replace('/', "-")));
+    let tag = if tag.is_empty() {
+        String::new()
+    } else {
+        format!("-{tag}")
+    };
+    let shot_path = out.join(format!(
+        "native-{}{tag}-gpui-2x.png",
+        golden.replace('/', "-")
+    ));
     std::fs::create_dir_all(&out).expect("the screen-parity directory");
     shot.save(&shot_path).expect("the shot is saved");
     let path = root.join(format!("{golden}-2x.png"));

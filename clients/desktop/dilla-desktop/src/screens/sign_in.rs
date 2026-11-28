@@ -359,6 +359,26 @@ impl SignInView {
         cx.notify();
     }
 
+    /// Automation (parity fixtures, `fixture::pre_account`): the sign-in's last step, as an account that owed a factor
+    /// reaches it once its recovery key added this device (`username` typed at the login). It holds no instance to
+    /// open: its Continue does nothing.
+    #[cfg(feature = "automation")]
+    pub fn fixture_done(
+        &mut self,
+        pin: InstanceConfig,
+        instance: InstanceDoc,
+        username: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pin = Some(pin);
+        self.instance = Some(instance);
+        self.username
+            .update(cx, |s, cx| s.set_value(username.to_owned(), window, cx));
+        self.factor_shown = true;
+        self.go(Shown::Done, window, cx);
+    }
+
     /// The system browser a passkey or the identity provider opens (tests give their own).
     pub fn with_browser(mut self, browser: BrowserAuth) -> Self {
         self.browser = browser;

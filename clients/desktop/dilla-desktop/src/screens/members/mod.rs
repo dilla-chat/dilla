@@ -882,7 +882,9 @@ pub fn profile_card(
     )
     .actions(actions)
     .on_action(move |id, window, cx| choose(w, community, user, id, window, cx));
-    if !card.is_bot {
+    // The web card tags a person with the client it runs in (`WEB`). The native app knows no other person's client, so it
+    // draws the tag only in a fixture drawn against a web reference (`fixture_browser`, the shooter's browser).
+    if !card.is_bot && state.profile.fixture_browser.is_some() {
         view = view.client(t("layout.profile.web"));
     }
     if card.actions.contains(&MenuAction::Message) {

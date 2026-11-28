@@ -33,6 +33,7 @@ mod calls;
 mod devices;
 mod diagnostics;
 mod dms;
+pub mod factors;
 mod gifs;
 mod invites;
 mod members;
@@ -343,11 +344,21 @@ pub fn build_state(
         ..AppState::default()
     };
     attachments::apply(world, viewer, &mut state);
-    devices::apply(world, viewer, &mut state);
+    devices::apply(&fixture.name, world, viewer, &mut state);
     diagnostics::apply(world, viewer, &mut state);
+    diagnostics::apply_removed(fixture, ids, &mut state);
     dms::apply(world, viewer, shift, ids, &mut state);
+    dms::apply_trust(
+        &fixture.name,
+        world,
+        viewer,
+        ids,
+        fixture.clock + shift,
+        &mut state,
+    );
     // After the DMs: a DM's call is placed in the DM the dms facet made.
     calls::apply(world, viewer, ids, &mut state);
+    calls::apply_block(fixture, ids, &mut state);
     members::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     messages::apply(world, viewer, ids, fixture.clock + shift, &mut state);
     music::apply(world, ids, &mut state);
@@ -360,6 +371,7 @@ pub fn build_state(
     // After the roles: the viewer's bits in the Bot's channels are resolved from them.
     announcements::apply(world, ids, &mut state);
     polls::apply_bot(world, ids, &mut state);
+    factors::apply(&fixture.name, fixture.clock + shift, &mut state);
     gifs::apply(&fixture.name, &mut state);
     invites::apply(&fixture.name, fixture.clock + shift, &mut state);
     threads::apply(world, viewer, &mut state);

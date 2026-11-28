@@ -138,6 +138,11 @@ pub fn settings_section(
 ) -> AnyElement {
     let (Some(client), Some(server)) = (ctx.client.clone(), ctx.client.as_ref().map(server_of))
     else {
+        // Automation: a screen fixture has no client; one whose factors slice is filled draws the section from it.
+        #[cfg(feature = "automation")]
+        if ctx.state.factors.factors.is_some() {
+            return fixture_section(ctx, window, cx);
+        }
         return Empty.into_any_element();
     };
     // One per window and client, kept in a map release empties at once (review M5: the window's keyed state would hold
@@ -158,6 +163,23 @@ pub fn settings_section(
         }
     };
     section.into_any_element()
+}
+
+/// Automation: a fixture window's Sign-in section (no client), kept per window as the live one is.
+#[cfg(feature = "automation")]
+fn fixture_section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
+    let state = ctx.state.clone();
+    window
+        .use_keyed_state("fixture-signin-section", cx, move |window, cx| {
+            settings::SignInSection::fixture(
+                &state,
+                crate::fixture::factors::instance_doc(),
+                crate::fixture::factors::server(),
+                window,
+                cx,
+            )
+        })
+        .into_any_element()
 }
 
 /// Each window's Sign-in section, by window and client.

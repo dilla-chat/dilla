@@ -1,7 +1,8 @@
 //! The user settings host (Task 1b): what draws `/settings/<section>`. Task 6's settings frame with the nav of the user
 //! sections in registry order (`Settings.tsx` + `SettingsNavigation.tsx`), the selected section's body from its owning
 //! area's hook (`slots::settings_sections`), the dirty-draft guard (`edit_state`) in front of every way out, and the
-//! footer and the unsaved-changes prompt it drives. No section's content lives here.
+//! footer and the unsaved-changes prompt it drives. No section's content lives here; the one overlay a section opens over
+//! the settings (Privacy's safety-number comparison) is drawn here, since the host replaces the shell and its overlays.
 //!
 //! **Sections and the guard.** A section that has a draft registers its operations with the open [`Workspace`] (see
 //! `SlotCx::workspace`, one per host) from its hook and publishes its flags; leaving through the nav, Escape or the close button goes through
@@ -385,6 +386,7 @@ impl Render for UserSettingsHost {
             })
         })
         .on_confirm(move |_, cx| discard.update(cx, |h, cx| h.discard(cx)));
+        let compare = crate::screens::dms::compare_overlay(&self.ctx.state, window, cx);
         div()
             .id("user-settings-host")
             .track_focus(&self.focus)
@@ -394,6 +396,9 @@ impl Render for UserSettingsHost {
             .on_action(|_: &crate::screens::FocusPrevious, window, cx| window.focus_prev(cx))
             .child(frame)
             .child(dialog)
+            // The host replaces the shell, whose overlays it does not draw: the comparison Privacy's Compare opens (13)
+            // is drawn here, over everything of the settings.
+            .children(compare)
     }
 }
 

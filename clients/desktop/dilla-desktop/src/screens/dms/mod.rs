@@ -7,7 +7,7 @@
 //! - [`picker_overlay`]: the DM picker dialog (likewise);
 //! - [`conversation::banners`]: a conversation's trust alerts, the removed note and the own-account banner (to join
 //!   `slots::banners`);
-//! - [`conversation::composer_block`]: why the composer is paused in a conversation (for the composer, Task 9);
+//! - [`conversation::composer_block`]: why the composer is paused in a conversation (the composer's `Blocked::Trust`);
 //! - [`home::sidebar`]: the Home/DMs list (for the shell's sidebar on `/dm` routes, Task 8).
 //!
 //! Navigation is the shell's: the area asks for it through the [`Navigator`] the shell installs ([`set_navigator`]); until
