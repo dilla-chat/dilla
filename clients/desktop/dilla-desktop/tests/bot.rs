@@ -161,6 +161,28 @@ fn parity_commands_picker_empty() {
     dilla_parity::screen::assert_screen(&fixture("commands/picker-empty.json")).unwrap();
 }
 
+/// A GPUI-only reference (`native/commands-picker-unavailable`, the docs' greyed command): `/announcement` in a server
+/// whose Bot has no Bot channel lists `announcement create` (which posts into a Bot channel) greyed, its reason "Mark a
+/// channel as a Bot channel first" in place of its description (`botCommandReason`). The picker greys a command for the
+/// Bot's state and its Bot channels, not for the viewer's permissions.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_commands_picker_unavailable() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("commands/picker-unavailable.json"),
+        "commands-picker-unavailable",
+        |app| {
+            // The fixture's steps, which a native screen does not replay.
+            app.type_text("composer", "/announcement");
+            app.wait_for("command-picker", Duration::from_secs(10));
+        },
+    )
+    .unwrap_or_else(|e| panic!("commands/picker-unavailable differs from its golden shot: {e}"));
+}
+
 /// Task 42: `/selfrole list` run in a community that approves no role: the answer as a private row ("Only you can see
 /// this"), "No self-assignable roles are available." under Done. The fixture window ends the row from its own state (no
 /// Bot to ask), the web shot has the real Bot answer.

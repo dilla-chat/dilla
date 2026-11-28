@@ -9,12 +9,16 @@
 //! the viewer in it and nobody else, the viewer's call rings the DM's other members (the outgoing ring, as the instance
 //! answers a start); without the viewer, its first other participant rings the viewer (an incoming ring, busy while the
 //! viewer is in another call).
+//!
+//! `voice/join-blocked` (the docs' blocked join, a state the spec has no word for) holds the join of the call the route
+//! opens back, refused before anything was sent because its first other participant's identity changed
+//! (`E_UMK_CHANGED`), as the ring area publishes a trust refusal.
 
 use dilla_client::calls::CallPhase;
-use dilla_client::state::ring::{AfkSnapshot, IncomingRing, Outgoing, RING};
+use dilla_client::state::ring::{AfkSnapshot, BlockWhen, CallBlock, IncomingRing, Outgoing, RING};
 use dilla_client::state::voice::{OwnCall, VoiceParticipant, flags};
 use dilla_client::state::{AppState, ChannelId, DeviceId, UserId};
-use dilla_client::testing::spec::WorldSpec;
+use dilla_client::testing::spec::{ScreenFixture, WorldSpec};
 
 /// api/afk.go `afkDefaultTimeout`: a new server's AFK timeout, seconds.
 const AFK_DEFAULT_TIMEOUT: u64 = 300;
@@ -103,6 +107,35 @@ pub(super) fn apply(world: &WorldSpec, viewer: &str, ids: super::Ids<'_>, state:
         }
         state.voice.place(channel, Some(channel.0), rows);
     }
+}
+
+/// The call the route opens is refused to the viewer: `voice/join-blocked` only.
+pub(super) fn apply_block(fixture: &ScreenFixture, ids: super::Ids<'_>, state: &mut AppState) {
+    if fixture.name != "voice/join-blocked" {
+        return;
+    }
+    let world = &fixture.world;
+    let Some(call) = world
+        .calls
+        .iter()
+        .find(|c| fixture.route.contains(&format!("{{{}}}", c.channel)))
+    else {
+        return;
+    };
+    let Some(channel) = channel_of(world, state, &call.channel) else {
+        return;
+    };
+    let changed = call
+        .participants
+        .iter()
+        .find(|p| p.person != fixture.viewer)
+        .map(|p| ids.user(&p.person));
+    state.ring.blocked = Some(CallBlock {
+        channel,
+        code: "E_UMK_CHANGED".into(),
+        changed_user: changed,
+        when: BlockWhen::BeforeJoin,
+    });
 }
 
 /// A DM call's ring: the viewer's own call rings the DM's other members while nobody else is in it; a call without the

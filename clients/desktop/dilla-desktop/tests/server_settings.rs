@@ -324,6 +324,26 @@ fn parity_server_settings_welcome_loaded() {
     .unwrap_or_else(|e| panic!("welcome-loaded differs from its golden shot: {e}"));
 }
 
+/// A GPUI-only reference (`native/server-settings-bot-channel`, the docs' Bot channel switch): the owner edits #dev, one
+/// of the Bot's channels, and its editor shows the Bot channel switch on.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_server_settings_bot_channel() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("bot-channel"),
+        "server-settings-bot-channel",
+        |app| {
+            // The fixture's step, which a native screen does not replay.
+            app.click("edit-dev");
+            app.wait_idle();
+        },
+    )
+    .unwrap_or_else(|e| panic!("server-settings/bot-channel differs from its golden shot: {e}"));
+}
+
 // ---- keyboard (S6) ----
 
 /// The nav is one tab stop whose arrows move between the sections the permissions allow, in the registry's order.

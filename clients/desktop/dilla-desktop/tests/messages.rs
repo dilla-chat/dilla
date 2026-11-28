@@ -198,6 +198,43 @@ mod driven {
         parity_messages_reply_compose_b => "reply-compose-b";
     }
 
+    /// A GPUI-only reference (`native/messages-pins`, the docs' pins dialog): #general's row menu → pinned opens "Pinned
+    /// in #general" with Mira's packing list, go to message and unpin. The web shooter has no frame of the open dialog.
+    #[test]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
+    fn native_messages_pins() {
+        dilla_parity::screen::assert_native_screen(&fixture("pins"), "messages-pins", |app| {
+            // The row takes the focus, the keyboard opens its menu with the focus on its first item, pins, and Enter
+            // opens the dialog.
+            app.click("channel-general");
+            app.press("shift-f10");
+            app.wait_idle();
+            app.press("enter");
+            app.wait_idle();
+        })
+        .unwrap_or_else(|e| panic!("messages/pins differs from its golden shot: {e}"));
+    }
+
+    /// A GPUI-only reference (`native/messages-webhook-post`, the docs' webhook post): the pinned Bot's post that ends in a
+    /// webhook label reads "via webhook CI" in its head, with the label line gone from its text. No avatar is fetched (the
+    /// fixture has no instance), so the row shows the Bot's placeholder.
+    #[test]
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        ignore = "references are Linux and macOS only"
+    )]
+    fn native_messages_webhook_post() {
+        dilla_parity::screen::assert_native_screen(
+            &fixture("webhook-post"),
+            "messages-webhook-post",
+            |_| {},
+        )
+        .unwrap_or_else(|e| panic!("messages/webhook-post differs from its golden shot: {e}"));
+    }
+
     fn launch(name: &str) -> Driver {
         let path = fixture(name);
         let loaded = dilla_parity::fixture::load(&path, dilla_parity::Os::Linux).unwrap();

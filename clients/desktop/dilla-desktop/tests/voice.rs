@@ -3294,6 +3294,18 @@ fn native_voice_stage_paused() {
     );
 }
 
+/// The docs' blocked join (`voice/join-blocked`): Mira and Björn talk in Lounge, Mira's identity changed, and Ada's join
+/// was refused before anything was sent. The stage says `voice.blockedChanged` naming Mira, offers the comparison and no
+/// join. The block is the fixture loader's (`fixture/calls.rs`), since the parity world cannot change a key.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_voice_join_blocked() {
+    shoot_fixture("join-blocked", "voice-join-blocked", &[]);
+}
+
 /// Eight people with media at 1440x900 (`voice/stage-group-b`): the grid wraps. The web has no reference of it (the parity
 /// world holds no media), so the wrapped grid is checked here, by eye against CallStage's grid.
 #[test]

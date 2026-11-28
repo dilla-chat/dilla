@@ -73,6 +73,57 @@ fn parity_shell_row_menu() {
     .unwrap_or_else(|e| panic!("shell/row-menu differs from its golden shot: {e}"));
 }
 
+/// A GPUI-only reference (`native/shell-removed`, the docs' removal banner): Mira, removed from Midgard Crew, sees "You
+/// are no longer in Midgard Crew." with dismiss over her other server, Bridge Watch. The notice is the fixture loader's
+/// (`fixture/diagnostics.rs`), since the parity world has no removal to shoot.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_shell_removed() {
+    dilla_parity::screen::assert_native_screen(&fixture("shell/removed"), "shell-removed", |_| {})
+        .unwrap_or_else(|e| panic!("shell/removed differs from its golden shot: {e}"));
+}
+
+/// A GPUI-only reference (`native/create-rail-menu`, the docs' create step): the rail's dashed + opens the add-a-server
+/// dialog over the shell, the rail's create action as the desktop has it.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_create_rail_menu() {
+    dilla_parity::screen::assert_native_screen(
+        &fixture("shell/create-rail-menu"),
+        "create-rail-menu",
+        |app| {
+            // The + has a focus probe and no bounds probe: Tab reaches the rail (one roving stop), Down walks it to the +,
+            // and Enter opens it as a click does.
+            for _ in 0..40 {
+                if app.focused().is_some_and(|f| f.starts_with("rail-")) {
+                    break;
+                }
+                app.press("tab");
+            }
+            for _ in 0..5 {
+                if app.focused().as_deref() == Some("rail-add") {
+                    break;
+                }
+                app.press("down");
+            }
+            assert_eq!(
+                app.focused().as_deref(),
+                Some("rail-add"),
+                "Tab reaches the +"
+            );
+            app.press("enter");
+            app.wait_idle();
+        },
+    )
+    .unwrap_or_else(|e| panic!("shell/create-rail-menu differs from its golden shot: {e}"));
+}
+
 /// The row menu opened from the keyboard sits under its row, 8px in from the row's left (the web's anchor), wherever the
 /// pointer is; a right-click opens it at the pointer. The menu's first item is inset by its 1px edge and 4px padding.
 #[gpui::test]
