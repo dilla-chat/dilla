@@ -892,6 +892,19 @@ fn done(result: Result<(), String>) -> String {
     }
 }
 
+/// The fictional channel message `notify-demo` raises (a docs screenshot): built as the notify engine builds a
+/// channel message's, title `#channel · Server`, the plain body, a fixed tag.
+fn demo_notification() -> dilla_client::features::notify::Notification {
+    use dilla_client::features::notify::{Notification, NotificationKind};
+    let mut n = Notification::new(
+        NotificationKind::Mention,
+        "#general · Midgard",
+        "Raid at nine?",
+    );
+    n.tag = "demo".to_owned();
+    n
+}
+
 fn handle(session: &mut Session, line: &str) -> Option<String> {
     let mut parts = line.split_whitespace();
     let reply = match (parts.next(), parts.next(), parts.next()) {
@@ -918,6 +931,22 @@ fn handle(session: &mut Session, line: &str) -> Option<String> {
             Some(frames) => format!("ok {frames}"),
             None => "err not idle".to_owned(),
         },
+        (Some("notify-demo"), None, None) => {
+            let window = session.window();
+            let shown = session
+                .cx
+                .update_window(window, |_, w: &mut Window, cx: &mut App| {
+                    let owner = crate::native::notifier::Owner::of_window(
+                        w.window_handle().window_id(),
+                        cx,
+                    );
+                    crate::native::notifier::show(owner, &demo_notification(), cx);
+                });
+            match shown {
+                Ok(()) => "ok".to_owned(),
+                Err(e) => format!("err {e}"),
+            }
+        }
         (Some("quit-dialog"), Some(state), None) => {
             let shown = session
                 .cx
@@ -1121,6 +1150,18 @@ pub fn run(args: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notify_demo_builds_a_channel_message_notification() {
+        use dilla_client::features::notify::NotificationKind;
+        let n = demo_notification();
+        assert_eq!(n.kind, NotificationKind::Mention);
+        assert_eq!(
+            (n.title.as_str(), n.body.as_str(), n.tag.as_str()),
+            ("#general · Midgard", "Raid at nine?", "demo")
+        );
+        assert!(n.channel.is_none());
+    }
 
     #[test]
     fn chords_become_keystrokes() {
