@@ -454,6 +454,55 @@ fn native_trust(fixture: &str, golden: &str) {
     );
 }
 
+/// The bright pixels (a channel over 96: glyph ink; the rows' hairlines and fills peak at 35) of the content column of
+/// `fixture`'s frame that no reported line box covers. Text the text mask does not know of is compared as chrome, where
+/// another rasteriser's anti-aliasing (macOS CoreText against the Linux goldens) fails the chrome gate.
+fn unmasked_ink(fixture: &str, prepare: impl FnOnce(&mut dilla_parity::Driver)) -> Vec<(u32, u32)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures")
+        .join(format!("{fixture}.json"));
+    let mut app = dilla_parity::Driver::launch_fixture(&path, None, &[]);
+    app.wait_idle();
+    prepare(&mut app);
+    app.rest();
+    app.wait_idle();
+    let shot = app.screenshot();
+    let mask = dilla_parity::screen::text_mask(&mut app, dilla_parity::screen::TEXT_FRINGE_PX);
+    let masked = |x: u32, y: u32| {
+        mask.rects()
+            .iter()
+            .any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+    };
+    // The settings content column at 2x: right of the sidebar (280 px), under the close button (y 75), left of it.
+    let mut ink = Vec::new();
+    for y in 150..shot.height() {
+        for x in 560..2440.min(shot.width()) {
+            let p = shot.get_pixel(x, y).0;
+            if p[..3].iter().any(|&c| c > 96) && !masked(x, y) {
+                ink.push((x, y));
+            }
+        }
+    }
+    ink
+}
+
+/// Every text of Settings -> Privacy is in the text mask: its rows' labels, key, body text and Compare buttons report
+/// their line boxes. The rows' key and body text were bare GPUI text children, which report none, so their glyphs were
+/// compared as chrome and macOS failed the Linux goldens' chrome gate (0.74 %, allowed 0.4 %).
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "the headless renderer is Linux and macOS only"
+)]
+fn privacy_text_is_masked() {
+    let ink = unmasked_ink("trust/privacy", |_| {});
+    assert!(
+        ink.is_empty(),
+        "{} bright pixels outside every text line box, first {:?}",
+        ink.len(),
+        &ink[..ink.len().min(5)]
+    );
+}
 /// The trust screens' frames do not depend on the host's fonts: with DejaVu Sans as the only system face
 /// (`one_system_font`, the face the CI runner resolves) each frame still equals its golden. The Privacy rows' body text,
 /// key and toned states, and the comparison's instructions, once named no family, so GPUI drew them in the host's

@@ -130,15 +130,15 @@ impl SafetyCompareBody {
     }
 }
 
-/// A wrapping paragraph in the dialog's family (`.d-dialog__panel`: `--font-mono`); a run with no family would be the
-/// host's `.SystemUIFont` (privacy.rs).
+/// A wrapping paragraph in the dialog's family (`.d-dialog__panel`: `--font-mono`), through the text layer: a bare text
+/// child would be the host's `.SystemUIFont` and outside the parity text mask (privacy.rs).
 fn para(text_: SharedString, colour: gpui::Hsla) -> gpui::Div {
-    div()
-        .font_family(font::MONO)
-        .text_size(text::SM)
-        .line_height(px(crate::text::root_line_height(text::SM)))
-        .text_color(colour)
-        .child(text_)
+    div().child(crate::text::flow_paragraph(
+        text_,
+        text::SM,
+        crate::text::root_line_height(text::SM),
+        colour,
+    ))
 }
 
 impl RenderOnce for SafetyCompareBody {
@@ -186,11 +186,7 @@ impl RenderOnce for SafetyCompareBody {
                     div()
                         .id("safety-public-umk")
                         .mt(px(6.0))
-                        .font_family(font::MONO)
-                        .text_size(text::SM)
-                        .line_height(px(lh))
-                        .text_color(color::FG)
-                        .child(key),
+                        .child(crate::text::flow_paragraph(key, text::SM, lh, color::FG)),
                 );
             }
             body = body.child(details);
