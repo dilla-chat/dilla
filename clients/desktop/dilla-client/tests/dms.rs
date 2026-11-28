@@ -346,6 +346,74 @@ async fn rotation_keeps_visible_text_independent_group_works() {
         .await;
 }
 
+/// Task 2c step 1 (desktop docs shots): a send into the group of a member whose identity changed is refused before
+/// anything of it leaves this device. The core's `send_prepare` answers `E_UMK_CHANGED` (the gate `trust.send_blocks`
+/// is read from) and writes nothing: no outbox row, so no pending or failed row in the timeline and nothing for a
+/// drain to post; the peer, which decrypted this device's post before the rotation, never receives the refused one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs dillad: target/dilla-testhost and the wasi core"]
+async fn a_send_to_a_changed_member_is_refused_before_it_leaves() {
+    let host = host("t2c-refused").await;
+    let me = browser(&host, "browser", "t2c-refused").await;
+    let client = start(&me).await;
+    client.trust().start();
+    let mut peer = Peer::start(&host, 0x13c0);
+    let (setup, channel) = enter(&host, &me, &client, &peer).await;
+    let peer_user = user_of(&setup);
+    let channel_hex = setup["channel_id"].as_str().map(str::to_owned);
+    // The positive control: before the rotation, a post of this device reaches the peer on this very path.
+    client
+        .send_text(channel, "before rotation".into())
+        .await
+        .unwrap()
+        .expect("the group is open before the rotation");
+    peer.wait_for("before rotation", channel_hex.as_deref())
+        .await;
+
+    peer.call("rotate_umk", json!({})).await;
+    peer.send("after rotation").await;
+    let s = wait_for(&client, WAIT, "the changed alert and the send block", |s| {
+        changed_and_blocked(s, peer_user, channel)
+    })
+    .await;
+    assert_eq!(
+        s.trust.send_blocks[&channel].code,
+        dilla_client::state::trust::TrustBlock::UmkChanged
+    );
+    let refused = client
+        .send_text(channel, "refused".into())
+        .await
+        .unwrap()
+        .expect_err("the core refuses the send");
+    assert!(
+        matches!(&refused, ClientError::Sync(code) if code == "E_UMK_CHANGED"),
+        "the refusal is the changed key: {refused:?}"
+    );
+    // Nothing was queued: the outbox (which the timeline shows as pending or failed rows) holds no row of it.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let s = client.state().borrow().clone();
+    assert!(
+        !s.timelines
+            .get(&channel)
+            .is_some_and(|t| t.items.iter().any(|i| i.own && i.body == "refused")),
+        "the refused post has no row"
+    );
+    // Nothing reached the instance: the peer's syncs never deliver it.
+    for _ in 0..5 {
+        let v = peer
+            .call("sync", json!({ "channel_id": setup["channel_id"] }))
+            .await;
+        if let Some(rows) = v["received"].as_array() {
+            peer.inbox.extend(rows.iter().cloned());
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert!(
+        !peer.inbox.iter().any(|m| m["body"] == json!("refused")),
+        "the peer never received the refused post"
+    );
+}
+
 /// e2e/web/trust-polish.spec.ts "Copy alone does not approve; explicit exact-key comparison admits new traffic". The
 /// dialog's Copy is a UI action (the desktop's `copy_alone_does_not_approve` test); here: only the exact comparison key
 /// approves, and nothing else moves the core.

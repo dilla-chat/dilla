@@ -347,7 +347,7 @@ fn conversation_block_and_removed_note(cx: &mut TestAppContext) {
     );
     assert_eq!(
         conversation::composer_block(&state, channel),
-        Some(dilla_desktop::strings::t("privacy.changed"))
+        Some("privacy.changed")
     );
     state.trust.send_blocks.clear();
     state.trust.contacts[0].removed_in.push(channel);
@@ -477,7 +477,7 @@ fn native_privacy_changed() {
 }
 
 /// The DM with Mira after her identity changed (`dms/identity-changed`): the alert over the log and the composer paused
-/// with `privacy.changed`.
+/// with `privacy.changed` (Task 2c: the composer reads the trust gate, `composing::Blocked::Trust`).
 #[test]
 #[cfg_attr(
     not(any(target_os = "linux", target_os = "macos")),
@@ -485,4 +485,60 @@ fn native_privacy_changed() {
 )]
 fn native_dms_identity_changed() {
     native_trust("dms/identity-changed", "dms-identity-changed");
+}
+
+/// Task 2c: Settings -> Privacy opens the comparison in the running app. The settings host replaces the shell, so it
+/// draws the compare dialog itself: clicking a row's Compare (`trust/privacy`, Björn's) shows `safety-compare-dialog`.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "the headless renderer is Linux and macOS only"
+)]
+fn compare_opens_from_settings_privacy() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/trust/privacy.json");
+    let mut app = dilla_parity::Driver::launch_fixture(&fixture, None, &[]);
+    app.wait_idle();
+    assert!(
+        app.element("safety-compare-dialog").is_none(),
+        "no comparison before the click"
+    );
+    app.click("privacy-compare-0");
+    app.wait_idle();
+    app.wait_for("safety-compare-dialog", std::time::Duration::from_secs(10));
+    // Escape closes the comparison, not the settings under it.
+    app.press("escape");
+    app.rest();
+    app.wait_idle();
+    assert!(
+        app.element("safety-compare-dialog").is_none(),
+        "Escape closed the comparison"
+    );
+    assert!(
+        app.element("privacy-compare-0").is_some(),
+        "the settings stay open on Privacy"
+    );
+}
+
+/// Settings -> Privacy with Mira's identity changed (`trust/privacy-compare`, the verdicts of `trust/privacy-changed`),
+/// and the comparison her alert's Compare opens over the settings: her changed state and the fixture's fictional keys.
+#[test]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    ignore = "references are Linux and macOS only"
+)]
+fn native_privacy_compare() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../parity/fixtures/trust/privacy-compare.json");
+    let report = dilla_parity::screen::assert_native_screen(&path, "privacy-compare", |app| {
+        // Björn, Lin, Mira (by name): Mira's alert holds row 2's Compare.
+        app.click("privacy-compare-2");
+        app.wait_for("safety-compare-dialog", std::time::Duration::from_secs(10));
+    })
+    .unwrap_or_else(|e| panic!("trust/privacy-compare differs from its golden shot: {e}"));
+    assert!(report.text_lines > 0);
+    println!(
+        "SCREEN native/privacy-compare: {} text lines, chrome {:.4} %",
+        report.text_lines, report.chrome_pct
+    );
 }

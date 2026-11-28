@@ -115,6 +115,8 @@ fn trust_of(name: &str) -> Option<(&'static [&'static str], &'static [&'static s
     match name {
         "trust/privacy" => Some((&["bjorn"], &[])),
         "trust/privacy-changed" => Some((&["bjorn"], &["mira"])),
+        // The same verdicts; its golden opens Mira's comparison from her alert (`dms::native_privacy_compare`).
+        "trust/privacy-compare" => Some((&["bjorn"], &["mira"])),
         "dms/identity-changed" => Some((&[], &["mira"])),
         _ => None,
     }
@@ -196,5 +198,25 @@ pub(super) fn apply_trust(
         }
     }
     state.trust.loaded = true;
+    for c in &contacts {
+        let key = c.comparison_key();
+        crate::screens::dms::compare::fixture_number(key, fixture_safety(viewer, key));
+    }
     state.trust.contacts = contacts;
+}
+
+/// The comparison's twelve groups in a trust fixture (a fixture has no client to ask the core): twelve groups of five
+/// digits derived from `viewer` and `key`, as the world's ids are (fictional, nothing a core computed).
+fn fixture_safety(viewer: &str, key: &str) -> Vec<String> {
+    let bytes: Vec<u8> = (0..3)
+        .flat_map(|n| derive_id("safety", &format!("{viewer}/{key}/{n}")))
+        .collect();
+    bytes
+        .chunks(4)
+        .take(12)
+        .map(|c| {
+            let n = u32::from_be_bytes([c[0], c[1], c[2], c[3]]) % 100_000;
+            format!("{n:05}")
+        })
+        .collect()
 }

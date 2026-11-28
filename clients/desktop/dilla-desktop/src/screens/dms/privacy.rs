@@ -3,7 +3,8 @@
 //! unlisted (no comparison), verified (the compared public key) or first seen here. Which state a row is in is
 //! `state::trust::privacy_row` of the client's trust slice, which the client reads from the core only.
 //!
-//! Automation ids: `privacy-heading`, `trust-<i>` (a contact's row), `trust-<i>-alert`, `privacy-compare-<i>`.
+//! Automation ids: `privacy-heading`, `trust-<i>` (a contact's row), `trust-<i>-alert`, `privacy-compare-<i>` (row `i`'s
+//! Compare, the ghost button's or the alert's; a probe in the automation build).
 
 use dilla_client::state::trust::privacy_row;
 use gpui::{AnyElement, App, InteractiveElement, IntoElement, ParentElement, Styled, Window, div};
@@ -39,6 +40,26 @@ pub fn compare_handle(wid: gpui::WindowId, i: usize, cx: &mut App) -> gpui::Focu
             .push(h);
     }
     crate::per_window::get_mut::<CompareFocus>(wid, cx).0[i].clone()
+}
+
+/// The automation probe of row `i`'s Compare (the ghost button, or a changed contact's alert's): `privacy-compare-<i>`,
+/// interned so a row keeps one `&'static str`.
+#[cfg(feature = "automation")]
+fn compare_probe(i: usize) -> impl IntoElement {
+    use std::cell::RefCell;
+    thread_local! {
+        // App-wide by design: interned automation ids (element names, never a client handle).
+        static IDS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    }
+    let id = IDS.with(|ids| {
+        let mut ids = ids.borrow_mut();
+        while ids.len() <= i {
+            let n = ids.len();
+            ids.push(Box::leak(format!("privacy-compare-{n}").into_boxed_str()));
+        }
+        ids[i]
+    });
+    crate::automation::bounds_probe(id)
 }
 
 /// The Privacy section.
@@ -83,6 +104,10 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
                         tf("privacy.compare", &[("name", &name)]),
                         open_compare.clone(),
                     );
+                    #[cfg(feature = "automation")]
+                    {
+                        alert = alert.compare_probe(compare_probe(i));
+                    }
                 }
                 control = control.child(alert);
             } else {
@@ -103,15 +128,22 @@ pub fn section(ctx: &SlotCx, window: &mut Window, cx: &mut App) -> AnyElement {
         if row.no_shared {
             control = control.child(body_text(t("privacy.noShared")));
         } else if row.compare {
-            control = control.child(
-                Button::new(
-                    ("privacy-compare", i),
-                    tf("privacy.compare", &[("name", &name)]),
-                )
-                .variant(ButtonVariant::Ghost)
-                .focus_handle(&handle)
-                .on_click(open_compare),
-            );
+            let button = Button::new(
+                ("privacy-compare", i),
+                tf("privacy.compare", &[("name", &name)]),
+            )
+            .variant(ButtonVariant::Ghost)
+            .focus_handle(&handle)
+            .on_click(open_compare);
+            // The automation's probe over the button: a column of its own, so the button keeps the row's width.
+            #[cfg(feature = "automation")]
+            let button = div()
+                .relative()
+                .flex()
+                .flex_col()
+                .child(button)
+                .child(compare_probe(i));
+            control = control.child(button);
         }
         SettingsRow::new(("trust", i), name)
             .position(GroupPosition::of(i, n))

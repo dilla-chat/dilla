@@ -468,8 +468,14 @@ impl Composer {
         });
     }
 
+    /// Why nothing can be sent from here (a channel's or a DM's): Send, Enter, the code tool and the mention list are off
+    /// and the paused line says why.
     fn blocked(&self) -> Option<Blocked> {
-        composing::blocked_at(&self.slots.state, self.channel()?, self.slots.clock.now())
+        composing::blocked_in(
+            &self.slots.state,
+            self.slots.channel?,
+            self.slots.clock.now(),
+        )
     }
 
     /// Shell.tsx's advisory read of the viewer's own timeout, when the composer comes to a community (the instance
@@ -870,6 +876,18 @@ const FOCUS_RING_SPREAD: f32 = 3.0;
 /// composer an empty draft (CommandPicker.tsx `PickerFrame.draft`: `'' with chips: send dims as in the prototype`), so with
 /// chips the button is dim whatever the fields hold; Enter runs the command. A tray with a card lets a blank draft send
 /// (ComposerArea.tsx `canSendEmpty={tray.length > 0}`).
+/// The paused line under the box: why nothing can be sent (`name` is the channel's, for the read-only line).
+fn paused_line(blocked: Blocked, name: &str, clock: crate::screens::shell::Clock) -> String {
+    match blocked {
+        Blocked::ReadOnly => tf("announce.readOnly", &[("name", name)]),
+        Blocked::TimedOut(expires) => tf(
+            "shell.composer.timedOut",
+            &[("time", &crate::screens::threads::time_of(expires, clock))],
+        ),
+        Blocked::Trust(key) => t(key).to_owned(),
+    }
+}
+
 fn send_is_lit(draft: &str, chips: bool, tray: bool, blocked: bool) -> bool {
     !chips && (tray || !draft.trim().is_empty()) && !blocked
 }
@@ -1118,16 +1136,7 @@ impl Render for Composer {
             _ => None,
         };
         let name = self.channel().map(|c| c.name.clone()).unwrap_or_default();
-        let reason = blocked.map(|b| match b {
-            Blocked::ReadOnly => tf("announce.readOnly", &[("name", &name)]),
-            Blocked::TimedOut(expires) => tf(
-                "shell.composer.timedOut",
-                &[(
-                    "time",
-                    &crate::screens::threads::time_of(expires, ctx.clock),
-                )],
-            ),
-        });
+        let reason = blocked.map(|b| paused_line(b, &name, ctx.clock));
         // The budget used is worked out when the text changes (compared in place, no copy), not on every draw.
         if self.used_for != value {
             self.used = if value.contains('@') {
@@ -1217,13 +1226,16 @@ impl Render for Composer {
             }))
             .child(box_)
             .children(reason.map(|r| {
-                div().mt(len(4.)).children(paragraph(
-                    &r,
-                    text::SM,
-                    dilla_desktop_ui::text::root_line_height(text::SM),
-                    color::FG_2,
-                    (width - 32.0).max(1.0),
-                ))
+                div()
+                    .debug_selector(|| "composer-paused".to_owned())
+                    .mt(len(4.))
+                    .children(paragraph(
+                        &r,
+                        text::SM,
+                        dilla_desktop_ui::text::root_line_height(text::SM),
+                        color::FG_2,
+                        (width - 32.0).max(1.0),
+                    ))
             }))
             .children(composing::counter_visible(remaining).then(|| {
                 let label = if remaining < 0 {
@@ -1751,6 +1763,126 @@ mod tests {
         );
         assert_eq!(loaded_draft(memory.take_reopen(at_b), stored), "old");
         assert_eq!(loaded_draft(None, || None), "");
+    }
+
+    /// Task 2c: a DM with a member whose identity changed (the core's gate holds `E_UMK_CHANGED`): the composer is paused
+    /// on `composer_block`'s key, draws the paused line with its text, and neither Send nor Enter sends the draft. The
+    /// same composer with the gate lifted sends it (the control).
+    #[gpui::test]
+    fn a_changed_member_pauses_the_composer(cx: &mut gpui::TestAppContext) {
+        use dilla_client::state::dms::{DM_KIND_PAIR, DmSummary};
+        use dilla_client::state::trust::{SendBlock, TrustBlock, TrustSummary};
+        use dilla_client::state::{AppState, ChannelGroupState, UserId};
+        cx.update(crate::install);
+        let (me, mira, dm) = (UserId([8; 16]), UserId([3; 16]), ChannelId([5; 16]));
+        let mut state = AppState::default();
+        state.account.user_id = Some(me);
+        state.dms.list = Some(vec![DmSummary {
+            id: dm,
+            kind: DM_KIND_PAIR,
+            members: vec![me, mira],
+            name: "Mira".into(),
+            group: ChannelGroupState::Active,
+        }]);
+        state.trust.loaded = true;
+        state.trust.contacts.push(TrustSummary {
+            user_id: mira,
+            name: "Mira".into(),
+            shared: true,
+            umk: "aa".repeat(32),
+            first_seen: 1,
+            verified: false,
+            changed_umk: Some("bb".repeat(32)),
+            unlisted: false,
+            removed_in: Vec::new(),
+            blocked: None,
+        });
+        state.trust.send_blocks.insert(
+            dm,
+            SendBlock {
+                code: TrustBlock::UmkChanged,
+                own: false,
+            },
+        );
+        let open = {
+            let mut s = state.clone();
+            s.trust.send_blocks.clear();
+            s.trust.contacts[0].removed_in.push(dm);
+            s
+        };
+        let (composer, vcx) = cx.add_window_view(Composer::new);
+        let sent = std::rc::Rc::new(std::cell::Cell::new(0));
+        vcx.update(|_, cx| {
+            let sent = sent.clone();
+            cx.subscribe(&composer, move |_, _: &Sent, _| sent.set(sent.get() + 1))
+                .detach();
+        });
+        let on = |s: AppState| SlotCx {
+            channel: Some(dm),
+            state: std::sync::Arc::new(s),
+            ..SlotCx::default()
+        };
+        composer.update(vcx, |c, _| c.set_slots(on(state.clone())));
+        let draw = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| window.draw(cx).clear(cx));
+            vcx.run_until_parked();
+        };
+        draw(vcx);
+        assert_eq!(
+            composer.read_with(vcx, |c, _| c.blocked()),
+            Some(Blocked::Trust("privacy.changed")),
+            "paused on composer_block's key"
+        );
+        assert_eq!(
+            crate::screens::dms::conversation::composer_block(&state, dm),
+            Some("privacy.changed")
+        );
+        assert_eq!(
+            paused_line(
+                Blocked::Trust("privacy.changed"),
+                "",
+                crate::screens::shell::Clock::Local
+            ),
+            t("privacy.changed"),
+            "the paused line is the translated reason"
+        );
+        assert!(
+            vcx.debug_bounds("composer-paused").is_some(),
+            "the paused line is drawn"
+        );
+        let type_draft = |vcx: &mut gpui::VisualTestContext| {
+            vcx.update(|window, cx| {
+                let input = composer.read(cx).input.clone();
+                input.update(cx, |s, cx| s.set_value("hello Mira", window, cx));
+            });
+        };
+        type_draft(vcx);
+        // Send (the button's click runs `send`), then Enter in the field.
+        composer.update_in(vcx, |c, window, cx| c.send(window, cx));
+        vcx.update(|_, cx| {
+            let input = composer.read(cx).input.clone();
+            input.update(cx, |_, cx| {
+                cx.emit(InputEvent::PressEnter {
+                    secondary: false,
+                    shift: false,
+                });
+            });
+        });
+        draw(vcx);
+        assert_eq!(sent.get(), 0, "nothing was sent");
+        assert_eq!(
+            composer.read_with(vcx, |c, cx| c.value(cx)).as_ref(),
+            "hello Mira",
+            "the draft stays in the field"
+        );
+        // The control: the gate lifted (a validated Remove), the same Send sends it.
+        composer.update(vcx, |c, _| c.set_slots(on(open)));
+        draw(vcx);
+        assert_eq!(composer.read_with(vcx, |c, _| c.blocked()), None);
+        assert!(vcx.debug_bounds("composer-paused").is_none());
+        composer.update_in(vcx, |c, window, cx| c.send(window, cx));
+        draw(vcx);
+        assert_eq!(sent.get(), 1, "the open composer sends");
     }
 
     /// A server with one text channel, the viewer holding only @everyone (allow `everyone_allow`), and one mentionable

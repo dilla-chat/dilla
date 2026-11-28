@@ -52,6 +52,9 @@ pub enum Blocked {
     ReadOnly,
     /// The viewer is timed out in the channel's community until this Unix second: `shell.composer.timedOut`.
     TimedOut(u64),
+    /// The core's trust gate holds sends in the conversation (a member whose identity changed, a failed leaf, the own
+    /// account's): the `strings.rs` key of the reason, [`crate::screens::dms::conversation::composer_block`]'s.
+    Trust(&'static str),
 }
 
 /// Shell.tsx `timeoutReason`: in a text channel of a community where the viewer's own timeout (the advisory read of
@@ -71,11 +74,26 @@ pub fn timed_out(state: &AppState, channel: &Channel, now_s: u64) -> Option<u64>
 }
 
 /// Why the viewer cannot post in `channel` at `now_s`: a timeout first (Shell.tsx: `timeoutReason ?? blockReason`),
-/// then the announcement channel's rule ([`may_send`]).
+/// then the announcement channel's rule ([`may_send`]), then the trust gate ([`Blocked::Trust`]).
 pub fn blocked_at(state: &AppState, channel: &Channel, now_s: u64) -> Option<Blocked> {
     timed_out(state, channel, now_s)
         .map(Blocked::TimedOut)
         .or_else(|| may_send(state, channel).err())
+        .or_else(|| trust_block(state, channel.id))
+}
+
+/// [`blocked_at`] for any conversation the composer is aimed at: a community channel's rules, else (a DM, which has no
+/// timeout or announcement rule) the trust gate alone.
+pub fn blocked_in(state: &AppState, channel: ChannelId, now_s: u64) -> Option<Blocked> {
+    match state.channel(channel) {
+        Some(c) => blocked_at(state, c, now_s),
+        None => trust_block(state, channel),
+    }
+}
+
+/// The trust gate's pause in `channel` (Shell.tsx `blockReason` of the core's send gate).
+fn trust_block(state: &AppState, channel: ChannelId) -> Option<Blocked> {
+    crate::screens::dms::conversation::composer_block(state, channel).map(Blocked::Trust)
 }
 
 /// Whether the viewer may post in `channel`. Announcement channels (mode 1) take posts only from the roles the server
@@ -286,5 +304,93 @@ mod tests {
         assert!(!counter_visible(401));
         assert!(counter_visible(400));
         assert!(counter_visible(-1));
+    }
+
+    /// Task 2c: the trust gate pauses the composer after a timeout and the announcement rule (Shell.tsx
+    /// `timeoutReason ?? blockReason`), in a community channel and in a DM (which has only the gate).
+    #[test]
+    fn the_trust_gate_pauses_after_the_timeout_and_the_read_only_rule() {
+        use dilla_client::state::dms::{DM_KIND_PAIR, DmSummary};
+        use dilla_client::state::trust::{SendBlock, TrustBlock, TrustSummary};
+        let (me, mira) = (UserId([8; 16]), UserId([3; 16]));
+        let mut s = AppState::default();
+        s.account.user_id = Some(me);
+        s.communities.push(Community {
+            id: CommunityId([2; 16]),
+            name: "S".into(),
+            owner: UserId([7; 16]),
+            policy_version: 1,
+        });
+        let member = |user_id| dilla_client::state::Member {
+            user_id,
+            username: "m".into(),
+            display: String::new(),
+            kind: 0,
+            role_ids: Vec::new(),
+            status_msg: String::new(),
+            bio: String::new(),
+        };
+        s.members
+            .insert(CommunityId([2; 16]), vec![member(me), member(mira)]);
+        let dm = ChannelId([5; 16]);
+        s.dms.list = Some(vec![DmSummary {
+            id: dm,
+            kind: DM_KIND_PAIR,
+            members: vec![me, mira],
+            name: "Mira".into(),
+            group: ChannelGroupState::Active,
+        }]);
+        let text = channel(0, 0);
+        s.channels.push(text.clone());
+        assert_eq!(blocked_in(&s, dm, 100), None, "nothing changed: open");
+        assert_eq!(blocked_at(&s, &text, 100), None);
+        s.trust.loaded = true;
+        s.trust.contacts.push(TrustSummary {
+            user_id: mira,
+            name: "Mira".into(),
+            shared: true,
+            umk: "aa".repeat(32),
+            first_seen: 1,
+            verified: false,
+            changed_umk: Some("bb".repeat(32)),
+            unlisted: false,
+            removed_in: Vec::new(),
+            blocked: None,
+        });
+        let block = SendBlock {
+            code: TrustBlock::UmkChanged,
+            own: false,
+        };
+        s.trust.send_blocks.insert(dm, block);
+        s.trust.send_blocks.insert(text.id, block);
+        assert_eq!(
+            blocked_in(&s, dm, 100),
+            Some(Blocked::Trust("privacy.changed"))
+        );
+        assert_eq!(
+            blocked_at(&s, &text, 100),
+            Some(Blocked::Trust("privacy.changed"))
+        );
+        assert_eq!(blocked_in(&s, text.id, 100), blocked_at(&s, &text, 100));
+        assert_eq!(
+            blocked_at(&s, &channel(1, 0), 100),
+            Some(Blocked::ReadOnly),
+            "the read-only line comes first"
+        );
+        s.people
+            .timeouts
+            .entry(CommunityId([2; 16]))
+            .or_default()
+            .insert(me, 500);
+        assert_eq!(
+            blocked_at(&s, &text, 100),
+            Some(Blocked::TimedOut(500)),
+            "a timeout comes first"
+        );
+        assert_eq!(
+            blocked_at(&s, &text, 500),
+            Some(Blocked::Trust("privacy.changed")),
+            "the gate holds after the timeout ran out"
+        );
     }
 }

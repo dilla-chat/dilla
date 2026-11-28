@@ -7,6 +7,9 @@
 //! dialog never approves a key other than the one it showed: when the trust slice's comparison key moves while it is
 //! open, it says so and refuses (`privacy.keyMoved`). It traps focus and Escape closes it, returning focus to the opener
 //! (the shared `Dialog`); after an approval focus lands on the Privacy heading (W-11).
+//!
+//! Drawn over the window by the shell (`slots::overlays`) and by the user settings host, which replaces the shell while
+//! it shows (Settings -> Privacy opens it there).
 
 use std::rc::Rc;
 
@@ -92,6 +95,21 @@ pub fn release(client: &Rc<Client>, cx: &mut App) {
     });
 }
 
+#[cfg(feature = "automation")]
+thread_local! {
+    // A trust fixture's fictional numbers, by the comparison key they are for. App-wide by design: fixture data of the
+    // one fixture an automation process draws, never a client's or a core's.
+    static FIXTURE_NUMBERS: std::cell::RefCell<std::collections::HashMap<String, Vec<String>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Automation build: the fictional twelve groups a trust fixture shows for `key` (`fixture/dms.rs`), which [`open`]
+/// takes in place of the core's answer when there is no client.
+#[cfg(feature = "automation")]
+pub fn fixture_number(key: &str, groups: Vec<String>) {
+    FIXTURE_NUMBERS.with(|m| m.borrow_mut().insert(key.to_owned(), groups));
+}
+
 /// Opens window `wid`'s comparison with `record` and asks the client for the number of its comparison key.
 pub fn open(wid: WindowId, record: &TrustSummary, client: Option<Rc<Client>>, cx: &mut App) {
     let key = record.comparison_key().to_owned();
@@ -108,6 +126,11 @@ pub fn open(wid: WindowId, record: &TrustSummary, client: Option<Rc<Client>>, cx
     };
     cx.refresh_windows();
     let Some(client) = client else {
+        // A trust fixture (automation build) has no client: its fictional number stands in for the core's answer.
+        #[cfg(feature = "automation")]
+        if let Some(groups) = FIXTURE_NUMBERS.with(|m| m.borrow().get(&key).cloned()) {
+            model(wid, cx).groups = groups;
+        }
         return;
     };
     let answer = client.trust().safety_number(user, key.clone());
@@ -330,6 +353,15 @@ pub fn compare_overlay(state: &AppState, window: &mut Window, cx: &mut App) -> O
     if let Some(error) = error {
         body = body.error(t(error));
     }
+    // The automation's probe of the open dialog (`safety-compare-dialog`), over its body.
+    #[cfg(feature = "automation")]
+    let body = {
+        use gpui::{ParentElement as _, Styled as _};
+        gpui::div()
+            .relative()
+            .child(body)
+            .child(crate::automation::bounds_probe("safety-compare-dialog"))
+    };
     Some(
         dialog()
             .open(true)

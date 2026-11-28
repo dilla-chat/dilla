@@ -34,13 +34,12 @@ pub fn audience(state: &AppState, channel: ChannelId) -> Vec<UserId> {
         .unwrap_or_default()
 }
 
-/// Why the composer is paused in `channel`, translated, or `None` while sending is open (Shell.tsx `blockReason` of the
-/// core's send gate; before the core first answered, a changed member blocks it).
+/// Why the composer is paused in `channel`, as its `strings.rs` key, or `None` while sending is open (Shell.tsx
+/// `blockReason` of the core's send gate; before the core first answered, a changed member blocks it). The composer
+/// pauses on it ([`crate::screens::messages::composing::Blocked::Trust`]) and draws its translation.
 pub fn composer_block(state: &AppState, channel: ChannelId) -> Option<&'static str> {
     let trust: &TrustState = &state.trust;
-    trust
-        .block_reason(channel, &audience(state, channel))
-        .map(t)
+    trust.block_reason(channel, &audience(state, channel))
 }
 
 /// What trust draws over the conversation's log, in order.
