@@ -19,6 +19,8 @@ function docFiles(root) {
 
 function imageLinks(text) {
   const links = [];
+  // Links inside fenced code blocks are examples, not images.
+  text = text.replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?(?:^[ \t]*\1[^\n]*$|(?![\s\S]))/gm, '');
   for (const m of text.matchAll(/\]\(\s*<?([^)\s>]*screenshots\/[^)\s>]*?\.png)>?(?:\s+"[^"]*")?\s*\)/gi)) links.push(m[1]);
   for (const m of text.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["']([^"']*screenshots\/[^"']*?\.png)["']/gi)) links.push(m[1]);
   return links;
@@ -50,7 +52,12 @@ export function checkDocsShots(root) {
   for (const doc of docFiles(root)) {
     const text = readFileSync(path.join(root, doc), 'utf8');
     for (const link of imageLinks(text)) {
-      const target = path.posix.normalize(path.posix.join(path.posix.dirname(doc), link.split(/[?#]/)[0]));
+      // External images (https://…, //host/…) are not ours to check.
+      if (/^([a-z][a-z0-9+.-]*:|\/\/)/i.test(link)) continue;
+      const clean = link.split(/[?#]/)[0];
+      const target = clean.startsWith('/')
+        ? path.posix.normalize(clean.slice(1))
+        : path.posix.normalize(path.posix.join(path.posix.dirname(doc), clean));
       const dir = path.posix.dirname(target);
       const name = path.posix.basename(target);
       if (dir === SHOTS && pngs.includes(name)) linked.add(name);
