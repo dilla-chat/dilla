@@ -130,8 +130,11 @@ impl SafetyCompareBody {
     }
 }
 
+/// A wrapping paragraph in the dialog's family (`.d-dialog__panel`: `--font-mono`); a run with no family would be the
+/// host's `.SystemUIFont` (privacy.rs).
 fn para(text_: SharedString, colour: gpui::Hsla) -> gpui::Div {
     div()
+        .font_family(font::MONO)
         .text_size(text::SM)
         .line_height(px(crate::text::root_line_height(text::SM)))
         .text_color(colour)
@@ -183,6 +186,7 @@ impl RenderOnce for SafetyCompareBody {
                     div()
                         .id("safety-public-umk")
                         .mt(px(6.0))
+                        .font_family(font::MONO)
                         .text_size(text::SM)
                         .line_height(px(lh))
                         .text_color(color::FG)

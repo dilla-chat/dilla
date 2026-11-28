@@ -454,6 +454,47 @@ fn native_trust(fixture: &str, golden: &str) {
     );
 }
 
+/// The trust screens' frames do not depend on the host's fonts: with DejaVu Sans as the only system face
+/// (`one_system_font`, the face the CI runner resolves) each frame still equals its golden. The Privacy rows' body text,
+/// key and toned states, and the comparison's instructions, once named no family, so GPUI drew them in the host's
+/// `.SystemUIFont` fallback (Adwaita Sans on the machine that blessed them, DejaVu Sans on the CI runner): their width
+/// moved every control column and the goldens failed on CI only.
+#[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "fontconfig is the Linux font source"
+)]
+fn native_trust_screens_do_not_depend_on_system_fonts() {
+    let conf = dilla_parity::screen::one_system_font();
+    let env = [("FONTCONFIG_FILE", conf.as_str())];
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../parity/fixtures");
+    for (fixture, golden) in [
+        ("trust/privacy", "privacy-section"),
+        ("trust/privacy-changed", "privacy-changed"),
+        ("dms/identity-changed", "dms-identity-changed"),
+    ] {
+        dilla_parity::screen::assert_native_screen_with(
+            &fixtures.join(format!("{fixture}.json")),
+            golden,
+            &env,
+            "one-system-font",
+            |_| {},
+        )
+        .unwrap_or_else(|e| panic!("{fixture} with DejaVu Sans the only system font: {e}"));
+    }
+    dilla_parity::screen::assert_native_screen_with(
+        &fixtures.join("trust/privacy-compare.json"),
+        "privacy-compare",
+        &env,
+        "one-system-font",
+        |app| {
+            app.click("privacy-compare-2");
+            app.wait_for("safety-compare-dialog", std::time::Duration::from_secs(10));
+        },
+    )
+    .unwrap_or_else(|e| panic!("trust/privacy-compare with DejaVu Sans the only system font: {e}"));
+}
+
 /// Settings -> Privacy (`trust/privacy`): Björn verified with his compared key, Lin and Mira first seen here, each with
 /// Compare.
 #[test]

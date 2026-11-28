@@ -1,11 +1,15 @@
 //! The Privacy section's contact states (packages/web app.css `dw-trust-*`): a state line with a toned 3px left edge
 //! (`.dw-trust-state[data-tone]`: `.5rem` in, `--fg` text; warn or danger edge), the compared public key in mono
 //! (`.dw-trust-key`, breaking anywhere), and the conversation's removed note (`.dw-trust-removed`, a status line).
+//!
+//! Every text here names the design's family (`--font-mono`, JetBrains Mono, embedded): a GPUI text run with no family
+//! is `.SystemUIFont`, which resolves to whatever sans the host has installed, so its width (and every column laid out
+//! around it) changed from host to host (tests/dms.rs `native_trust_screens_do_not_depend_on_system_fonts`).
 
 use gpui::{InteractiveElement, IntoElement, ParentElement, SharedString, Styled, div, px};
 
 use crate::text::line;
-use crate::tokens::{color, text};
+use crate::tokens::{color, font, text};
 
 /// `data-tone` of a state line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +42,7 @@ pub fn trust_state(text_: impl Into<SharedString>, tone: TrustTone) -> gpui::Div
                 .border_color(edge)
                 .child(
                     div()
+                        .font_family(font::MONO)
                         .text_size(text::SM)
                         .line_height(px(lh))
                         .text_color(color::FG)
@@ -50,6 +55,7 @@ pub fn trust_state(text_: impl Into<SharedString>, tone: TrustTone) -> gpui::Div
 /// Plain body text of a contact row (`<p>`), wrapping.
 pub fn body_text(text_: impl Into<SharedString>) -> gpui::Div {
     div()
+        .font_family(font::MONO)
         .text_size(text::SM)
         .line_height(px(crate::text::root_line_height(text::SM)))
         .text_color(color::FG)
@@ -60,6 +66,7 @@ pub fn body_text(text_: impl Into<SharedString>) -> gpui::Div {
 pub fn trust_key(key: impl Into<SharedString>) -> impl IntoElement {
     div()
         .id("trust-key")
+        .font_family(font::MONO)
         .text_size(text::XS)
         .line_height(px(crate::text::root_line_height(text::XS)))
         .text_color(color::FG)
